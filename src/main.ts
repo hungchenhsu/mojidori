@@ -4214,7 +4214,18 @@ void (async () => {
   // queue with nothing left that will ever drain it again (issue #305
   // follow-up review). With the listener guaranteed live first, any
   // nudge from this point on always has it there to catch.
-  await openFilesListenerReady;
+  //
+  // Caught, not left to reject the whole startup IIFE: if registering
+  // the listener itself fails (rare — an IPC-level failure, not a normal
+  // "nothing to listen for yet" case), that's still logged (never
+  // silent), but drainPendingFiles() right below and every later startup
+  // step (the cold-start probe, the updater check) must run regardless.
+  // The residual risk if this really does fail: any *later* nudge has no
+  // listener to catch it, since one was never successfully registered —
+  // narrower than losing this entire startup sequence over it.
+  await openFilesListenerReady.catch((error: unknown) => {
+    console.error("mojidori://open-files: failed to register listener", error);
+  });
   await drainPendingFiles();
   // Cold-start probe hook: no-op unless MOJIDORI_STARTUP_PROBE=1 (see
   // scripts/startup-bench.mjs). Marks "frontend ready" for the benchmark.
