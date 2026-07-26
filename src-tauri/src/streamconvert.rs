@@ -257,37 +257,47 @@ fn run_convert_loop(
 ///    command is about to spend a potentially long time streaming.
 /// 3. A target BOM prefix is written up front only when `target_with_bom`
 ///    and `target_encoding` is UTF-8 (see the module doc comment).
-/// 4. `path` is resolved past any destination symlink (following the same
-///    chain `lib.rs::atomic_write_follow_symlinks` would -- see
-///    `resolve_write_destination`; issue #301, streaming-path follow-up),
-///    then the source is streamed, decoded, scanned for
+/// 4. `path` is resolved past any destination symlink exactly once
+///    (`lib.rs::resolve_write_destination`; issue #301, streaming-path
+///    follow-up), then the source is streamed, decoded, scanned for
 ///    target-representability, and re-encoded to a temp file in the
 ///    *resolved* target's directory (`create_tmp_exclusive`) -- see
 ///    [`run_convert_loop`]. Any malformed source byte sequence aborts
 ///    immediately: the temp file is discarded and the original is never
-///    touched.
+///    touched. This resolve never happens a second time later (unlike the
+///    bug PR #317's fifth review round found in
+///    `save_document`/`commit_conversion`/`execute_one`): step 6 below is
+///    what actually guards against a symlink repoint happening during the
+///    stream, by re-checking `path`'s identity fresh against the
+///    *original* fingerprint rather than by re-resolving the destination.
 /// 5. If the scan found unmappable characters and `allow_lossy` is false,
 ///    the temp file is discarded and this returns `Ok` with `written:
 ///    false` and a populated `lossy_report` -- nothing on disk changes, and
 ///    (since nothing was written) no fingerprint re-check is needed. The
 ///    caller re-invokes with `allow_lossy: true` after explicit user
 ///    confirmation to actually commit the lossy bytes.
-/// 6. Before committing, the file at `path` is re-stat'd and compared
-///    against the fingerprint captured in step 2: if its size, mtime, or
-///    (Unix) inode identity no longer match -- including the file having
-///    been deleted outright -- the temp file is discarded and this returns
-///    `Err` without ever touching `path`. This narrows (never eliminates)
-///    the race between reading and committing, the same discipline
-///    `stream_replace_in_file`'s `verify_unchanged` and `save_document`'s
-///    `expected_fingerprint` check already apply (issues #94/#102/#113,
-///    shared `fsguard.rs`).
+/// 6. Before committing, the file at `path` is re-stat'd (following it,
+///    the same as step 2's original open, to wherever it currently
+///    resolves) and compared against the fingerprint captured in step 2:
+///    if its size, mtime, or (Unix) inode identity no longer match --
+///    including the file having been deleted outright, or a symlink in
+///    the chain having been repointed to a different file entirely -- the
+///    temp file is discarded and this returns `Err` without ever touching
+///    `path` or the resolved target from step 4. This narrows (never
+///    eliminates) the race between reading and committing, the same
+///    discipline `stream_replace_in_file`'s `verify_unchanged` and
+///    `save_document`'s `expected_fingerprint` check already apply (issues
+///    #94/#102/#113, shared `fsguard.rs`); see
+///    `repoint_after_resolve_but_before_verify_aborts_without_touching_either_target`
+///    for why this fresh, late identity check is what makes a second,
+///    independent resolve at write time unnecessary here.
 /// 7. On success: `sync_all`, the fingerprint check above, carry over the
-///    resolved target's permissions, then `rename` over the resolved
-///    target -- never over `path` itself when it names a symlink, so the
-///    link survives -- the same atomic discipline as
-///    `lib.rs::atomic_write_follow_symlinks` and `stream_replace_in_file`,
-///    just fed by a temp file filled incrementally instead of from one
-///    in-memory buffer.
+///    resolved target's permissions, then `rename` over the *same*
+///    resolved target step 4 produced -- never over `path` itself when it
+///    names a symlink, so the link survives, and never a fresh
+///    re-resolve -- the same atomic discipline as `lib.rs::atomic_write`
+///    and `stream_replace_in_file`, just fed by a temp file filled
+///    incrementally instead of from one in-memory buffer.
 #[tauri::command]
 pub fn stream_convert_file(
     path: String,
@@ -315,14 +325,18 @@ pub fn stream_convert_file(
         Fingerprint::from_file(&source).map_err(|e| format!("Failed to read {path}: {e}"))?;
 
     // `path` is always a file the user chose to convert, never an
-    // internal app-state path, so this follows a destination symlink the
-    // same way `atomic_write_follow_symlinks` does -- see
-    // `resolve_write_destination`'s doc comment (issue #301, streaming-path
-    // follow-up). `write_target` (not necessarily `path_ref`'s own
-    // directory) is what `dir`/`file_name` -- and the final rename below --
-    // must use, so the temp file and its destination stay on the same
-    // filesystem even when `path` is a symlink pointing elsewhere.
-    let (write_target, dir, file_name) = crate::resolve_write_destination(path_ref, true)
+    // internal app-state path, so this resolves and follows a destination
+    // symlink -- see `resolve_write_destination`'s doc comment (issue
+    // #301, streaming-path follow-up). `write_target` (not necessarily
+    // `path_ref`'s own directory) is what `dir`/`file_name` -- and the
+    // final rename below -- must use, so the temp file and its
+    // destination stay on the same filesystem even when `path` is a
+    // symlink pointing elsewhere. This resolve happens exactly once: it is
+    // never repeated later, which is what the doc comment above (step 6)
+    // and `repoint_after_resolve_but_before_verify_aborts_without_touching_either_target`
+    // rely on to reason about what a repoint mid-stream can and cannot do
+    // (PR #317 review, round 5).
+    let (write_target, dir, file_name) = crate::resolve_write_destination(path_ref)
         .map_err(|e| format!("Failed to write {path}: {e}"))?;
     let (mut tmp_file, tmp_path) = crate::create_tmp_exclusive(&dir, &file_name)
         .map_err(|e| format!("Failed to create temp file: {e}"))?;
@@ -1042,9 +1056,9 @@ mod tests {
     /// symlink replaced the symlink itself with a regular file, leaving
     /// the real target untouched -- the large-file counterpart to the
     /// small-file Save bug issue #301 originally reported. Now that the
-    /// commit path resolves through `resolve_write_destination` the same
-    /// way `atomic_write_follow_symlinks` does, the link must survive and
-    /// the target must receive the converted bytes. `target_with_bom:
+    /// commit path resolves through `resolve_write_destination`, the link
+    /// must survive and the target must receive the converted bytes.
+    /// `target_with_bom:
     /// true` on a UTF-8 target adds a 3-byte BOM prefix the original file
     /// never had, so the assertion on the target's bytes is proof the
     /// write actually landed there, not just that old bytes happened to
@@ -1086,6 +1100,76 @@ mod tests {
         );
 
         assert_no_leftover_tmp(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// PR #317 review, round 5: `save_document`/`commit_conversion`/
+    /// `execute_one` had a bug where the fingerprint check and the write
+    /// used two *independent* resolves of a destination symlink, so a
+    /// repoint landing between them could redirect content validated
+    /// against the old target onto a completely different, unchecked
+    /// file. `stream_convert_file` never had this hole: it resolves the
+    /// destination once, early (`resolve_write_destination`), but never
+    /// re-resolves it -- the actual guard against a repoint happening
+    /// during the (potentially long) streaming conversion is
+    /// `verify_unchanged`'s fresh, late re-check against `path_ref`
+    /// (the link, followed to wherever it points *now*) compared against
+    /// the *original* open-time fingerprint. Any repoint changes what
+    /// `path_ref` currently resolves to, so that identity comparison
+    /// fails and the whole operation aborts before ever reaching the
+    /// rename. This test pins that: it reproduces `stream_convert_file`'s
+    /// own sequence up through the early resolve, simulates a repoint,
+    /// then calls `verify_unchanged` exactly as the real commit path does
+    /// -- proving the abort fires and neither the originally-resolved
+    /// target nor the file the link was repointed to is ever touched.
+    #[cfg(unix)]
+    #[test]
+    fn repoint_after_resolve_but_before_verify_aborts_without_touching_either_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = fixture_dir("repoint-after-resolve");
+        let target_a = dir.join("target-a.txt");
+        std::fs::write(&target_a, "original A content").unwrap();
+        let target_b = dir.join("target-b.txt");
+        std::fs::write(&target_b, "unrelated B content, never touched").unwrap();
+        let link = dir.join("link.txt");
+        symlink(&target_a, &link).unwrap();
+
+        // Mirrors `stream_convert_file`'s own sequence up to, and
+        // including, the early resolve: open, capture the fingerprint
+        // from that exact handle, then resolve the destination.
+        let source = std::fs::File::open(&link).unwrap();
+        let fingerprint = Fingerprint::from_file(&source).unwrap();
+        drop(source);
+        let (write_target, _, _) = crate::resolve_write_destination(&link).unwrap();
+        assert_eq!(write_target, target_a);
+
+        // The attacker repoints the link -- as if this happened at some
+        // point during the streaming conversion, between the resolve
+        // above and the verify below.
+        std::fs::remove_file(&link).unwrap();
+        symlink(&target_b, &link).unwrap();
+
+        // The real code's late, pre-rename check.
+        let result = verify_unchanged(&link, &fingerprint);
+        assert!(
+            result.is_err(),
+            "a repoint must be detected and the operation aborted, not \
+             silently committed to the new, unchecked target"
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&target_a).unwrap(),
+            "original A content",
+            "the originally-resolved target must never be written to once \
+             verify_unchanged has already failed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target_b).unwrap(),
+            "unrelated B content, never touched",
+            "the file the link was repointed to must never be touched either"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

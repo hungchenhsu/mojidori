@@ -114,18 +114,21 @@
 //!   `open_document` -> `save_document` `expected_fingerprint` contract,
 //!   just with `scan_replace_in_folder` standing in for `open_document`).
 //! - **Re-verify immediately before the commit** (issue #114's
-//!   `commit_conversion` pattern): right before `atomic_write`, the same
+//!   `commit_conversion` pattern): the destination is resolved past any
+//!   symlink exactly once (`lib.rs::resolve_write_destination`), then the
 //!   fingerprint captured at open time is re-checked against a *fresh*
-//!   stat of the path — catching a change that happened *during* this
-//!   call's own decode/replace work, a narrower and later window than the
-//!   scan-to-execute check above. One file failing either check never
-//!   blocks the rest of the batch; each gets its own
-//!   [`ReplaceExecuteEntry`].
-//! - **Atomic commit**: `crate::atomic_write_follow_symlinks` (temp file +
-//!   rename, following a destination symlink since `path` here is always
-//!   a user-selected file, never internal app state — see its doc comment
-//!   in `lib.rs`), the same atomic-commit machinery every other write path
-//!   in this app shares.
+//!   stat of that same resolved path — catching a change that happened
+//!   *during* this call's own decode/replace work, a narrower and later
+//!   window than the scan-to-execute check above. Resolving once and
+//!   reusing it for both this check and the commit below (rather than
+//!   resolving independently for each) is what stops a symlink repoint
+//!   from redirecting validated content onto an unchecked file (issue
+//!   #301 review, round 5 — see `resolve_write_destination`'s doc
+//!   comment). One file failing either check never blocks the rest of the
+//!   batch; each gets its own [`ReplaceExecuteEntry`].
+//! - **Atomic commit**: `crate::atomic_write` on that same resolved path
+//!   (temp file + rename — see `lib.rs`'s doc comment), the same
+//!   atomic-commit machinery every other write path in this app shares.
 //! - **Lossy two-phase gate**: since only `replacement`'s own characters
 //!   can newly become unmappable (everything else in a line already
 //!   round-tripped through this file's own encoding once via decode), scan
@@ -840,10 +843,33 @@ fn execute_one(
         );
     }
 
+    // Resolve the destination once, then use the SAME resolved path for
+    // both the re-verify check below and the write itself (issue #301
+    // review, round 5): resolving independently for each -- a fresh
+    // resolve inside a "follow symlinks" writer, decoupled from whatever
+    // path the check below validated -- would let a symlink repoint
+    // landing between the two resolves redirect content validated against
+    // the OLD target onto a completely different, never-checked file. See
+    // `lib.rs::resolve_write_destination`'s doc comment for the full
+    // rationale. `path` is always a file the user selected for
+    // search-and-replace, never an internal app-state path, so following a
+    // destination symlink at all is correct in the first place.
+    let write_target = match crate::resolve_write_destination(path) {
+        Ok((target, _, _)) => target,
+        Err(e) => {
+            return err_entry(
+                path_str,
+                STATUS_IO_ERROR,
+                format!("Failed to resolve destination: {e}"),
+            )
+        }
+    };
+
     // Re-verify immediately before the commit (issue #114's pattern): has
-    // anything replaced `path` since this call opened it above? A
-    // different, later, and narrower window than the continuity check.
-    if !current_fingerprint.matches_path(path) {
+    // anything replaced `write_target` since this call opened `path`
+    // above? A different, later, and narrower window than the continuity
+    // check.
+    if !current_fingerprint.matches_path(&write_target) {
         return err_entry(
             path_str,
             STATUS_CHANGED_SINCE_SCAN,
@@ -851,12 +877,7 @@ fn execute_one(
         );
     }
 
-    // Follows a destination symlink (issue #301): `path` is always a
-    // file the user selected for search-and-replace, never an internal
-    // app-state path, so this is the correct call -- see
-    // `atomic_write_follow_symlinks`'s doc comment in `lib.rs` for the
-    // full follow/no-follow split (PR #317 second-round review).
-    match crate::atomic_write_follow_symlinks(path, &out_bytes) {
+    match crate::atomic_write(&write_target, &out_bytes) {
         Ok(()) => ReplaceExecuteEntry {
             path: path_str,
             replaced_count,

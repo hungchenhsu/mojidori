@@ -624,17 +624,26 @@ fn verify_unchanged(path: &Path, original: &Fingerprint) -> Result<(), String> {
 ///    A chunk with no match involvement at all is instead copied through
 ///    byte-for-byte untouched — see the module doc comment's three
 ///    passthrough conditions and `StreamReplaceReport::unmatched_region_reencoded`.
-/// 6. Before that commit, the file at `path` is re-stat'd and compared
-///    against the [`Fingerprint`] captured right after the source was
-///    opened: if its size, mtime, or (Unix) inode identity no longer
-///    match — including the file having been deleted outright — the temp
-///    file is discarded and this returns `Err` without ever touching
-///    `path`. This is what stops an external process that atomically
-///    replaces the same path while a multi-GB stream is still in flight
-///    (log rotation, a formatter, a sync tool) from having its newer
-///    content silently overwritten once this command finally finishes
-///    reading the now-stale open handle (issue #94). This narrows the race
-///    to the microsecond-scale check-to-rename window rather than
+/// 6. Before that commit, the file at `path` is re-stat'd (following it,
+///    the same as the original open, to wherever it currently resolves)
+///    and compared against the [`Fingerprint`] captured right after the
+///    source was opened: if its size, mtime, or (Unix) inode identity no
+///    longer match — including the file having been deleted outright, or
+///    a symlink in the chain having been repointed to a different file
+///    entirely — the temp file is discarded and this returns `Err`
+///    without ever touching `path` or the resolved target step 4 (below)
+///    produced. This is what stops an external process that atomically
+///    replaces the same path — or repoints a symlink along it — while a
+///    multi-GB stream is still in flight (log rotation, a formatter, a
+///    sync tool, a dotfile manager) from having its newer content
+///    silently overwritten, or from redirecting the commit onto a
+///    completely different file, once this command finally finishes
+///    reading the now-stale open handle (issue #94; PR #317 review, round
+///    5 — this fresh, late identity check is what makes a second,
+///    independent resolve at write time unnecessary here, unlike the bug
+///    that same round found in
+///    `save_document`/`commit_conversion`/`execute_one`). This narrows the
+///    race to the microsecond-scale check-to-rename window rather than
 ///    eliminating it — no portable rename has an identity-conditional
 ///    variant — but that is a vast improvement over leaving the whole
 ///    multi-minute stream unguarded. See [`capture_fingerprint`] /
@@ -643,16 +652,17 @@ fn verify_unchanged(path: &Path, original: &Fingerprint) -> Result<(), String> {
 ///    persists, no rename, `mtime` unchanged. Only a run with at least one
 ///    replacement commits: `sync_all`, the fingerprint check above, carry
 ///    over the resolved target's permissions, then `rename` over the
-///    resolved target — the same atomic discipline as
-///    `lib.rs::atomic_write_follow_symlinks`, just fed by a temp file
-///    filled incrementally instead of from one in-memory buffer. `path` is
-///    resolved past any destination symlink before the temp file is even
-///    created (`resolve_write_destination`, same resolution
-///    `atomic_write_follow_symlinks` uses), so the temp file lands in the
-///    resolved target's directory and the final rename lands on that
-///    target too — never on `path` itself when it names a symlink, so the
-///    link survives (issue #301, streaming-path follow-up in PR #317's
-///    third review round).
+///    *same* resolved target — the same atomic discipline as
+///    `lib.rs::atomic_write`, just fed by a temp file filled incrementally
+///    instead of from one in-memory buffer. `path` is resolved past any
+///    destination symlink exactly once, before the temp file is even
+///    created (`resolve_write_destination`), and that one resolution is
+///    what both step 6's check and this final rename use — never a fresh
+///    re-resolve — so the temp file lands in the resolved target's
+///    directory and the final rename lands on that same target too —
+///    never on `path` itself when it names a symlink, so the link
+///    survives (issue #301, streaming-path follow-up in PR #317's third
+///    review round).
 ///
 /// BOM handling: up to 3 bytes (the longest BOM any encoding here uses —
 /// UTF-8's `EF BB BF`) are peeked from the source first. If they form a
@@ -725,14 +735,15 @@ pub fn stream_replace_in_file(
         .map_err(|e| format!("Failed to read {path}: {e}"))?;
 
     // `path` is always a file the user chose to search-and-replace in,
-    // never an internal app-state path, so this follows a destination
-    // symlink the same way `atomic_write_follow_symlinks` does -- see
+    // never an internal app-state path, so this resolves and follows a
+    // destination symlink exactly once -- see
     // `resolve_write_destination`'s doc comment (issue #301, streaming-path
-    // follow-up). `write_target` (not necessarily `path_ref`'s own
+    // follow-up; PR #317 review round 5 on why "exactly once" matters).
+    // `write_target` (not necessarily `path_ref`'s own
     // directory) is what `dir`/`file_name` -- and the final rename below --
     // must use, so the temp file and its destination stay on the same
     // filesystem even when `path` is a symlink pointing elsewhere.
-    let (write_target, dir, file_name) = crate::resolve_write_destination(path_ref, true)
+    let (write_target, dir, file_name) = crate::resolve_write_destination(path_ref)
         .map_err(|e| format!("Failed to write {path}: {e}"))?;
     let (mut tmp_file, tmp_path) = crate::create_tmp_exclusive(&dir, &file_name)
         .map_err(|e| format!("Failed to create temp file: {e}"))?;
@@ -1103,9 +1114,8 @@ mod tests {
     /// symlink replaced the symlink itself with a regular file, leaving
     /// the real target untouched -- the large-file counterpart to the
     /// small-file Save bug issue #301 originally reported. Now that the
-    /// commit path resolves through `resolve_write_destination` the same
-    /// way `atomic_write_follow_symlinks` does, the link must survive and
-    /// the target must receive the replaced content.
+    /// commit path resolves through `resolve_write_destination`, the link
+    /// must survive and the target must receive the replaced content.
     #[cfg(unix)]
     #[test]
     fn stream_replace_in_file_through_symlink_updates_target_and_preserves_link() {
