@@ -123,7 +123,13 @@ import { showPalette } from "./palette";
 import { showQuickOpen } from "./quickopen";
 import { showFilterableMenu, showMenu, type MenuItem } from "./popup";
 import { decideSaveCompletion, shouldRollbackForceDirty } from "./savecompletion";
-import { isLikelySaveEcho, SAVE_ECHO_WINDOW_MS, type SaveEchoRecord } from "./saveecho";
+import {
+  isLikelySaveEcho,
+  MAX_FINGERPRINT_RESAMPLE_ATTEMPTS,
+  sameSaveRecord,
+  SAVE_ECHO_WINDOW_MS,
+  type SaveEchoRecord,
+} from "./saveecho";
 import { fingerprintsEqual, mustDefer, nextDrainStep } from "./savemutex";
 import { createSessionPersister } from "./sessionpersist";
 import { runStreamConvert } from "./streamconvert";
@@ -1887,6 +1893,39 @@ function applyOpenedForReload(doc: Doc, opened: OpenedDocument): void {
   else tabs.render();
 }
 
+/** fetchStableFingerprint's result: a record/current pair verified
+ *  consistent across the whole fetch (saveecho.ts's sameSaveRecord doc
+ *  comment has the full invariant this satisfies). */
+interface StableFingerprintFetch {
+  record: SaveEchoRecord | undefined;
+  current: unknown;
+}
+
+/**
+ * documentFingerprint(path) paired with a recentSaves record proven stable
+ * for that fetch's entire duration (issue #302 review, fifth round — see
+ * saveecho.ts's sameSaveRecord doc comment for why neither reading the
+ * record only before nor only after the fetch is sound on its own: this is
+ * the third await-race caught in this exact spot, and the first two
+ * "point fixes" each just moved the race to the other side of the gap).
+ * Retries up to MAX_FINGERPRINT_RESAMPLE_ATTEMPTS times if a concurrent
+ * save to `path` replaces the record mid-fetch — the common case (no such
+ * save) always resolves on the first attempt. Returns `null` if it never
+ * stabilizes within that bound, so the caller can fall back to treating
+ * the event conservatively as a real external change (a missed suppression
+ * costs one extra reload prompt; guessing from an unstable pair risks
+ * wrongly suppressing a real change instead).
+ */
+async function fetchStableFingerprint(path: string): Promise<StableFingerprintFetch | null> {
+  for (let attempt = 0; attempt < MAX_FINGERPRINT_RESAMPLE_ATTEMPTS; attempt++) {
+    const before = recentSaves.get(path);
+    const current = await documentFingerprint(path).catch(() => null);
+    const after = recentSaves.get(path);
+    if (sameSaveRecord(before, after)) return { record: after, current };
+  }
+  return null;
+}
+
 async function handleExternalChange(path: string): Promise<void> {
   const doc = tabs.docs.find((d) => d.path === path);
   if (!doc) return;
@@ -1895,14 +1934,14 @@ async function handleExternalChange(path: string): Promise<void> {
   // Issue #302: a blind elapsed-time check here used to swallow a genuine
   // external change landing in the same short window as our own save's
   // watcher echo, with nothing left to notice it once the window closed.
-  // The extra documentFingerprint fetch only runs once `now` is already
-  // inside the window — the common case (no save in the last 1.5s) never
-  // pays for it.
+  // fetchStableFingerprint's fetch only runs once `now` is already inside
+  // the window — the common case (no save in the last 1.5s) never pays
+  // for it.
   if (record && now - record.time < SAVE_ECHO_WINDOW_MS) {
-    // This fetch is itself an await gap (Codex P2 review finding #3
-    // against an earlier version of this fix): the user can close this
-    // doc's tab, or Save As it to a different path, while it's in flight.
-    // Guarded the same way every other post-await mutation in this file is
+    // fetchStableFingerprint's fetch(es) are themselves await gaps (Codex
+    // P2 review finding #3): the user can close this doc's tab, or Save As
+    // it to a different path, while any of them are in flight. Guarded the
+    // same way every other post-await mutation in this file is
     // (asyncguard.ts's captureIdentity/validateIdentity) — "closed" bails
     // outright, and an explicit doc.path check covers the Save As case
     // validateIdentity's id/revision fields don't (a plain path/title
@@ -1910,21 +1949,12 @@ async function handleExternalChange(path: string): Promise<void> {
     // left for *this* path's watcher event to do to `doc`: no tab to
     // reload, no tab to show a reload prompt for.
     const guard = captureIdentity(doc);
-    const current = await documentFingerprint(path).catch(() => null);
+    const stable = await fetchStableFingerprint(path);
     if (validateIdentity(guard, doc, tabs.docs.includes(doc)) === "closed") return;
     if (doc.path !== path) return;
-    // Re-read rather than reusing the `record` captured above (Codex P2
-    // review, fourth round): this fetch is an await gap this same app can
-    // complete a *second* save to `path` during — recordOwnSave would then
-    // have replaced recentSaves' entry with that save's own fresher
-    // fingerprint. Comparing `current` (disk state *after* that second
-    // save) against the stale, first-save `record` would mismatch and
-    // treat our own second save's echo as an external change — a spurious
-    // reload on a clean tab, or a false reload prompt on a dirty one.
-    // recentSaves is append/replace-only (recordOwnSave never deletes), so
-    // this is always defined once the outer `record` was.
-    const latestRecord = recentSaves.get(path);
-    if (isLikelySaveEcho({ now, record: latestRecord, current })) return;
+    if (stable && isLikelySaveEcho({ now, record: stable.record, current: stable.current })) {
+      return;
+    }
   }
   if (!doc.dirty) {
     await reloadFromDisk(doc);

@@ -101,3 +101,60 @@ export function isLikelySaveEcho(input: SaveEchoInput): boolean {
   if (record.fingerprint === null || record.fingerprint === undefined) return true;
   return fingerprintsEqual(record.fingerprint, input.current);
 }
+
+/**
+ * Core invariant this whole suppression scheme depends on — worth stating
+ * once, explicitly, because an await-race breaking it is what issue #302's
+ * PR #319 review caught in this exact area three separate times: the
+ * `record`/`current` pair fed to isLikelySaveEcho must describe the *same
+ * instant*. `record` (a synchronous `recentSaves.get(path)` read) and
+ * `current` (an async `documentFingerprint(path)` stat) are read through
+ * two entirely different channels with no shared clock between them, so
+ * sampling one of them *before* the other's async gap and trusting it to
+ * still describe the same moment once that gap closes is never safe on its
+ * own — no matter which side of the gap you pick:
+ *
+ * - Sample `record` before the fetch, use it as-is once the fetch
+ *   resolves: a second save landing anywhere during the fetch replaces
+ *   `recentSaves`' entry, so the `current` this fetch eventually returns
+ *   can describe disk *after* that second save while `record` still
+ *   describes the first (round-four's own bug, fixed by re-reading
+ *   afterward — but only by half).
+ * - Re-read `record` *after* the fetch resolves instead (round four's
+ *   fix): still broken if the second save's own `recordOwnSave` call lands
+ *   *after* the fetch's underlying disk read already happened but
+ *   *before* this app's continuation resumes to do that re-read — `current`
+ *   then describes disk as of the *first* save while the re-read `record`
+ *   already reflects the second (round five's bug: the same race, mirrored).
+ *
+ * There is no fixed "read before" or "read after" ordering that closes
+ * this — the only sound approach is to *verify* stability directly:
+ * capture `record` immediately before starting the fetch, then compare it
+ * by reference against a fresh read taken immediately after the fetch
+ * resolves (`sameSaveRecord` below). `recentSaves.set` (main.ts's
+ * `recordOwnSave`) always installs a brand-new object, never mutates one
+ * in place, so reference equality is an exact "nothing replaced this while
+ * the fetch was in flight" proof, not a heuristic. Equal means the pair is
+ * provably consistent — safe to feed to isLikelySaveEcho. Unequal means
+ * retry: capture the *new* record, fetch again, check again. main.ts
+ * bounds this at `MAX_FINGERPRINT_RESAMPLE_ATTEMPTS` and, if it still
+ * hasn't stabilized by then (this app saving to the same path in a tight
+ * enough loop to keep outrunning the retry), treats the event
+ * conservatively as a real external change rather than keep retrying
+ * indefinitely or guessing from an unstable pair — a missed suppression
+ * only costs one extra reload prompt; a wrongly suppressed real external
+ * change risks silently leaving the user looking at stale content.
+ */
+export function sameSaveRecord(
+  a: SaveEchoRecord | undefined,
+  b: SaveEchoRecord | undefined,
+): boolean {
+  return a === b;
+}
+
+/** Bound on main.ts's handleExternalChange stabilizing-fetch retry (see
+ *  sameSaveRecord's own doc comment) — small enough that a pathological
+ *  run of back-to-back saves to the same path can't spin this
+ *  indefinitely, large enough that the overwhelmingly common case (no
+ *  concurrent save at all) never needs more than its first attempt. */
+export const MAX_FINGERPRINT_RESAMPLE_ATTEMPTS = 3;
