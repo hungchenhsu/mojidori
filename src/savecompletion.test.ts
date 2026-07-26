@@ -588,3 +588,109 @@ describe("runSaveFlow catch preserves already-observed staleness (PR #319 third-
     expect(outcome).toEqual({ written: false, stale: false });
   });
 });
+
+// Issue #325, untitled Save with Encoding scenario: an untitled document
+// (doc.path === null) has no path yet, so runSaveFlow's own saveDialog
+// await is unconditionally on this attempt's critical path, not just the
+// explicit Save As case. Before the fix, a rejection there (the dialog
+// plugin's own IPC failing, never an ordinary user Cancel) escaped
+// runSaveFlow entirely — the Save with Encoding menu action's rollback
+// (savemutex.test.ts's own issue #325 describe block covers the direct and
+// deferred/coalesced scenarios; this is the third the issue calls out)
+// lives in a `.then` handler a rejected promise never reaches, so the
+// speculative encoding/withBom/force-dirty state issue #221/#231 apply
+// before the save even starts would have been stranded: never written to
+// disk, never rolled back either. This pins that once saveFlow's contract
+// never rejects (main.ts's fix), the *existing* rollback
+// (resolveSaveWithEncodingSim above, unchanged by this fix) already
+// handles it correctly — issue #325 needed no new rollback logic, only
+// the never-reject contract this scenario now verifies end to end.
+describe("issue #325 — untitled Save with Encoding: a rejecting saveDialog still rolls back the speculative state (failing-test-first)", () => {
+  /** Mirrors runSaveFlow's own saveDialog try/catch, including the Codex
+   *  P1 follow-up (this file's savemutex.test.ts has the full doc comment
+   *  on both: why a dedicated try/catch rather than folded into a single
+   *  outer one, and why the error dialog it shows on rejection needs its
+   *  own best-effort wrapping too — same plugin/IPC channel that may be
+   *  exactly why saveDialog itself just failed). `showErrorDialog` defaults
+   *  to a no-op success so the common-case call below is unaffected.
+   *  Reused here, not imported, matching every other sim in this file's own
+   *  "kept in sync by hand" convention (setLineEndingSim's own doc
+   *  comment). */
+  async function runSaveFlowDialogSim(
+    path: string | null,
+    saveDialog: () => Promise<string | null>,
+    showErrorDialog: () => Promise<void> = () => Promise.resolve(),
+  ): Promise<{ result: { written: boolean; stale: boolean }; errorShown: boolean }> {
+    if (path === null) {
+      try {
+        path = await saveDialog();
+      } catch {
+        try {
+          await showErrorDialog();
+        } catch {
+          // Logged, not surfaced a second way — see main.ts's
+          // reportSaveFailureBestEffort.
+        }
+        return { result: { written: false, stale: false }, errorShown: true };
+      }
+      if (path === null) return { result: { written: false, stale: false }, errorShown: false };
+    }
+    return { result: { written: true, stale: false }, errorShown: false };
+  }
+
+  it("untitled doc, Save with Encoding: saveDialog rejects — error surfaced, speculative encoding/withBom/dirty rolled back, session re-persisted", async () => {
+    const doc: SessionEncodingDoc = { encoding: "UTF-8", withBom: false, dirty: false };
+    const snapshots: Array<{ encoding: string; withBom: boolean }> = [];
+    const persistSession = (): void => {
+      snapshots.push({ encoding: doc.encoding, withBom: doc.withBom });
+    };
+
+    // The Save with Encoding menu action applies the speculative target
+    // and forces dirty *before* saveFlow (and therefore runSaveFlow's own
+    // saveDialog step) ever runs — untitled doc, so path is null and the
+    // dialog is unconditionally on the critical path.
+    const original = beginSaveWithEncodingSim(doc, { encoding: "Big5", withBom: false });
+    expect(doc.encoding).toBe("Big5");
+    expect(doc.dirty).toBe(true);
+
+    const { result, errorShown } = await runSaveFlowDialogSim(null, () =>
+      Promise.reject(new Error("dialog plugin IPC failed")),
+    );
+
+    expect(errorShown).toBe(true); // the save-failed dialog was shown
+    expect(result).toEqual({ written: false, stale: false }); // never a rejection reaching .then
+
+    resolveSaveWithEncodingSim(doc, original, /* wasClean */ true, result, persistSession);
+
+    expect(doc.encoding).toBe("UTF-8"); // speculative encoding rolled back
+    expect(doc.withBom).toBe(false);
+    expect(doc.dirty).toBe(false); // not stale, so #276's rollback clears the forced dirty
+    expect(snapshots[snapshots.length - 1]).toEqual({ encoding: "UTF-8", withBom: false });
+  });
+
+  it("untitled doc, Save with Encoding: both saveDialog and its own error dialog reject — rollback still runs, contract still holds", async () => {
+    const doc: SessionEncodingDoc = { encoding: "UTF-8", withBom: false, dirty: false };
+    const snapshots: Array<{ encoding: string; withBom: boolean }> = [];
+    const persistSession = (): void => {
+      snapshots.push({ encoding: doc.encoding, withBom: doc.withBom });
+    };
+
+    const original = beginSaveWithEncodingSim(doc, { encoding: "Big5", withBom: false });
+
+    const { result, errorShown } = await runSaveFlowDialogSim(
+      null,
+      () => Promise.reject(new Error("dialog plugin IPC failed")),
+      () => Promise.reject(new Error("dialog plugin is completely unavailable")),
+    );
+
+    expect(errorShown).toBe(true);
+    expect(result).toEqual({ written: false, stale: false }); // still resolved, not rejected
+
+    resolveSaveWithEncodingSim(doc, original, /* wasClean */ true, result, persistSession);
+
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.withBom).toBe(false);
+    expect(doc.dirty).toBe(false);
+    expect(snapshots[snapshots.length - 1]).toEqual({ encoding: "UTF-8", withBom: false });
+  });
+});

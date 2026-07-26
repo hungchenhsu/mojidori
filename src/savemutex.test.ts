@@ -2389,3 +2389,189 @@ describe("issue #302 review, seventh round — a caller deferring via pendingRel
     expect(buggySelfDrains).toBe(true); // wrongly self-drains despite the new owner
   });
 });
+
+// Issue #325: runSaveFlow's saveDialog await (Save As, or an untitled
+// doc's first Save) used to sit *outside* its own try/catch, so a
+// rejection from it — the dialog plugin's own IPC failing, never an
+// ordinary user Cancel, which resolves with `null` instead — escaped
+// runSaveFlow entirely instead of becoming an ordinary SaveFlowResult.
+// That broke saveFlow's never-rejects contract, which drainLock's
+// coalesced-save branch (above in this file) and the Save with Encoding
+// menu action's `.then` rollback (savecompletion.test.ts) both depend on:
+// a direct caller got an unhandled rejection instead of the save-failed
+// dialog; a caller already queued in pendingSaveResolvers before this
+// throw would never have its resolver called at all, since drainLock's
+// own resolve loop sits textually after the point that now throws.
+//
+// main.ts's fix wraps just the saveDialog await in its own try/catch
+// (rather than moving it inside the function's main try) — TypeScript's
+// narrowing of the reassigned `path` through the closures the rest of
+// runSaveFlow passes it into (e.g. checkByteDrift's callback) only
+// survives when that reassignment happens outside the main try, so
+// merging the two would have reintroduced a build break, not just been a
+// style choice. The externally observable contract is identical either
+// way: runSaveFlowDialogSim below mirrors exactly that shape, and
+// runSaveFlowDialogSimBuggy mirrors the pre-fix (unguarded) shape to pin
+// the regression it closes.
+// Codex P1 follow-up on the fix above: the error dialog runSaveFlow shows
+// once saveDialog rejects (`reportSaveFailureBestEffort` in main.ts) uses
+// the *same* dialog plugin/IPC channel that can be exactly why saveDialog
+// itself just failed — the whole plugin being unavailable, not something
+// specific to the save picker. Awaiting that unguarded would let *its*
+// rejection escape instead, silently reintroducing all three #325 symptoms
+// one layer further in. `showErrorDialog` below defaults to a no-op
+// success so every existing call site is unaffected; passing a rejecting
+// one exercises this exact follow-up.
+async function runSaveFlowDialogSim(
+  path: string | null,
+  saveDialog: () => Promise<string | null>,
+  showErrorDialog: () => Promise<void> = () => Promise.resolve(),
+): Promise<{
+  result: { written: boolean; stale: boolean };
+  errorShown: boolean;
+  errorDialogFailed: boolean;
+}> {
+  if (path === null) {
+    try {
+      path = await saveDialog();
+    } catch {
+      let errorDialogFailed = false;
+      try {
+        await showErrorDialog();
+      } catch {
+        errorDialogFailed = true;
+      }
+      return {
+        result: { written: false, stale: false },
+        errorShown: true,
+        errorDialogFailed,
+      };
+    }
+    if (path === null) {
+      return {
+        result: { written: false, stale: false },
+        errorShown: false,
+        errorDialogFailed: false,
+      };
+    }
+  }
+  // Stands in for the rest of runSaveFlow's own try/catch — this sim only
+  // cares about the dialog boundary, so a resolved path is treated as an
+  // immediate (stand-in) success.
+  return { result: { written: true, stale: false }, errorShown: false, errorDialogFailed: false };
+}
+
+/** The pre-#325 shape: the dialog await is unguarded. Used only to pin the
+ *  regression the fix above closes — never as a stand-in for current
+ *  behavior. */
+async function runSaveFlowDialogSimBuggy(
+  path: string | null,
+  saveDialog: () => Promise<string | null>,
+): Promise<{ written: boolean; stale: boolean }> {
+  if (path === null) {
+    path = await saveDialog();
+    if (path === null) return { written: false, stale: false };
+  }
+  return { written: true, stale: false };
+}
+
+/** The pre-follow-up shape: saveDialog is guarded (issue #325's own fix),
+ *  but the error dialog it shows on rejection is not (the Codex P1 follow-
+ *  up). Used only to pin the regression the best-effort wrapping above
+ *  closes. */
+async function runSaveFlowDialogSimBuggyErrorDialog(
+  path: string | null,
+  saveDialog: () => Promise<string | null>,
+  showErrorDialog: () => Promise<void>,
+): Promise<{ written: boolean; stale: boolean }> {
+  if (path === null) {
+    try {
+      path = await saveDialog();
+    } catch {
+      await showErrorDialog(); // unguarded — the follow-up's exact shape
+      return { written: false, stale: false };
+    }
+    if (path === null) return { written: false, stale: false };
+  }
+  return { written: true, stale: false };
+}
+
+describe("issue #325 — saveDialog rejection must not escape runSaveFlow/saveFlow's never-reject contract (failing-test-first)", () => {
+  it("direct: a rejecting saveDialog resolves as an ordinary failed SaveFlowResult, with the error surfaced — never an unhandled rejection", async () => {
+    const { result, errorShown } = await runSaveFlowDialogSim(null, () =>
+      Promise.reject(new Error("dialog plugin IPC failed")),
+    );
+
+    expect(result).toEqual({ written: false, stale: false });
+    expect(errorShown).toBe(true);
+  });
+
+  it("deferred/coalesced: a save queued in pendingSaveResolvers behind an in-flight lock still resolves once drained, even though the drained attempt's own saveDialog rejects", async () => {
+    // Mirrors main.ts's saveFlow deferring into a Promise executor (issue
+    // #124) plus drainLock's coalesced-save branch taking the queued
+    // resolvers array (its own `.get` + `.delete`) before running the
+    // actual attempt and resolving every one of them with whatever it
+    // returns.
+    const resolvers: Array<(r: { written: boolean; stale: boolean }) => void> = [];
+    const queued = new Promise<{ written: boolean; stale: boolean }>((resolve) => {
+      resolvers.push(resolve);
+    });
+
+    const taken = resolvers.splice(0, resolvers.length);
+    const { result } = await runSaveFlowDialogSim(null, () =>
+      Promise.reject(new Error("dialog plugin IPC failed")),
+    );
+    for (const resolve of taken) resolve(result);
+
+    await expect(queued).resolves.toEqual({ written: false, stale: false });
+  });
+
+  it("regression pin — the pre-fix (unguarded) shape would have left a queued caller's promise permanently unresolved", async () => {
+    const resolvers: Array<(r: { written: boolean; stale: boolean }) => void> = [];
+    const queued = new Promise<{ written: boolean; stale: boolean }>((resolve) => {
+      resolvers.push(resolve);
+    });
+
+    const drainAttempt = async (): Promise<void> => {
+      const taken = resolvers.splice(0, resolvers.length);
+      const result = await runSaveFlowDialogSimBuggy(null, () =>
+        Promise.reject(new Error("dialog plugin IPC failed")),
+      );
+      // Never reached pre-fix: the await above throws first, exactly
+      // issue #325's "queued caller taken off the map but never resolved"
+      // report.
+      for (const resolve of taken) resolve(result);
+    };
+
+    await expect(drainAttempt()).rejects.toThrow("dialog plugin IPC failed");
+    const settled = await Promise.race([
+      queued.then(() => "settled" as const),
+      new Promise<"still-pending">((resolve) => {
+        setTimeout(() => resolve("still-pending"), 20);
+      }),
+    ]);
+    expect(settled).toBe("still-pending");
+  });
+
+  it("both saveDialog and the error dialog it triggers reject: contract still holds — resolves with a failed SaveFlowResult, never an unhandled rejection", async () => {
+    const { result, errorShown, errorDialogFailed } = await runSaveFlowDialogSim(
+      null,
+      () => Promise.reject(new Error("dialog plugin IPC failed")),
+      () => Promise.reject(new Error("dialog plugin is completely unavailable")),
+    );
+
+    expect(result).toEqual({ written: false, stale: false });
+    expect(errorShown).toBe(true);
+    expect(errorDialogFailed).toBe(true); // logged, not surfaced a second way
+  });
+
+  it("regression pin — without best-effort wrapping around the error dialog, its own rejection would re-escape and reject the whole attempt a second time", async () => {
+    await expect(
+      runSaveFlowDialogSimBuggyErrorDialog(
+        null,
+        () => Promise.reject(new Error("dialog plugin IPC failed")),
+        () => Promise.reject(new Error("dialog plugin is completely unavailable")),
+      ),
+    ).rejects.toThrow("dialog plugin is completely unavailable");
+  });
+});

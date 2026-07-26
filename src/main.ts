@@ -2187,6 +2187,31 @@ interface SaveFlowResult {
   stale: boolean;
 }
 
+/**
+ * Best-effort save-failed notification (issue #325 review, follow-up P1):
+ * `messageDialog` uses the same dialog plugin/IPC channel that can be
+ * exactly why runSaveFlow is failing in the first place (the whole plugin
+ * unavailable, not just the save dialog specifically) — awaiting it
+ * unguarded in a catch block that exists specifically to keep runSaveFlow
+ * from ever rejecting would let *that* rejection escape instead, silently
+ * reintroducing the same three symptoms issue #325 fixed (no save-failed
+ * UX shown, a queued/coalesced caller left pending forever, Save with
+ * Encoding's speculative state never rolled back) — just one layer
+ * further in. Every caller of this function is already inside a catch
+ * block with nothing left to fall back to for showing the user anything
+ * further, so a failure here is logged, not surfaced a second way.
+ */
+async function reportSaveFailureBestEffort(error: unknown): Promise<void> {
+  try {
+    await messageDialog(String(error), {
+      title: t("dialog.saveFailedTitle"),
+      kind: "error",
+    });
+  } catch (dialogError) {
+    console.error("save-failed dialog itself failed to show:", dialogError);
+  }
+}
+
 async function saveFlow(saveAs: boolean): Promise<SaveFlowResult> {
   const doc = tabs.active;
   if (!doc) return { written: false, stale: false };
@@ -2214,7 +2239,38 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
   const oldPath = doc.path;
   let path = doc.path;
   if (saveAs || path === null) {
-    path = await saveDialog({ defaultPath: path ?? doc.title });
+    // Issue #325: this await used to be unguarded — a rejection from the
+    // dialog plugin's own IPC (never an ordinary user Cancel, which
+    // resolves with `null` instead of rejecting) escaped runSaveFlow
+    // entirely, bypassing the save-failed dialog the main catch below
+    // shows and leaving saveFlow's caller with a *rejected* promise
+    // instead of a resolved SaveFlowResult. That contract violation
+    // cascaded well past a missing error message: drainLock's coalesced-
+    // save branch further down only resolves every queued caller once
+    // runSaveFlow actually returns, so a throw here left them pending
+    // forever; the Save with Encoding menu action's rollback only runs its
+    // `.then` handler on a resolved promise, so a rejection here also left
+    // its speculative encoding/dirty/backup state never rolled back.
+    // saveFlow must never reject — every other failure in this function
+    // (the main catch below) and every caller elsewhere in this file
+    // already depends on that — so this one gets the exact same treatment
+    // instead of a second, inconsistent failure path: the same save-failed
+    // dialog, then a normal `{written:false, stale:false}` return. A
+    // dedicated try/catch here (rather than moving this whole block inside
+    // the main try below) is deliberate, not just incidental scoping: `path`
+    // is reassigned by this await and read again immediately after by the
+    // `path === null` check below, and TypeScript's narrowing of a
+    // reassigned `let` through the closures the rest of this function
+    // passes `path` into (e.g. checkByteDrift's callback) only survives
+    // when the reassignment happens outside the main try — moving it in
+    // reproduces exactly the P1-adjacent build break that would be, not a
+    // cosmetic style choice.
+    try {
+      path = await saveDialog({ defaultPath: path ?? doc.title });
+    } catch (error) {
+      await reportSaveFailureBestEffort(error);
+      return { written: false, stale: false };
+    }
     if (path === null) return { written: false, stale: false };
   }
   // Issue #319 third-round review: sticky across the rest of this attempt,
@@ -2437,10 +2493,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
     persistSession();
     return { written: true, stale: false };
   } catch (error) {
-    await messageDialog(String(error), {
-      title: t("dialog.saveFailedTitle"),
-      kind: "error",
-    });
+    await reportSaveFailureBestEffort(error);
     // observedStale, not a hardcoded false: see this function's own
     // opening doc comment on why an exception during the "overwrite"
     // retry (or anything else after the stale gate already fired this
