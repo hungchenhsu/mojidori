@@ -49,12 +49,40 @@ use tauri::Emitter;
 struct PendingFiles(Mutex<Vec<String>>);
 
 /// Extract existing file paths from process-style arguments, skipping the
-/// binary name and anything that looks like a flag.
-fn existing_paths_from_args<I: Iterator<Item = String>>(args: I) -> Vec<String> {
+/// binary name and anything that looks like a flag. Relative arguments are
+/// resolved against `cwd` before the existence check, and the *resolved*
+/// (absolute where relative) path is what's returned — not the raw arg —
+/// so a caller in a different working directory (e.g. a path forwarded
+/// cross-process by tauri-plugin-single-instance, see below) still opens
+/// the file the sender meant, rather than silently mis-resolving or
+/// dropping it against this process's own cwd.
+fn existing_paths_from_args_in<I: Iterator<Item = String>>(
+    args: I,
+    cwd: &std::path::Path,
+) -> Vec<String> {
     args.skip(1)
         .filter(|arg| !arg.starts_with('-'))
-        .filter(|arg| std::path::Path::new(arg).is_file())
+        .filter_map(|arg| {
+            let candidate = std::path::Path::new(&arg);
+            let resolved = if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                cwd.join(candidate)
+            };
+            resolved
+                .is_file()
+                .then(|| resolved.to_string_lossy().into_owned())
+        })
         .collect()
+}
+
+/// [`existing_paths_from_args_in`] against this process's own current
+/// directory — the right base for this process's own argv (cold-start
+/// file associations / CLI args), where "this process's cwd" and "the
+/// cwd relative paths were meant against" are the same by construction.
+fn existing_paths_from_args<I: Iterator<Item = String>>(args: I) -> Vec<String> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    existing_paths_from_args_in(args, &cwd)
 }
 
 #[tauri::command]
@@ -773,14 +801,40 @@ pub fn run() {
     // a second process at all, so macOS delivers the Apple Event straight
     // to the sole running instance's `RunEvent::Opened` handler instead.
     // No additional de-duplication is needed beyond what's already here.
+    //
+    // Two more subtleties this callback must get right, on all three
+    // platforms (the plugin's Windows/Linux/macOS `platform_impl`s all
+    // forward the *sending* process's cwd the same way — see
+    // `windows.rs`/`linux.rs`/`macos.rs`'s own `std::env::current_dir()`
+    // call on the sending side):
+    //
+    // - The forwarded `cwd` is the *second* process's working directory,
+    //   not this (surviving) process's own — relative args must be
+    //   resolved against it, not against `std::env::current_dir()` here,
+    //   or a relative path typed in a different shell/cwd would silently
+    //   fail its `is_file()` check (or resolve to the wrong file) purely
+    //   because the two processes' cwds differ.
+    // - Like the `RunEvent::Opened` handler below, the resolved paths must
+    //   also be queued into `PendingFiles`, not just emitted: if the
+    //   second process connects before the frontend has attached its
+    //   `mojidori://open-files` listener (e.g. a very fast second launch
+    //   right after the window is created), an emit-only path would drop
+    //   the files silently — `take_pending_files` is what lets the
+    //   frontend recover them once it's ready, exactly as it already does
+    //   for the initial-argv and Apple-Events cases.
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
         use tauri::Manager;
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.set_focus();
         }
-        let paths = existing_paths_from_args(argv.into_iter());
+        let paths = existing_paths_from_args_in(argv.into_iter(), std::path::Path::new(&cwd));
         if !paths.is_empty() {
+            app.state::<PendingFiles>()
+                .0
+                .lock()
+                .unwrap()
+                .extend(paths.clone());
             let _ = app.emit("mojidori://open-files", paths);
         }
     }));
@@ -946,9 +1000,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        atomic_write, existing_paths_from_args, explain_detection, open_document, preview_slice,
-        save_document, tmp_candidate_path, Fingerprint, EXPLAIN_SAMPLE_BYTES, LARGE_FILE_THRESHOLD,
-        PREVIEW_BYTES,
+        atomic_write, existing_paths_from_args, existing_paths_from_args_in, explain_detection,
+        open_document, preview_slice, save_document, tmp_candidate_path, Fingerprint,
+        EXPLAIN_SAMPLE_BYTES, LARGE_FILE_THRESHOLD, PREVIEW_BYTES,
     };
     // Only the unix-gated symlink test uses this; an unconditional import
     // is an unused-import error under -D warnings on Windows.
@@ -1276,6 +1330,40 @@ mod tests {
         let paths = existing_paths_from_args(args.into_iter());
         assert_eq!(paths, vec![file.to_string_lossy().into_owned()]);
         std::fs::remove_file(&file).ok();
+    }
+
+    /// Regression test for issue #305's follow-up review: a relative arg
+    /// forwarded from a *different* process (tauri-plugin-single-instance's
+    /// cross-process `cwd`, on every platform it supports) must be resolved
+    /// against *that* process's cwd, not against this one's own
+    /// `current_dir()` — and the path returned must be absolute, so a
+    /// downstream `open_document` call (which runs in this process) still
+    /// finds the right file regardless of this process's own cwd.
+    #[test]
+    fn existing_paths_from_args_in_resolves_relative_paths_against_given_cwd() {
+        let dir = std::env::temp_dir().join("mojidori-cwd-resolve-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("relative-target.txt");
+        std::fs::write(&file, "x").unwrap();
+
+        let args = || vec!["mojidori".to_string(), "relative-target.txt".to_string()];
+        let paths = existing_paths_from_args_in(args().into_iter(), &dir);
+        assert_eq!(
+            paths,
+            vec![file.to_string_lossy().into_owned()],
+            "relative arg must resolve against the given cwd and come back absolute"
+        );
+
+        // Sanity check: the same relative arg must NOT resolve against this
+        // test process's own cwd, or the assertion above wouldn't actually
+        // be exercising cwd-awareness.
+        let own_cwd = std::env::current_dir().unwrap();
+        assert!(
+            existing_paths_from_args_in(args().into_iter(), &own_cwd).is_empty(),
+            "relative-target.txt should not exist relative to this process's own cwd"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Pull the encoding name out of a `"{encoding} ({reason})"` would-choose
