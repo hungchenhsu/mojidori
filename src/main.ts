@@ -1913,7 +1913,18 @@ async function handleExternalChange(path: string): Promise<void> {
     const current = await documentFingerprint(path).catch(() => null);
     if (validateIdentity(guard, doc, tabs.docs.includes(doc)) === "closed") return;
     if (doc.path !== path) return;
-    if (isLikelySaveEcho({ now, record, current })) return;
+    // Re-read rather than reusing the `record` captured above (Codex P2
+    // review, fourth round): this fetch is an await gap this same app can
+    // complete a *second* save to `path` during — recordOwnSave would then
+    // have replaced recentSaves' entry with that save's own fresher
+    // fingerprint. Comparing `current` (disk state *after* that second
+    // save) against the stale, first-save `record` would mismatch and
+    // treat our own second save's echo as an external change — a spurious
+    // reload on a clean tab, or a false reload prompt on a dirty one.
+    // recentSaves is append/replace-only (recordOwnSave never deletes), so
+    // this is always defined once the outer `record` was.
+    const latestRecord = recentSaves.get(path);
+    if (isLikelySaveEcho({ now, record: latestRecord, current })) return;
   }
   if (!doc.dirty) {
     await reloadFromDisk(doc);
