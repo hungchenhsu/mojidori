@@ -68,7 +68,12 @@
 // tried — see replacescope.test.ts for the cases this was checked against.
 // Per-range independence was chosen deliberately over a whole-document scan
 // for both simplicity (no need to track "which range am I in" mid-scan)
-// and cost (bounded by selected text, not document size).
+// and cost (bounded by selected text, not document size). One direct
+// consequence: two ranges that touch (e.g. `[0, 1]` and `[1, 2]`) each scan
+// right up to and including the shared point, so a zero-length regexp match
+// sitting exactly there is a legitimate candidate for both — see
+// `replaceAllInSelection`'s doc comment for how ownership of that shared
+// candidate is resolved (issue #300).
 export interface ReplaceRange {
   readonly from: number;
   readonly to: number;
@@ -77,10 +82,18 @@ export interface ReplaceRange {
 /** Mirrors the subset of @codemirror/search's `SearchQuery` fields this
  *  module needs — plain data, not a live CM6 object, so the binding layer
  *  (editor.ts) is the only place that ever touches the real `SearchQuery`
- *  (via `getSearchQuery(state)`) and unwraps it into this shape. Does not
- *  model `SearchQuery.literal` (skip the `\n`/`\r`/`\t` unquoting CM6 does
- *  by default): the built-in search panel this app uses has no UI to set
- *  it, so a real query read from `getSearchQuery` never has it either. */
+ *  (via `getSearchQuery(state)`) and unwraps it into this shape. `search` is
+ *  the *raw* text exactly as `SearchQuery.search` holds it (never
+ *  pre-unquoted by the caller) — this module does the unquoting itself (see
+ *  `matchesInRange`), the same way `@codemirror/search` does for both of its
+ *  `QueryType` implementations: `StringQuery` searches with `spec.unquoted`
+ *  (`\n`/`\r`/`\t`/`\\` escapes resolved) while `RegExpQuery` searches with
+ *  the raw `spec.search` pattern unchanged (verified from source: `stringCursor`
+ *  passes `spec.unquoted` to `SearchCursor`, `regexpCursor` passes `spec.search`
+ *  to `RegExpCursor`). Does not model `SearchQuery.literal` (which would
+ *  disable unquoting entirely): the built-in search panel this app uses has
+ *  no UI to set it, so a real query read from `getSearchQuery` never has it
+ *  either — `literal` is always false, so unquoting always applies. */
 export interface ReplaceScopeQuery {
   readonly search: string;
   readonly replace: string;
@@ -125,12 +138,15 @@ export interface ReplaceScopeResult {
   readonly ranges: readonly ReplaceRange[];
 }
 
-/** @codemirror/search always applies this to both the search query and the
- *  replace text unless `SearchQuery.literal` is set (see the module header
- *  for why this module never sets it): backslash escapes for newline,
- *  carriage return, and tab, so typing a literal `\n` in the Replace field
- *  inserts an actual newline. Mirrors `SearchQuery.unquote` exactly
- *  (node_modules/@codemirror/search). */
+/** @codemirror/search always applies this to the replace text (see
+ *  `expandReplacement`) and, in plain-string mode only, to the search text
+ *  too (see `matchesInRange`) unless `SearchQuery.literal` is set (see the
+ *  `ReplaceScopeQuery` doc comment for why this module never sets it):
+ *  backslash escapes for newline, carriage return, tab, and a literal
+ *  backslash, so typing `\n` in the Find field (plain-string mode) or the
+ *  Replace field (either mode) matches/inserts an actual newline. Mirrors
+ *  `SearchQuery.unquote` exactly (node_modules/@codemirror/search). Never
+ *  applied to a regexp search pattern — see `matchesInRange`. */
 function unquote(text: string): string {
   return text.replace(/\\([nrt\\])/g, (_, ch: string) =>
     ch === "n" ? "\n" : ch === "r" ? "\r" : ch === "t" ? "\t" : "\\",
@@ -303,18 +319,82 @@ function stringMatchesInRange(
  * against a real whole-document `replaceAll` in replacescope.test.ts,
  * where `range.to` is `docText.length` and CM6 unambiguously includes that
  * trailing zero-length match.
+ *
+ * A zero-length candidate is rejected outright when it sits at or before
+ * the end of the *last accepted* match (`lastAcceptedTo`, seeded by the
+ * caller — see `seedLastAcceptedTo` below and `matchesInRange`) — mirroring
+ * `RegExpCursor.next`'s own guard verbatim (node_modules/@codemirror/search:
+ * `(from < to || from > this.value.to)`, where `this.value` is the
+ * cursor's last accepted match and starts as `{from: -1, to: -1}`, hence
+ * this function's own default). Without this, a pattern like `a*` on doc
+ * `"a"` would (and, before this fix, did) find the real match `"a"` at
+ * `[0, 1)` *and* a separate, spurious zero-length match immediately after
+ * it at `[1, 1)` — CM6's own cursor never produces that second match once
+ * a non-empty match has already been accepted ending at the same position,
+ * so replacing both inserted the replacement text twice in a row where
+ * CM6 inserts it once (caught by replacescope.test.ts's exhaustive
+ * small-input sweep, PR #318). A non-zero-length candidate is never
+ * subject to this guard (`from < to` short-circuits it, matching CM6's
+ * `||`), and `lastAcceptedTo` only ever advances on a match this function
+ * actually keeps (pushes) — a candidate rejected for crossing `range.to`
+ * never updates it, so it can't suppress a later, in-range candidate
+ * purely because of an out-of-scope rejection.
+ *
+ * `seedLastAcceptedTo` lets the *same* guard span two touching ranges (see
+ * `matchesInRange`/`replaceAllInSelection`): scanning each range with an
+ * independent, always-`-1` `lastAcceptedTo` would let a range whose scan
+ * starts exactly where the *previous* range's last accepted match ended
+ * re-discover a "new" zero-length match at that shared point — the same
+ * class of spurious repeat as the `"a*"` example above, just straddling a
+ * range boundary instead of sitting inside one range. Passing the
+ * preceding touching range's own final `lastAcceptedTo` forward makes two
+ * touching ranges behave exactly like one continuous scan for this guard's
+ * purposes, without actually merging their scans (each still resets
+ * `lastIndex` independently — see the module header).
+ *
+ * `wholeWordTest`, when given (regexp mode's `wholeWord` — see
+ * `matchesInRange`), must be checked *before* a candidate updates
+ * `lastAcceptedTo`, not filtered out of the results afterwards: mirrors
+ * `RegExpCursor.next`'s own combined accept condition verbatim,
+ * `(from < to || from > this.value.to) && (!this.test || this.test(from,
+ * to, match))` — `this.value` (this function's `lastAcceptedTo`) only ever
+ * updates when *both* halves pass, so a candidate the word-boundary test
+ * rejects can never poison the guard against a later, genuinely-accepted
+ * zero-length match. Filtering `wholeWord` as a separate pass over
+ * already-accepted raw matches (an earlier version of this function did
+ * exactly that) gets this wrong: e.g. pattern `a|(?=b)` with `wholeWord` on doc
+ * `"ab"` — the `"a"` branch matches `[0, 1)` first and, filtered
+ * afterwards, would already have set `lastAcceptedTo = 1` by the time the
+ * word-boundary test later rejects it (both of `"a"`'s neighbors, `a` and
+ * `b`, are word characters, so it fails `isWordBoundaryOk`) — which then
+ * wrongly suppresses the very next candidate, the `(?=b)` lookahead's
+ * legitimate zero-length match at position 1, as a "spurious repeat" of a
+ * match that was never actually kept. Weaving the test into the same
+ * accept condition that updates `lastAcceptedTo` (as here) keeps this
+ * function's internal state exactly in sync with which matches it actually
+ * returns, the same invariant `wholeWord`-free scanning already relies on.
  */
-function regexMatchesInRange(docText: string, range: ReplaceRange, re: RegExp): FoundMatch[] {
+function regexMatchesInRange(
+  docText: string,
+  range: ReplaceRange,
+  re: RegExp,
+  seedLastAcceptedTo = -1,
+  wholeWordTest?: (from: number, to: number) => boolean,
+): FoundMatch[] {
   const matches: FoundMatch[] = [];
   re.lastIndex = range.from;
+  let lastAcceptedTo = seedLastAcceptedTo;
   for (;;) {
     const m = re.exec(docText);
     if (!m) break;
     const from = m.index;
     const to = from + m[0].length;
     if (from > range.to) break; // scanned past the range: nothing more here
-    if (to <= range.to) {
+    const isSpuriousZeroLengthRepeat = from === to && from <= lastAcceptedTo;
+    const passesWholeWord = !wholeWordTest || wholeWordTest(from, to);
+    if (to <= range.to && !isSpuriousZeroLengthRepeat && passesWholeWord) {
       matches.push({ from, to, matched: m[0], groups: Array.from(m) });
+      lastAcceptedTo = to;
     }
     re.lastIndex = to > from ? to : from + 1; // always advance, accepted or not
   }
@@ -345,19 +425,44 @@ function matchesInRange(
   range: ReplaceRange,
   query: ReplaceScopeQuery,
   compiledRegExp: RegExp | null,
+  // Only meaningful in regexp mode — see regexMatchesInRange's doc comment
+  // on `seedLastAcceptedTo`; plain-string mode has no zero-length matches
+  // to guard against (see stringMatchesInRange's "defense in depth" note),
+  // so this is simply ignored there.
+  seedLastAcceptedTo = -1,
 ): FoundMatch[] {
   if (query.regexp) {
     if (!compiledRegExp) return [];
-    const raw = regexMatchesInRange(docText, range, compiledRegExp);
-    // Regexp mode's wholeWord filter is a pure post-hoc filter (not woven
-    // into the scan the way string mode's is): @codemirror/search's own
-    // regexp cursor already advances lastIndex past a raw match
-    // unconditionally (see regexMatchesInRange's doc comment), so which raw
-    // matches are found never depends on whether wholeWord will later
-    // accept or reject any of them.
-    return query.wholeWord ? raw.filter((m) => isWordBoundaryOk(docText, m.from, m.to)) : raw;
+    // wholeWord must be woven into the scan itself, not filtered out of its
+    // results afterwards — see regexMatchesInRange's doc comment on
+    // `wholeWordTest` for why a post-hoc filter here can wrongly suppress a
+    // later, legitimate zero-length match (PR #318's third round of
+    // review). `re.lastIndex` still advances past a raw match
+    // unconditionally either way (see regexMatchesInRange's own doc
+    // comment on that point) — only the accept/`lastAcceptedTo` decision
+    // depends on this test, never the scan's continuation.
+    const wholeWordTest = query.wholeWord
+      ? (from: number, to: number) => isWordBoundaryOk(docText, from, to)
+      : undefined;
+    return regexMatchesInRange(docText, range, compiledRegExp, seedLastAcceptedTo, wholeWordTest);
   }
-  return stringMatchesInRange(docText, range, query.search, query.caseSensitive, !!query.wholeWord);
+  // Plain-string mode searches with the *unquoted* text (see `unquote` and
+  // the `ReplaceScopeQuery` doc comment): @codemirror/search's own
+  // `stringCursor` builds its `SearchCursor` from `spec.unquoted`, not
+  // `spec.search`, so a query like `\n` (two characters: backslash, "n")
+  // must search for an actual newline, not the two literal characters —
+  // matching the built-in search panel's find/highlight behavior, which
+  // otherwise silently disagrees with what "Replace (All) in Selection"
+  // replaces. `buildRegExp` above is unaffected: `new RegExp(query.search,
+  // ...)` intentionally keeps the raw pattern (`regexpCursor` builds its
+  // `RegExpCursor` from `spec.search`, not `spec.unquoted`).
+  return stringMatchesInRange(
+    docText,
+    range,
+    unquote(query.search),
+    query.caseSensitive,
+    !!query.wholeWord,
+  );
 }
 
 /**
@@ -403,40 +508,73 @@ function expandReplacement(query: ReplaceScopeQuery, match: FoundMatch): string 
 /**
  * Map one `docText` offset through `edits` (ascending, non-overlapping, in
  * *original*-`docText` coordinates — exactly the shape `edits` is built in
- * below) to its position after every edit has been applied. An edit whose
- * own `to` is at or before `pos` has already fully happened "to the left"
- * of `pos`, so its net length change (`insert.length - (to - from)`)
- * shifts `pos`; the first edit whose `to` is *after* `pos` — meaning `pos`
- * sits at or before that edit's own span — and every edit after it are
- * irrelevant (ascending + non-overlapping guarantees every later edit's
- * `to` is `> pos` too, so the loop can stop there).
+ * below) to its position after every edit has been applied.
  *
- * This is an "assoc -1" mapping at both ends of every edit: a `pos` sitting
- * exactly at some edit's `from` (about to be replaced) is NOT shifted by
- * that edit (`edit.to <= pos` is false there, since `edit.to > edit.from
- * == pos` for a non-empty match), so it stays logically "before" the
- * inserted text; a `pos` sitting exactly at some edit's `to` IS shifted
- * (the edit fully precedes it). Combined, a range whose `from` lands on a
- * match's start and whose `to` lands on that same match's end grows or
- * shrinks to bound the replacement text exactly — never excludes it,
- * never bleeds past it — which is what lets `ReplaceScopeResult.ranges`
- * describe "the selection, with its matches replaced" (see that field's
- * own doc comment).
+ * Every edit that is *not* a zero-length edit sitting exactly at `pos` maps
+ * unambiguously: an edit whose own `to` is at or before `pos`, and whose
+ * `from` is strictly before `pos` (automatically true once `to <= pos` for
+ * any non-empty edit, since `from < to`), has already fully happened "to
+ * the left" of `pos`, so its net length change (`insert.length - (to -
+ * from)`) shifts `pos` forward past it.
+ *
+ * A zero-length edit sitting exactly *at* `pos` (`edit.from === edit.to ===
+ * pos`) is the one genuinely ambiguous case, because it could belong to
+ * either side of `pos` — this is where `zeroLengthAtPosPrecedes` decides:
+ * `true` shifts `pos` past it (excluded, "already happened"); `false`
+ * leaves `pos` where it is (included, "still ahead"). Callers must pass
+ * `true` exactly when the edit is *not* owned by whichever
+ * `ReplaceScopeResult.ranges` boundary `pos` represents, and `false` when it
+ * *is* owned by it — see `mapRangeEndpoints`, the only caller, for how
+ * ownership is determined. Passing the wrong value for an edit a *different*
+ * range legitimately owns is exactly issue #300 "problem two" (a range
+ * excluding its own boundary match) and PR #318's second-round finding (two
+ * adjacent ranges each independently claiming the *same* shared-boundary
+ * insertion, producing overlapping mapped ranges) rolled into one: the fix
+ * for both is that this decision must be made per range, from actual
+ * ownership, never from a blanket "always inside" or "always outside" rule.
+ *
+ * The first edit that does not precede `pos`, and every edit after it, are
+ * irrelevant: ascending + non-overlapping guarantees every later edit is
+ * even further from `pos`, so the loop can stop there.
  */
-function mapPosition(pos: number, edits: readonly ReplaceEdit[]): number {
+function mapPosition(pos: number, edits: readonly ReplaceEdit[], zeroLengthAtPosPrecedes: boolean): number {
   let delta = 0;
   for (const edit of edits) {
-    if (edit.to > pos) break;
+    const isZeroLengthAtPos = edit.from === pos && edit.to === pos;
+    const precedesPos = isZeroLengthAtPos ? zeroLengthAtPosPrecedes : edit.from < pos && edit.to <= pos;
+    if (!precedesPos) break;
     delta += edit.insert.length - (edit.to - edit.from);
   }
   return pos + delta;
 }
 
-function shiftRanges(ranges: readonly ReplaceRange[], edits: readonly ReplaceEdit[]): ReplaceRange[] {
-  return ranges.map((range) => ({
-    from: mapPosition(range.from, edits),
-    to: mapPosition(range.to, edits),
-  }));
+/**
+ * Map one range's `from`/`to` through `edits`, given which of a possible
+ * zero-length match sitting exactly at each of its own two boundaries this
+ * *specific* range owns (see `mapPosition`'s doc comment on why ownership,
+ * not a blanket rule, is what must decide this). `ownsLeadingBoundary`/
+ * `ownsTrailingBoundary` are only ever consulted when an edit actually sits
+ * exactly at `range.from`/`range.to` respectively — irrelevant (and safe to
+ * pass `false`) otherwise, including for every non-zero-length match.
+ *
+ * `from` excludes ("shifts past") a zero-length edit at its own position
+ * when this range does *not* own it (`!ownsLeadingBoundary`) — it belongs to
+ * whatever earlier range does own it — and keeps it included when this range
+ * does. `to` is the mirror image: it includes ("shifts past") a zero-length
+ * edit at its own position only when this range *does* own it
+ * (`ownsTrailingBoundary`); otherwise that edit belongs to a later range and
+ * must not be swallowed into this one.
+ */
+function mapRangeEndpoints(
+  range: ReplaceRange,
+  edits: readonly ReplaceEdit[],
+  ownsLeadingBoundary: boolean,
+  ownsTrailingBoundary: boolean,
+): ReplaceRange {
+  return {
+    from: mapPosition(range.from, edits, !ownsLeadingBoundary),
+    to: mapPosition(range.to, edits, ownsTrailingBoundary),
+  };
 }
 
 /**
@@ -462,6 +600,55 @@ function shiftRanges(ranges: readonly ReplaceRange[], edits: readonly ReplaceEdi
  * always false for one — see `buildRegExp`'s doc comment) or, in regexp
  * mode, a syntactically invalid pattern both produce zero edits, the same
  * "nothing to do" outcome CM6 itself has for either case.
+ *
+ * A *zero-length* regexp match sitting exactly on the shared boundary
+ * between two touching ranges (e.g. `[0, 1]` and `[1, 2]`, pattern `x*`
+ * matching at position 1) would otherwise be found twice: `regexMatchesInRange`
+ * legitimately includes a match at a range's own `to` (see its doc
+ * comment), and the next range's independent scan (see the module header)
+ * starts right back at that same position and would find the identical
+ * match again. This is prevented at the source, not by de-duping
+ * afterwards: `regexMatchesInRange`'s own `seedLastAcceptedTo` guard (the
+ * same one that stops a single range from re-finding a spurious
+ * zero-length match immediately after a real one — see that function's
+ * doc comment) is seeded, for a range whose `from` exactly equals the
+ * immediately preceding non-empty range's `to`, with that preceding
+ * range's own final accepted-match end. Two touching ranges scanned this
+ * way behave exactly like one continuous scan for this guard's purposes,
+ * so the later range's scan simply never produces the duplicate candidate
+ * in the first place — nothing to filter out after the fact.
+ *
+ * Crucially, the earlier range does not always *find* a match at its own
+ * `to` in the first place — a longer candidate starting before the
+ * boundary can cross it and get rejected outright, consuming the scan
+ * position without ever producing (or seeding) anything there (see
+ * `regexMatchesInRange`'s doc comment on `re.lastIndex` advancing past a
+ * rejected candidate too). For example, pattern `ab|(?=b)` on doc `"ab"`
+ * with ranges `[0, 1]` and `[1, 2]`: the first range's only raw candidate
+ * is `"ab"` itself (spanning `[0, 2)`), which crosses `range.to` and is
+ * rejected — the first range emits *nothing*, so the seed it passes
+ * forward is the default `-1` — while the second range's scan legitimately
+ * finds the `(?=b)` lookahead's empty match at position 1, unaffected by a
+ * seed that never claimed that position. An earlier version of this code
+ * instead de-duped `edits` after the fact, keyed only on position, which
+ * had to be corrected once to stop discarding this exact genuine match
+ * (see git history) — seeding the scan itself instead of filtering its
+ * output afterwards is what makes the two mechanisms (this one, and
+ * `regexMatchesInRange`'s within-one-range guard) provably the same rule
+ * applied consistently, rather than two separate rules that can disagree.
+ *
+ * That same source-of-truth — which range's own scan actually accepted a
+ * match at its own `from`/`to` — also decides which range's *mapped
+ * `ranges` entry* (`mapRangeEndpoints`, below) is allowed to grow around a
+ * zero-length match sitting at that boundary (PR #318's second round of
+ * review): a range whose own scan didn't accept a match at its own `from`
+ * must not have its mapped `from` shift around one anyway, or two adjacent
+ * ranges can each end up claiming the same shared insertion in their
+ * mapped output, producing overlapping ranges (e.g. `[0, 3]` and `[2, 5]`
+ * for the `x*` example above, instead of the correct touching-not-overlapping
+ * `[0, 3]` and `[3, 5]`) — silently merged back into one selection by
+ * `EditorSelection.create` on the binding side, losing the multi-range
+ * scope the caller asked for.
  */
 export function replaceAllInSelection(
   docText: string,
@@ -471,13 +658,40 @@ export function replaceAllInSelection(
   if (query.search === "") return { edits: [], ranges: [...ranges] };
   const compiled = query.regexp ? buildRegExp(query) : null;
   const edits: ReplaceEdit[] = [];
+  // Per-range ownership of a match sitting exactly at that range's own
+  // `from`/`to` (see this function's doc comment and `mapRangeEndpoints`)
+  // — computed directly from what each range's own scan actually accepted,
+  // never inferred separately afterwards.
+  const ownership: { ownsLeadingBoundary: boolean; ownsTrailingBoundary: boolean }[] = [];
+  // The immediately preceding non-empty range's own `to`, and the
+  // zero-length-guard seed to carry forward into the next range's scan
+  // when it touches that `to` exactly — see this function's doc comment.
+  let previousRangeTo: number | null = null;
+  let previousRangeLastAcceptedTo = -1;
   for (const range of ranges) {
-    if (range.from === range.to) continue;
-    for (const match of matchesInRange(docText, range, query, compiled)) {
+    if (range.from === range.to) {
+      ownership.push({ ownsLeadingBoundary: false, ownsTrailingBoundary: false });
+      continue;
+    }
+    const seed = range.from === previousRangeTo ? previousRangeLastAcceptedTo : -1;
+    const matches = matchesInRange(docText, range, query, compiled, seed);
+    for (const match of matches) {
       edits.push({ from: match.from, to: match.to, insert: expandReplacement(query, match) });
     }
+    const firstMatch = matches[0];
+    const lastMatch = matches[matches.length - 1];
+    ownership.push({
+      ownsLeadingBoundary: firstMatch !== undefined && firstMatch.from === range.from,
+      ownsTrailingBoundary:
+        lastMatch !== undefined && lastMatch.from === lastMatch.to && lastMatch.to === range.to,
+    });
+    previousRangeTo = range.to;
+    previousRangeLastAcceptedTo = lastMatch?.to ?? -1;
   }
-  return { edits, ranges: shiftRanges(ranges, edits) };
+  const mappedRanges = ranges.map((range, i) =>
+    mapRangeEndpoints(range, edits, ownership[i].ownsLeadingBoundary, ownership[i].ownsTrailingBoundary),
+  );
+  return { edits, ranges: mappedRanges };
 }
 
 /**
@@ -496,6 +710,32 @@ export function replaceAllInSelection(
  * Same empty-range and empty/invalid-query no-op rules as
  * `replaceAllInSelection` above; when no range contains any match at all,
  * this returns zero edits and `ranges` unchanged.
+ *
+ * A pattern that matches zero-length at *every* position (e.g. `x*` with
+ * no literal `x` anywhere in the document) is a known corner case where
+ * "steps through matches one at a time" does not mean "advances to a new
+ * offset each call": `mapRangeEndpoints`'s ownership-aware mapping
+ * deliberately keeps a zero-length match's own position inside the range
+ * that owns it (the one whose scan actually found it) rather than shifting
+ * past it, so a range whose only available match sits at its own start
+ * re-finds that same offset on the next call too, repeatedly inserting
+ * there. This is not a divergence introduced by this module — driving
+ * CM6's own live `replaceNext` command repeatedly against the same
+ * document and query produces the identical "stuck at the same offset"
+ * behavior (`RegExpQuery.nextMatch` builds a fresh `RegExpCursor` per call,
+ * whose zero-length-match dedup state never carries over — verified in
+ * replacescope.test.ts), so matching it is what this function's own "the
+ * same way @codemirror/search's own... Replace button steps through the
+ * document" contract (above) requires.
+ *
+ * Exactly one range ever owns the single edit this function produces (the
+ * one range whose own `matchesInRange` call found `first`) — every other
+ * range's mapped `from`/`to` must treat a zero-length edit that happens to
+ * sit at its own boundary as *not* its own (see `mapRangeEndpoints`), the
+ * same ownership discipline `replaceAllInSelection` uses for the shared
+ * boundary between two ranges (PR #318's second round of review), so an
+ * untouched neighboring range never grows to swallow a match that was
+ * actually replaced in a different range.
  */
 export function replaceInSelection(
   docText: string,
@@ -504,14 +744,24 @@ export function replaceInSelection(
 ): ReplaceScopeResult {
   if (query.search === "") return { edits: [], ranges: [...ranges] };
   const compiled = query.regexp ? buildRegExp(query) : null;
-  for (const range of ranges) {
+  for (let i = 0; i < ranges.length; i++) {
+    const range = ranges[i];
     if (range.from === range.to) continue;
     const [first] = matchesInRange(docText, range, query, compiled);
     if (!first) continue;
     const edits: ReplaceEdit[] = [
       { from: first.from, to: first.to, insert: expandReplacement(query, first) },
     ];
-    return { edits, ranges: shiftRanges(ranges, edits) };
+    const isZeroLength = first.from === first.to;
+    const mappedRanges = ranges.map((r, j) =>
+      mapRangeEndpoints(
+        r,
+        edits,
+        /* ownsLeadingBoundary */ j === i && isZeroLength && first.from === r.from,
+        /* ownsTrailingBoundary */ j === i && isZeroLength && first.to === r.to,
+      ),
+    );
+    return { edits, ranges: mappedRanges };
   }
   return { edits: [], ranges: [...ranges] };
 }

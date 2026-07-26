@@ -1425,6 +1425,12 @@ export function createEditor(
     const { ranges: liveRanges, mainIndex } = view.state.selection;
     const ranges: ReplaceRange[] = liveRanges.map((r) => ({ from: r.from, to: r.to }));
     const result = core(view.state.doc.toString(), ranges, {
+      // Deliberately `query.search` (raw), never `query.unquoted`: the core
+      // does its own mode-dependent unquoting (see replacescope.ts's
+      // `ReplaceScopeQuery`/`matchesInRange` doc comments) — plain-string
+      // mode needs the unquoted text, but regexp mode needs the raw pattern
+      // (`\d`, `\.`, etc. must reach `RegExp` unescaped). Passing
+      // `query.unquoted` here would silently break every regexp search.
       search: query.search,
       replace: query.replace,
       regexp: query.regexp,
