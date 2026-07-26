@@ -107,24 +107,39 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// Hard cap on a single forwarded message. Bounds the read in
-/// [`read_forwarded_argv_cwd`] against a misbehaving or hostile peer —
-/// nothing this app forwards (a cwd and a handful of file paths) should
-/// ever approach this, so hitting the cap just means the message is
-/// truncated/dropped, not that legitimate use is constrained.
-const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+/// Hard cap on a single forwarded message (the 8-byte length-prefix
+/// framing in [`read_forwarded_argv_cwd`]/[`build_forward_payload_from`]
+/// means this can be generous without any truncation risk — see those
+/// functions' doc comments — so it's sized for "someone opened an
+/// enormous number of files at once", not "the absolute minimum a cwd and
+/// a couple of paths need").
+const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
 /// How many times [`connect_and_forward`] retries connecting to the
-/// current lock holder's socket before giving up. Covers the brief window
-/// between a process winning the lock and finishing its own bind — see
-/// [`acquire_or_forward`]'s doc comment.
+/// current lock holder's socket before giving up on *this* round — see
+/// [`acquire_or_forward`]'s doc comment for what "this round" means.
+/// Covers the brief window between a process winning the lock and
+/// finishing its own bind.
 const SECONDARY_CONNECT_ATTEMPTS: u32 = 10;
-/// Delay between [`connect_and_forward`] retries. Ten attempts at this
-/// delay bound the total wait to half a second — long enough to ride out
-/// scheduling jitter between winning the lock and finishing the bind,
-/// short enough that a genuinely wedged primary doesn't visibly hang a
-/// second launch.
+/// Delay between [`connect_and_forward`] retries within a round. Ten
+/// attempts at this delay bound one round's connect attempts to half a
+/// second — long enough to ride out scheduling jitter between winning the
+/// lock and finishing the bind, short enough that a genuinely wedged
+/// primary doesn't visibly hang a second launch for long before
+/// [`acquire_or_forward`] tries the lock itself again.
 const SECONDARY_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+/// How many times [`acquire_or_forward`] retries the *lock itself* after a
+/// round's connect attempts are exhausted (see that function's doc
+/// comment for the exit-race this covers) before giving up and failing
+/// open. Four rounds, each preceded (after the first) by a growing delay,
+/// is enough to ride out an ordinary process-exit teardown without
+/// visibly hanging a launch for long if something is genuinely wedged.
+const LOCK_RETRY_ROUNDS: u32 = 4;
+/// Delay before the second round; doubles each round after that (so:
+/// 100ms, 200ms, 400ms between the four rounds) — see
+/// [`acquire_or_forward`]'s doc comment.
+const LOCK_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
 
 /// Set once this process becomes the primary instance, so
 /// [`cleanup_if_primary`] only ever unlinks a socket this process itself
@@ -207,8 +222,26 @@ fn lock_path(identifier: &str) -> PathBuf {
 /// A process that loses the lock race connects to the socket to forward
 /// its argv/cwd instead. Winning the lock and finishing the socket rebind
 /// aren't quite the same instant, so [`connect_and_forward`] retries a
-/// bounded number of times with a short delay rather than needing the
-/// winner to already be listening on the very first attempt.
+/// bounded number of times with a short delay within one "round" rather
+/// than needing the winner to already be listening on the very first
+/// attempt.
+///
+/// Retries the whole round (lock *and* connect) up to [`LOCK_RETRY_ROUNDS`]
+/// times, growing the delay between rounds. This covers a second exit
+/// race, caught in PR #315's sixth review round: `cleanup_if_primary`
+/// unlinks the socket *before* the process holding it actually terminates
+/// (which is what releases the lock) — a launch landing in that narrow
+/// window would see the lock as held (`WouldBlock`) but find no socket to
+/// connect to at all, and every one of [`connect_and_forward`]'s retries
+/// would fail for that reason alone, not because the winner is merely
+/// slow to bind. Treating that as permanent and failing open immediately
+/// would be worse than the bug this whole module exists to fix: this
+/// process would carry on as a second, *permanently unprotected* instance
+/// even after the old one fully exits and its lock frees up — nothing
+/// would ever try to reacquire it. Looping back to `try_lock()` again
+/// instead means the very next round succeeds as soon as the old process
+/// actually finishes exiting, which (being an ordinary process exit, not
+/// a wedged one) should happen well within a few hundred milliseconds.
 pub(crate) fn acquire_or_forward(identifier: &str) -> SingleInstanceOutcome {
     let lock_file = match OpenOptions::new()
         .create(true)
@@ -227,51 +260,76 @@ pub(crate) fn acquire_or_forward(identifier: &str) -> SingleInstanceOutcome {
         }
     };
 
-    match lock_file.try_lock() {
-        Ok(()) => {
-            let socket = socket_path(identifier);
-            // Safe to unconditionally clear: only the lock holder is ever
-            // allowed to touch the socket, and we just established that's
-            // us. `remove_file` failing (e.g. the path didn't exist) is
-            // expected and fine — there was simply nothing to clear.
-            let _ = std::fs::remove_file(&socket);
-            match UnixListener::bind(&socket) {
-                Ok(listener) => {
-                    IS_PRIMARY.store(true, Ordering::SeqCst);
-                    SingleInstanceOutcome::Primary {
-                        lock: lock_file,
-                        listener,
+    let socket = socket_path(identifier);
+    let mut retry_delay = LOCK_RETRY_INITIAL_DELAY;
+
+    for round in 0..LOCK_RETRY_ROUNDS {
+        match lock_file.try_lock() {
+            Ok(()) => {
+                // Safe to unconditionally clear: only the lock holder is
+                // ever allowed to touch the socket, and we just
+                // established that's us. `remove_file` failing (e.g. the
+                // path didn't exist) is expected and fine — there was
+                // simply nothing to clear.
+                let _ = std::fs::remove_file(&socket);
+                return match UnixListener::bind(&socket) {
+                    Ok(listener) => {
+                        IS_PRIMARY.store(true, Ordering::SeqCst);
+                        SingleInstanceOutcome::Primary {
+                            lock: lock_file,
+                            listener,
+                        }
+                    }
+                    Err(e) => unavailable(&format!(
+                        "won the single-instance lock but could not bind its socket: {e}"
+                    )),
+                };
+            }
+            Err(TryLockError::WouldBlock) => {
+                let Some(payload) = build_this_process_forward_payload() else {
+                    // Too large to send safely (see
+                    // `build_forward_payload_from`'s doc comment) — no
+                    // amount of retrying changes that, so fail open right
+                    // away rather than looping pointlessly.
+                    return unavailable(&format!(
+                        "this process's argv/cwd is too large to forward safely (over \
+                         {MAX_MESSAGE_BYTES} bytes)"
+                    ));
+                };
+                match connect_and_forward(&socket, &payload) {
+                    Ok(()) => return SingleInstanceOutcome::ForwardedToRunning,
+                    Err(e) => {
+                        if round + 1 == LOCK_RETRY_ROUNDS {
+                            return unavailable(&format!(
+                                "the single-instance lock is held but its socket was \
+                                 unreachable after {LOCK_RETRY_ROUNDS} rounds (last error: {e})"
+                            ));
+                        }
+                        std::thread::sleep(retry_delay);
+                        retry_delay *= 2;
                     }
                 }
-                Err(e) => unavailable(&format!(
-                    "won the single-instance lock but could not bind its socket: {e}"
-                )),
             }
-        }
-        Err(TryLockError::WouldBlock) => match connect_and_forward(&socket_path(identifier)) {
-            Ok(()) => SingleInstanceOutcome::ForwardedToRunning,
-            Err(e) => unavailable(&format!(
-                "lost the single-instance lock to another process but could not reach its \
-                 socket after {SECONDARY_CONNECT_ATTEMPTS} attempts: {e}"
-            )),
-        },
-        Err(TryLockError::Error(e)) => {
-            unavailable(&format!("could not acquire the single-instance lock: {e}"))
+            Err(TryLockError::Error(e)) => {
+                return unavailable(&format!("could not acquire the single-instance lock: {e}"));
+            }
         }
     }
+    unreachable!("the loop above always returns on or before its last round")
 }
 
-/// Connect to the current lock holder's socket and forward this
-/// process's argv/cwd, retrying with a short delay if the holder hasn't
-/// finished its bind yet (see [`acquire_or_forward`]'s doc comment).
-fn connect_and_forward(path: &std::path::Path) -> std::io::Result<()> {
+/// Connect to the current lock holder's socket and forward `payload`
+/// (built by [`build_forward_payload_from`]), retrying with a short delay
+/// if the holder hasn't finished its bind yet (see
+/// [`acquire_or_forward`]'s doc comment). A write failure partway through
+/// is treated the same as a connect failure — worth retrying, since the
+/// peer may simply not have been ready yet — rather than silently
+/// swallowed as the previous, best-effort version of this function did.
+fn connect_and_forward(path: &std::path::Path, payload: &[u8]) -> std::io::Result<()> {
     let mut last_err = None;
     for attempt in 0..SECONDARY_CONNECT_ATTEMPTS {
-        match UnixStream::connect(path) {
-            Ok(mut stream) => {
-                forward_this_process(&mut stream);
-                return Ok(());
-            }
+        match UnixStream::connect(path).and_then(|mut stream| send_framed(&mut stream, payload)) {
+            Ok(()) => return Ok(()),
             Err(e) => {
                 last_err = Some(e);
                 if attempt + 1 < SECONDARY_CONNECT_ATTEMPTS {
@@ -292,36 +350,93 @@ fn unavailable(reason: &str) -> SingleInstanceOutcome {
     SingleInstanceOutcome::Unavailable
 }
 
-/// Send this process's own argv/cwd to the primary instance. Wire format
-/// matches `tauri-plugin-single-instance`'s own macOS implementation
-/// (`cwd`, then `"\0\0"`, then NUL-joined argv) — no reason to invent a
-/// different one. Best-effort: if the running instance goes away
-/// mid-write there's nothing more useful to do than let this process exit
-/// anyway, which the caller does immediately after this returns.
-fn forward_this_process(stream: &mut UnixStream) {
+/// Builds the wire payload (`cwd`, then `"\0\0"`, then NUL-joined `args`
+/// — matching `tauri-plugin-single-instance`'s own macOS implementation,
+/// no reason to invent a different inner format) from explicit values, so
+/// it's testable without depending on this test process's own real
+/// `std::env::args()`/`current_dir()`. `None` means the payload would
+/// exceed `MAX_MESSAGE_BYTES`: PR #315's sixth review round found that
+/// the previous version silently truncated an oversized message instead
+/// of rejecting it, parsing whatever cwd/prefix-of-args happened to fit
+/// and dropping the rest with no error at all. Sending nothing and
+/// letting the caller fail open (see [`acquire_or_forward`]) is strictly
+/// better than that: this launch becomes its own extra, unprotected
+/// instance, but at least it still opens every file it was asked to.
+fn build_forward_payload_from(cwd: &str, args: &[String]) -> Option<Vec<u8>> {
+    let joined_args = args.join("\0");
+    let mut payload = Vec::with_capacity(cwd.len() + 2 + joined_args.len());
+    payload.extend_from_slice(cwd.as_bytes());
+    payload.extend_from_slice(b"\0\0");
+    payload.extend_from_slice(joined_args.as_bytes());
+    (payload.len() <= MAX_MESSAGE_BYTES).then_some(payload)
+}
+
+/// This process's own cwd/argv, wrapped for forwarding — see
+/// [`build_forward_payload_from`]'s doc comment for the format and the
+/// `None` case.
+fn build_this_process_forward_payload() -> Option<Vec<u8>> {
     let cwd = std::env::current_dir()
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    let args = std::env::args().collect::<Vec<String>>().join("\0");
-    let _ = stream.write_all(cwd.as_bytes());
-    let _ = stream.write_all(b"\0\0");
-    let _ = stream.write_all(args.as_bytes());
+    let args: Vec<String> = std::env::args().collect();
+    build_forward_payload_from(&cwd, &args)
+}
+
+/// Writes `payload` behind an explicit 8-byte little-endian length
+/// prefix. Paired with [`read_forwarded_argv_cwd`]'s framed read — see
+/// that function's doc comment for why a prefix, rather than "read until
+/// EOF or a byte cap", is what makes an oversized message reliably
+/// detectable instead of silently truncated.
+fn send_framed(stream: &mut UnixStream, payload: &[u8]) -> std::io::Result<()> {
+    stream.write_all(&(payload.len() as u64).to_le_bytes())?;
+    stream.write_all(payload)
 }
 
 /// Parse one forwarded message off an accepted connection. Returns
-/// `None` on any I/O error, timeout, or malformed message — the caller
-/// (the accept loop) just moves on to the next connection either way, the
-/// same as a dropped/ignored packet would be.
-fn read_forwarded_argv_cwd(stream: UnixStream) -> Option<(String, Vec<String>)> {
+/// `None` on any I/O error, timeout, oversized declared length, or
+/// malformed message — the caller (the accept loop) just moves on to the
+/// next connection either way, the same as a dropped/ignored packet would
+/// be.
+///
+/// Reads an explicit 8-byte length prefix first, then reads *exactly*
+/// that many bytes with `read_exact` — never more, never fewer, and never
+/// treats "the peer stopped sending early" as "the message is exactly
+/// this long". The previous version instead capped a single
+/// `Read::take(..).read_to_end(..)` at `MAX_MESSAGE_BYTES` and could not
+/// tell "the peer sent fewer bytes than that and is done" apart from "the
+/// peer sent more and got cut off mid-message" — a genuinely oversized
+/// message (e.g. opening a very large number of files at once) was
+/// silently parsed as whatever truncated prefix fit, quietly dropping
+/// every path past the cutoff with no error at all (caught in PR #315's
+/// sixth review round). Here, a declared length over `MAX_MESSAGE_BYTES`
+/// is rejected outright, before ever attempting to read a body that size
+/// — both bounding memory against a hostile/broken peer and, unlike
+/// silently truncating, actually surfacing the rejection (via the caller
+/// logging it, see `spawn_accept_loop`) instead of pretending a partial
+/// message was the whole thing.
+fn read_forwarded_argv_cwd(mut stream: UnixStream) -> Option<(String, Vec<String>)> {
     // A slow or hostile peer must not be able to wedge the accept loop
     // open indefinitely.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let mut buf = Vec::new();
-    stream
-        .take(MAX_MESSAGE_BYTES as u64)
-        .read_to_end(&mut buf)
-        .ok()?;
+
+    let mut len_buf = [0u8; 8];
+    stream.read_exact(&mut len_buf).ok()?;
+    let len = u64::from_le_bytes(len_buf);
+    if len > MAX_MESSAGE_BYTES as u64 {
+        eprintln!(
+            "singleinstance_macos: rejecting a forwarded message declaring {len} bytes, over \
+             the {MAX_MESSAGE_BYTES}-byte cap — refusing to parse a partial prefix of it"
+        );
+        return None;
+    }
+
+    // `len` is already checked against `MAX_MESSAGE_BYTES` (a modest,
+    // fixed constant) above, so this allocation is bounded regardless of
+    // what a hostile peer's length prefix claims.
+    let mut buf = vec![0u8; len as usize];
+    stream.read_exact(&mut buf).ok()?;
+
     let text = String::from_utf8_lossy(&buf);
     let (cwd, args) = text.split_once("\0\0")?;
     Some((
@@ -512,13 +627,15 @@ mod tests {
         let _ = std::fs::remove_file(&socket);
     }
 
-    /// A peer sending far more than `MAX_MESSAGE_BYTES` must not make the
-    /// primary side read unboundedly — reaching the assertions below at
-    /// all (instead of the test hanging) is most of the proof; the size
-    /// check documents the expected shape of whatever *is* parsed.
+    /// Regression test for PR #315's sixth review round: a message
+    /// declaring a length over `MAX_MESSAGE_BYTES` must be rejected
+    /// outright, from the length prefix alone, without ever attempting to
+    /// read a body that size — proven here by never sending that body at
+    /// all (a hostile/broken peer might not either) and still getting a
+    /// prompt `None`, not a hang waiting for bytes that will never come.
     #[test]
-    fn oversized_forwarded_message_is_bounded_not_unbounded_read() {
-        let identifier = "com.mojidori.test.oversize";
+    fn read_forwarded_argv_cwd_rejects_a_declared_length_over_the_cap() {
+        let identifier = "com.mojidori.test.oversize-header";
         let path = socket_path(identifier);
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).unwrap();
@@ -530,25 +647,146 @@ mod tests {
 
         let mut stream = UnixStream::connect(&path).unwrap();
         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-        let oversized = vec![b'a'; MAX_MESSAGE_BYTES * 4];
-        // Ignored on purpose: once the reader's `.take(cap)` is satisfied
-        // and the primary side drops the stream, this write can legally
-        // fail with a broken pipe / connection reset — that failure is
-        // itself evidence the read didn't keep draining unboundedly.
-        let _ = stream.write_all(&oversized);
+        let declared_len = MAX_MESSAGE_BYTES as u64 + 1;
+        stream.write_all(&declared_len.to_le_bytes()).unwrap();
+        // No body follows at all — a real oversized sender would still
+        // send one, but rejection must happen before that would even
+        // matter, which not sending it here proves directly.
         drop(stream);
 
         let result = accept_thread
             .join()
-            .expect("accept thread must finish promptly, proving the read was bounded");
-        if let Some((_, args)) = &result {
-            let total: usize = args.iter().map(String::len).sum();
-            assert!(
-                total <= MAX_MESSAGE_BYTES,
-                "must never parse more than the cap's worth of data"
-            );
-        }
+            .expect("must return promptly on a declared-oversized length, not hang");
+        assert!(
+            result.is_none(),
+            "a declared length over the cap must be rejected outright"
+        );
 
         let _ = std::fs::remove_file(socket_path(identifier));
+    }
+
+    /// A message whose *actual* size lands exactly on `MAX_MESSAGE_BYTES`
+    /// — the boundary the cap check in both
+    /// [`read_forwarded_argv_cwd`] and [`build_forward_payload_from`]
+    /// must treat as still acceptable, not off-by-one reject.
+    #[test]
+    fn read_forwarded_argv_cwd_accepts_a_message_exactly_at_the_cap() {
+        let identifier = "com.mojidori.test.exact-cap";
+        let path = socket_path(identifier);
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let cwd = "/exact-cap-test";
+        let filler_len = MAX_MESSAGE_BYTES - cwd.len() - 2;
+        let filler_arg = "a".repeat(filler_len);
+        let payload = build_forward_payload_from(cwd, std::slice::from_ref(&filler_arg)).expect(
+            "a payload built to land exactly on the cap must not be rejected by the \
+             sender-side check either",
+        );
+        assert_eq!(payload.len(), MAX_MESSAGE_BYTES);
+
+        let accept_thread = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept should succeed");
+            read_forwarded_argv_cwd(stream)
+        });
+
+        let mut stream = UnixStream::connect(&path).unwrap();
+        send_framed(&mut stream, &payload).unwrap();
+        drop(stream);
+
+        let (received_cwd, received_args) = accept_thread
+            .join()
+            .unwrap()
+            .expect("a message exactly at the cap must parse successfully, not be rejected");
+        assert_eq!(received_cwd, cwd);
+        assert_eq!(received_args, vec![filler_arg]);
+
+        let _ = std::fs::remove_file(socket_path(identifier));
+    }
+
+    /// Sender-side counterpart of the two tests above: a payload that
+    /// would land exactly on the cap must be built and sendable, and one
+    /// byte over must be refused (`None`) rather than sent and silently
+    /// truncated on the receiving end — the core fix for PR #315's sixth
+    /// review round. Uses `build_forward_payload_from` directly (rather
+    /// than `build_this_process_forward_payload`) so this is a pure,
+    /// deterministic check against explicit inputs, independent of this
+    /// test process's own real argv/cwd.
+    #[test]
+    fn build_forward_payload_from_accepts_exactly_at_cap_and_rejects_one_byte_over() {
+        let cwd = "/cap-test";
+        let base_len = cwd.len() + 2; // the "\0\0" separator
+
+        let at_cap_arg = "b".repeat(MAX_MESSAGE_BYTES - base_len);
+        let payload = build_forward_payload_from(cwd, &[at_cap_arg])
+            .expect("a payload landing exactly on the cap must be accepted");
+        assert_eq!(payload.len(), MAX_MESSAGE_BYTES);
+
+        let one_over_arg = "b".repeat(MAX_MESSAGE_BYTES - base_len + 1);
+        assert!(
+            build_forward_payload_from(cwd, &[one_over_arg]).is_none(),
+            "a payload one byte over the cap must be refused, not sent and silently truncated"
+        );
+    }
+
+    /// Regression test for PR #315's sixth review round: a launch landing
+    /// in the window where the lock is held but its socket has already
+    /// been unlinked (simulating `cleanup_if_primary` having run just
+    /// before the old process actually terminates and releases the lock)
+    /// must retry the *lock* once the socket proves unreachable — not
+    /// fail open permanently the first time `connect_and_forward` runs
+    /// out of attempts. Releasing the simulated holder partway through
+    /// proves `acquire_or_forward` is still actively retrying rather than
+    /// having already given up.
+    #[test]
+    fn retries_the_lock_after_its_socket_is_unreachable_and_recovers_once_released() {
+        let identifier = "com.mojidori.test.exit-race";
+        let lock = lock_path(identifier);
+        let socket = socket_path(identifier);
+        let _ = std::fs::remove_file(&lock);
+        let _ = std::fs::remove_file(&socket);
+
+        // Simulate the exit race directly: hold the lock but never bind
+        // any socket at all, so every connect attempt within a round
+        // fails immediately and deterministically (no timing dependency
+        // on a real bind/unbind sequence needed to reproduce it).
+        let holder = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock)
+            .unwrap();
+        holder.try_lock().unwrap();
+
+        let released = std::sync::Arc::new(AtomicBool::new(false));
+        let released_writer = std::sync::Arc::clone(&released);
+        let releaser = std::thread::spawn(move || {
+            // Well within the first round's ~500ms of connect retries, so
+            // by the time the second round's try_lock() runs, the lock is
+            // already free — see this test's doc comment for why the
+            // exact timing isn't delicate here.
+            std::thread::sleep(Duration::from_millis(50));
+            drop(holder);
+            released_writer.store(true, Ordering::SeqCst);
+        });
+
+        let outcome = acquire_or_forward(identifier);
+        releaser.join().unwrap();
+
+        assert!(
+            released.load(Ordering::SeqCst),
+            "the test setup itself is broken if the lock was somehow still held when \
+             acquire_or_forward returned"
+        );
+        match outcome {
+            SingleInstanceOutcome::Primary { lock, .. } => drop(lock),
+            other => panic!(
+                "must retry past a temporarily unreachable socket and become primary once \
+                 the lock is actually released, got {other:?} instead"
+            ),
+        }
+
+        let _ = std::fs::remove_file(&lock);
+        let _ = std::fs::remove_file(&socket);
     }
 }
