@@ -2187,6 +2187,31 @@ interface SaveFlowResult {
   stale: boolean;
 }
 
+/**
+ * Best-effort save-failed notification (issue #325 review, follow-up P1):
+ * `messageDialog` uses the same dialog plugin/IPC channel that can be
+ * exactly why runSaveFlow is failing in the first place (the whole plugin
+ * unavailable, not just the save dialog specifically) — awaiting it
+ * unguarded in a catch block that exists specifically to keep runSaveFlow
+ * from ever rejecting would let *that* rejection escape instead, silently
+ * reintroducing the same three symptoms issue #325 fixed (no save-failed
+ * UX shown, a queued/coalesced caller left pending forever, Save with
+ * Encoding's speculative state never rolled back) — just one layer
+ * further in. Every caller of this function is already inside a catch
+ * block with nothing left to fall back to for showing the user anything
+ * further, so a failure here is logged, not surfaced a second way.
+ */
+async function reportSaveFailureBestEffort(error: unknown): Promise<void> {
+  try {
+    await messageDialog(String(error), {
+      title: t("dialog.saveFailedTitle"),
+      kind: "error",
+    });
+  } catch (dialogError) {
+    console.error("save-failed dialog itself failed to show:", dialogError);
+  }
+}
+
 async function saveFlow(saveAs: boolean): Promise<SaveFlowResult> {
   const doc = tabs.active;
   if (!doc) return { written: false, stale: false };
@@ -2243,10 +2268,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
     try {
       path = await saveDialog({ defaultPath: path ?? doc.title });
     } catch (error) {
-      await messageDialog(String(error), {
-        title: t("dialog.saveFailedTitle"),
-        kind: "error",
-      });
+      await reportSaveFailureBestEffort(error);
       return { written: false, stale: false };
     }
     if (path === null) return { written: false, stale: false };
@@ -2471,10 +2493,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
     persistSession();
     return { written: true, stale: false };
   } catch (error) {
-    await messageDialog(String(error), {
-      title: t("dialog.saveFailedTitle"),
-      kind: "error",
-    });
+    await reportSaveFailureBestEffort(error);
     // observedStale, not a hardcoded false: see this function's own
     // opening doc comment on why an exception during the "overwrite"
     // retry (or anything else after the stale gate already fired this

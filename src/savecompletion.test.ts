@@ -606,19 +606,31 @@ describe("runSaveFlow catch preserves already-observed staleness (PR #319 third-
 // handles it correctly — issue #325 needed no new rollback logic, only
 // the never-reject contract this scenario now verifies end to end.
 describe("issue #325 — untitled Save with Encoding: a rejecting saveDialog still rolls back the speculative state (failing-test-first)", () => {
-  /** Mirrors runSaveFlow's own saveDialog try/catch (this file's
-   *  savemutex.test.ts has the full doc comment on why it's a dedicated
-   *  try/catch rather than folded into a single outer one). Reused here,
-   *  not imported, matching every other sim in this file's own "kept in
-   *  sync by hand" convention (setLineEndingSim's own doc comment). */
+  /** Mirrors runSaveFlow's own saveDialog try/catch, including the Codex
+   *  P1 follow-up (this file's savemutex.test.ts has the full doc comment
+   *  on both: why a dedicated try/catch rather than folded into a single
+   *  outer one, and why the error dialog it shows on rejection needs its
+   *  own best-effort wrapping too — same plugin/IPC channel that may be
+   *  exactly why saveDialog itself just failed). `showErrorDialog` defaults
+   *  to a no-op success so the common-case call below is unaffected.
+   *  Reused here, not imported, matching every other sim in this file's own
+   *  "kept in sync by hand" convention (setLineEndingSim's own doc
+   *  comment). */
   async function runSaveFlowDialogSim(
     path: string | null,
     saveDialog: () => Promise<string | null>,
+    showErrorDialog: () => Promise<void> = () => Promise.resolve(),
   ): Promise<{ result: { written: boolean; stale: boolean }; errorShown: boolean }> {
     if (path === null) {
       try {
         path = await saveDialog();
       } catch {
+        try {
+          await showErrorDialog();
+        } catch {
+          // Logged, not surfaced a second way — see main.ts's
+          // reportSaveFailureBestEffort.
+        }
         return { result: { written: false, stale: false }, errorShown: true };
       }
       if (path === null) return { result: { written: false, stale: false }, errorShown: false };
@@ -653,6 +665,32 @@ describe("issue #325 — untitled Save with Encoding: a rejecting saveDialog sti
     expect(doc.encoding).toBe("UTF-8"); // speculative encoding rolled back
     expect(doc.withBom).toBe(false);
     expect(doc.dirty).toBe(false); // not stale, so #276's rollback clears the forced dirty
+    expect(snapshots[snapshots.length - 1]).toEqual({ encoding: "UTF-8", withBom: false });
+  });
+
+  it("untitled doc, Save with Encoding: both saveDialog and its own error dialog reject — rollback still runs, contract still holds", async () => {
+    const doc: SessionEncodingDoc = { encoding: "UTF-8", withBom: false, dirty: false };
+    const snapshots: Array<{ encoding: string; withBom: boolean }> = [];
+    const persistSession = (): void => {
+      snapshots.push({ encoding: doc.encoding, withBom: doc.withBom });
+    };
+
+    const original = beginSaveWithEncodingSim(doc, { encoding: "Big5", withBom: false });
+
+    const { result, errorShown } = await runSaveFlowDialogSim(
+      null,
+      () => Promise.reject(new Error("dialog plugin IPC failed")),
+      () => Promise.reject(new Error("dialog plugin is completely unavailable")),
+    );
+
+    expect(errorShown).toBe(true);
+    expect(result).toEqual({ written: false, stale: false }); // still resolved, not rejected
+
+    resolveSaveWithEncodingSim(doc, original, /* wasClean */ true, result, persistSession);
+
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.withBom).toBe(false);
+    expect(doc.dirty).toBe(false);
     expect(snapshots[snapshots.length - 1]).toEqual({ encoding: "UTF-8", withBom: false });
   });
 });
