@@ -29,6 +29,11 @@ mod recent;
 mod replaceinfiles;
 mod search;
 mod session;
+// macOS-only single-instance coordination — see its own module doc for
+// why this isn't `tauri_plugin_single_instance` on this platform (issue
+// #305 follow-up review).
+#[cfg(target_os = "macos")]
+mod singleinstance_macos;
 mod startup_probe;
 mod store;
 mod streamcodec;
@@ -43,18 +48,96 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::Emitter;
 
-/// Files requested via OS integration (file association, CLI args) before
-/// the frontend was ready to receive events. Drained by the frontend on
-/// startup through `take_pending_files`.
+/// Files requested via OS integration (file association, CLI args,
+/// single-instance forwarding — `tauri_plugin_single_instance` on
+/// Windows/Linux, `singleinstance_macos` on macOS) that the frontend may
+/// not have been listening for yet. This is the single source of truth for
+/// delivering them — `take_pending_files` (`std::mem::take` under the
+/// lock) hands the whole queue to exactly one caller and empties it, so no
+/// matter how many producers push into it (cold-start argv, single
+/// instance's forwarded argv, Apple Events) or how many callers try to
+/// drain it at once (the frontend's own startup drain, and its
+/// `mojidori://open-files` listener — both call `take_pending_files`,
+/// deliberately, rather than one of them reading a payload carried on the
+/// event itself), each path is still delivered exactly once (issue #305
+/// follow-up review: an emit that also carried the payload directly risked
+/// delivering the same path twice if both the event listener and the
+/// startup drain were live in the same tick).
 struct PendingFiles(Mutex<Vec<String>>);
 
 /// Extract existing file paths from process-style arguments, skipping the
-/// binary name and anything that looks like a flag.
-fn existing_paths_from_args<I: Iterator<Item = String>>(args: I) -> Vec<String> {
+/// binary name and anything that looks like a flag. Relative arguments are
+/// resolved against `cwd` before the existence check, and the *resolved*
+/// (absolute where relative) path is what's returned — not the raw arg —
+/// so a caller in a different working directory (e.g. a path forwarded
+/// cross-process by single-instance forwarding, see
+/// `handle_single_instance_launch` below) still opens the file the sender
+/// meant, rather than silently mis-resolving or dropping it against this
+/// process's own cwd.
+fn existing_paths_from_args_in<I: Iterator<Item = String>>(
+    args: I,
+    cwd: &std::path::Path,
+) -> Vec<String> {
     args.skip(1)
         .filter(|arg| !arg.starts_with('-'))
-        .filter(|arg| std::path::Path::new(arg).is_file())
+        .filter_map(|arg| {
+            let candidate = std::path::Path::new(&arg);
+            let resolved = if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                cwd.join(candidate)
+            };
+            resolved
+                .is_file()
+                .then(|| resolved.to_string_lossy().into_owned())
+        })
         .collect()
+}
+
+/// [`existing_paths_from_args_in`] against this process's own current
+/// directory — the right base for this process's own argv (cold-start
+/// file associations / CLI args), where "this process's cwd" and "the
+/// cwd relative paths were meant against" are the same by construction.
+fn existing_paths_from_args<I: Iterator<Item = String>>(args: I) -> Vec<String> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    existing_paths_from_args_in(args, &cwd)
+}
+
+/// What to do when *some other* launch of this app (forwarded to us
+/// instead of becoming its own instance) reports its argv/cwd: focus the
+/// existing window, resolve any file paths it was given against *its*
+/// cwd (not this process's own — see `existing_paths_from_args_in`'s doc
+/// comment), and queue+nudge them through the single delivery channel
+/// (see `PendingFiles`'s doc comment).
+///
+/// Shared by both single-instance mechanisms this app uses — the
+/// upstream `tauri_plugin_single_instance` on Windows/Linux, and the
+/// custom per-user-socket implementation in `singleinstance_macos` on
+/// macOS (see that module's doc comment for why macOS doesn't use the
+/// plugin) — so this behavior only has one implementation to keep in
+/// sync across platforms.
+fn handle_single_instance_launch<R: tauri::Runtime, I: Iterator<Item = String>>(
+    app: &tauri::AppHandle<R>,
+    argv: I,
+    cwd: &str,
+) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_focus();
+    }
+    let paths = existing_paths_from_args_in(argv, std::path::Path::new(cwd));
+    if !paths.is_empty() {
+        app.state::<PendingFiles>().0.lock().unwrap().extend(paths);
+        // No payload on this emit: `PendingFiles`/`take_pending_files` is
+        // the single delivery channel (see `PendingFiles`'s doc comment)
+        // — this is purely a nudge telling the frontend to go drain it
+        // now, in case its listener is already live. A payload-carrying
+        // emit here would risk delivering the same path twice: once via
+        // this event landing on an already-live listener, and again via
+        // the frontend's own startup drain, if both happened in the same
+        // tick (issue #305 follow-up review).
+        let _ = app.emit("mojidori://open-files", ());
+    }
 }
 
 #[tauri::command]
@@ -912,6 +995,50 @@ pub fn run() {
     // see the migration call immediately after this for why that matters.
     let context = tauri::generate_context!();
 
+    // macOS single-instance coordination (issue #305 — cross-process
+    // last-writer-wins data loss across session/preferences/recent/
+    // hot-exit state). NOT `tauri_plugin_single_instance` here — see
+    // `singleinstance_macos`'s module doc for the full writeup; short
+    // version: that plugin hardcodes its coordination socket at a
+    // machine-wide `/tmp` path on macOS (not per-user), which is a real
+    // local denial-of-service / cross-session leak on any multi-account
+    // Mac, so this app uses a hand-rolled module instead (see
+    // `src-tauri/Cargo.toml`'s single-instance dependency comment too). A
+    // lock file, not the socket, is what actually decides primary vs.
+    // secondary here — see that module's doc comment for why (in short:
+    // an OS advisory lock has no "stale" state to race over the way a
+    // socket file does). This runs as early as possible — before
+    // migration or any Tauri setup — so a second launch that finds an
+    // existing instance forwards its argv/cwd and exits immediately,
+    // mirroring how the Windows/Linux plugin (registered below) exits a
+    // second process during its own plugin `setup()`, before this app's
+    // window ever exists. On success, `acquire_or_forward` has already
+    // bound the socket *and* spawned its accept loop (see that module's
+    // doc comment on the eighth review round for why the accept loop
+    // can't wait for `.setup()`'s `AppHandle` the way it originally did);
+    // all that's left for `.setup()` to do is call `install_app_handle`
+    // once one exists, below.
+    //
+    // Known limitation, shared with the plugin-based approach on
+    // Windows/Linux and with how this module's macOS predecessor would
+    // have behaved: LaunchServices can hand a document-open request to a
+    // genuinely new process via an 'odoc' Apple Event
+    // (`open -n -a Mojidori file.txt`) rather than through argv; since
+    // that new process exits right here, before any window or event loop
+    // is ever created, that Apple Event is never pumped and the request
+    // is silently lost. Narrow — see `singleinstance_macos`'s module doc
+    // for the exact scope (ordinary Finder double-click / plain `open`,
+    // and `open -n --args /path`, are both unaffected). Not fixed here.
+    #[cfg(target_os = "macos")]
+    let macos_single_instance_lock =
+        match singleinstance_macos::acquire_or_forward(&context.config().identifier) {
+            singleinstance_macos::SingleInstanceOutcome::ForwardedToRunning => {
+                std::process::exit(0);
+            }
+            singleinstance_macos::SingleInstanceOutcome::Primary { lock } => Some(lock),
+            singleinstance_macos::SingleInstanceOutcome::Unavailable => None,
+        };
+
     // Must complete before any Tauri plugin's own setup runs — in
     // particular tauri-plugin-window-state's (registered a few lines
     // down): that plugin loads its on-disk cache (`.window-state.json`,
@@ -949,18 +1076,18 @@ pub fn run() {
 
     let builder = tauri::Builder::default();
 
-    // On Windows and Linux, opening an associated file launches a second
-    // process; forward its arguments to the running instance instead.
+    // Opening an associated file (or launching the app again while it's
+    // already running) can spawn a second process; forward its arguments
+    // to the running instance instead of letting two processes both read
+    // and read-modify-write session/preferences/recent/hot-exit state
+    // (issue #305 — cross-process last-writer-wins data loss). macOS is
+    // NOT included in this cfg gate — see the comment above this
+    // function's `context`/migration setup, and `singleinstance_macos`'s
+    // module doc, for why that platform uses a hand-rolled module
+    // instead of this plugin.
     #[cfg(any(target_os = "windows", target_os = "linux"))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-        use tauri::Manager;
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.set_focus();
-        }
-        let paths = existing_paths_from_args(argv.into_iter());
-        if !paths.is_empty() {
-            let _ = app.emit("mojidori://open-files", paths);
-        }
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        handle_single_instance_launch(app, argv.into_iter(), &cwd);
     }));
 
     // Restores window size/position across launches (desktop only).
@@ -1029,6 +1156,31 @@ pub fn run() {
             // preferences via app.path(), which is unavailable until the
             // path resolver state is managed.
             app.set_menu(menu::build(app.handle())?)?;
+            // The lock was won, and the socket bound with its accept loop
+            // already servicing connections, as early as possible —
+            // before migration/build (see `run()`'s macOS single-instance
+            // setup above, and `singleinstance_macos`'s module doc for
+            // why waiting for `.setup()` to start the accept loop was
+            // itself a bug). All that's left here is: (1) handing the
+            // lock file to Tauri's managed state purely to keep it open
+            // (and therefore the OS advisory lock held) for the rest of
+            // this process's lifetime — see `SingleInstanceOutcome::
+            // Primary`'s doc comment for why dropping it early would be a
+            // correctness bug, not just a resource leak; (2) giving the
+            // accept loop's buffered/future messages a real `AppHandle`
+            // to deliver through, via `install_app_handle` — see that
+            // function's doc comment for why this is safe to do exactly
+            // once, here, with no message lost or double-delivered no
+            // matter how it interleaves with messages arriving right
+            // around the same time.
+            #[cfg(target_os = "macos")]
+            if let Some(lock) = macos_single_instance_lock {
+                app.manage(lock);
+                singleinstance_macos::install_app_handle(
+                    &app.config().identifier,
+                    app.handle().clone(),
+                );
+            }
             startup_probe::checkpoint("setup() completed");
             Ok(())
         })
@@ -1097,24 +1249,41 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app, _event| {
             // macOS delivers associated files through Apple Events; they can
-            // arrive before the frontend is listening, so they are queued in
-            // PendingFiles as well as emitted.
+            // arrive before the frontend is listening, so they are queued
+            // into PendingFiles the same way `handle_single_instance_launch`
+            // does (see this platform's single-instance setup in `run()`,
+            // above, for the known limitation where a LaunchServices-forced
+            // new instance's Apple Event never reaches here at all). This
+            // only ever runs in the single surviving instance, so there's no
+            // cross-process race to worry about here specifically — but the
+            // emit is still payload-less for the same single-delivery-channel
+            // reason: the frontend's listener and its own startup drain both
+            // call `take_pending_files`, which is what actually guarantees
+            // each path is delivered exactly once (issue #305 follow-up
+            // review).
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = _event {
+            if let tauri::RunEvent::Opened { ref urls } = _event {
                 use tauri::Manager;
                 let paths: Vec<String> = urls
-                    .into_iter()
+                    .iter()
                     .filter_map(|url| url.to_file_path().ok())
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
                 if !paths.is_empty() {
-                    _app.state::<PendingFiles>()
-                        .0
-                        .lock()
-                        .unwrap()
-                        .extend(paths.clone());
-                    let _ = _app.emit("mojidori://open-files", paths);
+                    _app.state::<PendingFiles>().0.lock().unwrap().extend(paths);
+                    let _ = _app.emit("mojidori://open-files", ());
                 }
+            }
+            // Best-effort cleanup of this run's single-instance socket, if
+            // this process was ever the primary (a no-op otherwise) — the
+            // counterpart to `acquire_or_forward` in `run()`, above.
+            // Without this, a normal quit would leave the socket file
+            // behind and every subsequent launch would pay the one-time
+            // stale-socket recovery path in `acquire_or_forward` instead of
+            // a clean bind.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Exit = _event {
+                singleinstance_macos::cleanup_if_primary(&_app.config().identifier);
             }
         });
 }
@@ -1122,9 +1291,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        atomic_write, existing_paths_from_args, explain_detection, open_document, preview_slice,
-        save_document, tmp_candidate_path, Fingerprint, EXPLAIN_SAMPLE_BYTES, LARGE_FILE_THRESHOLD,
-        PREVIEW_BYTES,
+        atomic_write, existing_paths_from_args, existing_paths_from_args_in, explain_detection,
+        open_document, preview_slice, save_document, tmp_candidate_path, Fingerprint, PendingFiles,
+        EXPLAIN_SAMPLE_BYTES, LARGE_FILE_THRESHOLD, PREVIEW_BYTES,
     };
     // Only the unix-gated symlink tests use these; an unconditional import
     // is an unused-import error under -D warnings on Windows.
@@ -1889,6 +2058,96 @@ mod tests {
         let paths = existing_paths_from_args(args.into_iter());
         assert_eq!(paths, vec![file.to_string_lossy().into_owned()]);
         std::fs::remove_file(&file).ok();
+    }
+
+    /// Regression test for issue #305's follow-up review: a relative arg
+    /// forwarded from a *different* process (single-instance forwarding's
+    /// cross-process `cwd` — `tauri_plugin_single_instance` on
+    /// Windows/Linux, `singleinstance_macos` on macOS) must be resolved
+    /// against *that* process's cwd, not against this one's own
+    /// `current_dir()` — and the path returned must be absolute, so a
+    /// downstream `open_document` call (which runs in this process) still
+    /// finds the right file regardless of this process's own cwd.
+    #[test]
+    fn existing_paths_from_args_in_resolves_relative_paths_against_given_cwd() {
+        let dir = std::env::temp_dir().join("mojidori-cwd-resolve-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("relative-target.txt");
+        std::fs::write(&file, "x").unwrap();
+
+        let args = || vec!["mojidori".to_string(), "relative-target.txt".to_string()];
+        let paths = existing_paths_from_args_in(args().into_iter(), &dir);
+        assert_eq!(
+            paths,
+            vec![file.to_string_lossy().into_owned()],
+            "relative arg must resolve against the given cwd and come back absolute"
+        );
+
+        // Sanity check: the same relative arg must NOT resolve against this
+        // test process's own cwd, or the assertion above wouldn't actually
+        // be exercising cwd-awareness.
+        let own_cwd = std::env::current_dir().unwrap();
+        assert!(
+            existing_paths_from_args_in(args().into_iter(), &own_cwd).is_empty(),
+            "relative-target.txt should not exist relative to this process's own cwd"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression test for issue #305's second follow-up review:
+    /// `PendingFiles` is the single delivery channel two independent
+    /// producers (single-instance's callback, `RunEvent::Opened`) feed and
+    /// two independent consumers (the frontend's `mojidori://open-files`
+    /// listener, its own startup drain) race to empty via
+    /// `take_pending_files`'s `std::mem::take`. That race must never
+    /// duplicate or drop a path: whichever consumer's `take` runs first
+    /// gets every path queued so far, and the other gets none of them —
+    /// this test simulates that race directly against the same `Mutex`
+    /// `take_pending_files` itself locks, standing in for it without
+    /// needing a full `tauri::State`/`AppHandle`.
+    #[test]
+    fn pending_files_take_is_atomic_and_delivers_each_path_exactly_once() {
+        use std::sync::{Arc, Barrier};
+
+        let state = Arc::new(PendingFiles(std::sync::Mutex::new(vec![
+            "/a.txt".to_string(),
+            "/b.txt".to_string(),
+            "/c.txt".to_string(),
+        ])));
+        let barrier = Arc::new(Barrier::new(2));
+
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let state = Arc::clone(&state);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    std::mem::take(&mut *state.0.lock().unwrap())
+                })
+            })
+            .collect();
+
+        let mut delivered: Vec<String> = Vec::new();
+        for handle in handles {
+            delivered.extend(handle.join().unwrap());
+        }
+        delivered.sort();
+
+        assert_eq!(
+            delivered,
+            vec![
+                "/a.txt".to_string(),
+                "/b.txt".to_string(),
+                "/c.txt".to_string()
+            ],
+            "every queued path must be delivered exactly once across the two racing takers, \
+             never duplicated and never dropped"
+        );
+        assert!(
+            state.0.lock().unwrap().is_empty(),
+            "the queue itself must end up empty — nothing left un-delivered"
+        );
     }
 
     /// Pull the encoding name out of a `"{encoding} ({reason})"` would-choose
