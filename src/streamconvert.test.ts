@@ -22,7 +22,25 @@ vi.mock("./lossysave", () => ({
 // the time ./streamconvert is evaluated — same pattern as
 // streamreplace.test.ts/batchconvert.test.ts.
 import { t } from "./i18n";
-import { runStreamConvert } from "./streamconvert";
+import { buildStreamConvertResultMessage, runStreamConvert } from "./streamconvert";
+
+// Issue #328 (third review round): a conversion whose content-rename landed
+// but whose parent-directory fsync could not be confirmed must still show
+// up on this same success message, never as a separate failure path —
+// mirrors streamreplace.test.ts's equivalent durability-warning coverage.
+describe("buildStreamConvertResultMessage durability warning (issue #328)", () => {
+  it("omits_the_durability_warning_note_when_null", () => {
+    expect(buildStreamConvertResultMessage("UTF-8", null)).toBe(
+      t("streamConvert.resultMessage", "UTF-8"),
+    );
+  });
+
+  it("appends_the_durability_warning_note_when_present", () => {
+    expect(buildStreamConvertResultMessage("UTF-8", "simulated fsync failure")).toBe(
+      `${t("streamConvert.resultMessage", "UTF-8")} ${t("statusbar.durabilityWarning", "simulated fsync failure")}`,
+    );
+  });
+});
 
 // runStreamConvert(path, sourceEncoding, target, onConverted) has no
 // editor/tabs dependency — it only touches the DOM (its own busy overlay),

@@ -85,9 +85,20 @@ export interface SaveEchoInput {
  *    watch — never our own echo, and exactly the case the downstream
  *    missing-file flow (main.ts's markMissingIfConfirmed) exists to
  *    surface, so this must not hide it behind the window.
- * 4. No baseline to compare (`record.fingerprint` is null/undefined — the
- *    write that produced it somehow reported no fingerprint): suppress,
- *    same fail-closed fallback as before this fix.
+ * 4. No baseline to compare (`record.fingerprint` is null/undefined —
+ *    the write that produced it somehow reported no fingerprint): *don't*
+ *    suppress (issue #324) — this used to fail closed (suppress) here,
+ *    but a missing baseline means this module has no proof at all that
+ *    the current watcher event is our own echo, and suppressing anyway
+ *    would hide a real external change behind that unproven assumption.
+ *    `save_document` itself (`lib.rs`) now makes this branch essentially
+ *    unreachable in practice — its returned fingerprint is captured from
+ *    the write's own still-open temp handle before the rename, so a
+ *    successful write can no longer come back with `fingerprint: null` at
+ *    all — but this module doesn't get to assume that invariant holds
+ *    forever just because it currently does; failing open here is the
+ *    correct default in its own right, independent of what the backend
+ *    guarantees.
  * 5. Both snapshots present: suppress only if the opaque fingerprints are
  *    exactly equal (savemutex.ts's fingerprintsEqual) — anything else
  *    means the file moved since our own write, even though we're still
@@ -98,7 +109,7 @@ export function isLikelySaveEcho(input: SaveEchoInput): boolean {
   if (!record || input.now - record.time >= SAVE_ECHO_WINDOW_MS) return false;
   if (input.current === undefined) return true;
   if (input.current === null) return false;
-  if (record.fingerprint === null || record.fingerprint === undefined) return true;
+  if (record.fingerprint === null || record.fingerprint === undefined) return false;
   return fingerprintsEqual(record.fingerprint, input.current);
 }
 

@@ -66,6 +66,32 @@ async function withBusyOverlay<T>(message: string, run: () => Promise<T>): Promi
 }
 
 /**
+ * Pure composition of the streaming-convert result text — split out from
+ * the DOM-driving runStreamConvert below so it's vitest-covered without a
+ * WebView (mirrors streamreplace.ts's buildStreamReplaceResultMessage).
+ * Appends a note when `durabilityWarning` is non-null (issue #328's third
+ * review round — `StreamConvertReport.durabilityWarning`'s own doc
+ * comment): the conversion itself landed on disk, but the follow-up
+ * parent-directory `fsync` that would confirm it survives an immediate
+ * crash could not be completed. Never a failure on its own, so this stays
+ * on the same success dialog rather than gating anything.
+ */
+export function buildStreamConvertResultMessage(
+  targetEncoding: string,
+  durabilityWarning: string | null,
+): string {
+  const base = t("streamConvert.resultMessage", targetEncoding);
+  // Truthy check, not `!== null`, to match every other optional-note flag
+  // in this codebase (e.g. StreamReplaceReport's own
+  // unmatchedRegionReencoded) — an older/looser mock or caller that omits
+  // this field entirely (`undefined`) must behave identically to an
+  // explicit `null`, not append a stray "undefined" note.
+  return durabilityWarning
+    ? `${base} ${t("statusbar.durabilityWarning", durabilityWarning)}`
+    : base;
+}
+
+/**
  * Convert `path` (the active truncated document's file on disk, currently
  * `sourceEncoding`) to `target`, streaming on the Rust side. `onConverted` is
  * called once, only after a write actually reached disk, so the caller can
@@ -96,10 +122,10 @@ export async function runStreamConvert(
       );
     }
     if (report.written) {
-      await messageDialog(t("streamConvert.resultMessage", target.value), {
-        title,
-        kind: "info",
-      });
+      await messageDialog(
+        buildStreamConvertResultMessage(target.value, report.durabilityWarning),
+        { title, kind: "info" },
+      );
       onConverted();
     } else {
       // Defensive: allowLossy: true still coming back written: false has no

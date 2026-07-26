@@ -24,13 +24,38 @@ import { buildStreamReplaceResultMessage, showStreamReplace } from "./streamrepl
 // without needing a WebView or the overlay DOM at all.
 describe("buildStreamReplaceResultMessage (issue #175)", () => {
   it("appends_the_reencoded_note_when_unmatched_region_reencoded_is_true", () => {
-    expect(buildStreamReplaceResultMessage(3, true)).toBe(
+    expect(buildStreamReplaceResultMessage(3, true, null)).toBe(
       `${t("streamReplace.resultMessage", 3)} ${t("streamReplace.unmatchedRegionReencodedNote")}`,
     );
   });
 
   it("omits_the_note_when_unmatched_region_reencoded_is_false", () => {
-    expect(buildStreamReplaceResultMessage(3, false)).toBe(t("streamReplace.resultMessage", 3));
+    expect(buildStreamReplaceResultMessage(3, false, null)).toBe(
+      t("streamReplace.resultMessage", 3),
+    );
+  });
+});
+
+// Issue #328 (third review round): a replace whose content-rename landed
+// but whose parent-directory fsync could not be confirmed must still show
+// up on this same success message, never as a separate failure path.
+describe("buildStreamReplaceResultMessage durability warning (issue #328)", () => {
+  it("appends_the_durability_warning_note_when_present", () => {
+    expect(buildStreamReplaceResultMessage(3, false, "simulated fsync failure")).toBe(
+      `${t("streamReplace.resultMessage", 3)} ${t("statusbar.durabilityWarning", "simulated fsync failure")}`,
+    );
+  });
+
+  it("omits_the_durability_warning_note_when_null", () => {
+    expect(buildStreamReplaceResultMessage(3, false, null)).toBe(
+      t("streamReplace.resultMessage", 3),
+    );
+  });
+
+  it("appends_both_notes_together_when_both_apply", () => {
+    expect(buildStreamReplaceResultMessage(3, true, "simulated fsync failure")).toBe(
+      `${t("streamReplace.resultMessage", 3)} ${t("streamReplace.unmatchedRegionReencodedNote")} ${t("statusbar.durabilityWarning", "simulated fsync failure")}`,
+    );
   });
 });
 

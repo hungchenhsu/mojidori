@@ -2484,6 +2484,16 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
     if (completion.dropBackup) backups.drop(doc);
     // Mixed line endings are written out as LF by the core.
     if (doc.lineEnding === "Mixed") doc.lineEnding = "LF";
+    // Issue #328 (third review round): unconditional on the guards above,
+    // same as the fingerprint/dirty updates -- the write itself already
+    // landed (`result.written` gated everything above this point), so this
+    // always reflects *this* save's own durability outcome, not a stale
+    // warning left over from an earlier one. `undefined` (not `null`)
+    // clears it, matching `Doc.durabilityWarning`'s optional-field
+    // convention. Non-blocking: no dialog, no retry, nothing else about
+    // this save's success is affected — see tabs.ts's Doc.durabilityWarning
+    // doc comment.
+    doc.durabilityWarning = result.durabilityWarning ?? undefined;
     tabs.render();
     updateStatusBar(doc);
     updateWindowTitle();

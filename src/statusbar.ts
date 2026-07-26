@@ -18,6 +18,10 @@ interface StatusInfo {
    *  tabs.ts's Doc.missingOnDisk doc comment. Optional, like Doc's own
    *  field: absent is exactly as falsy as `false` here. */
   missingOnDisk?: boolean;
+  /** Issue #328 (third review round) — see tabs.ts's Doc.durabilityWarning
+   *  doc comment. Optional, same "absent is falsy" convention as
+   *  `missingOnDisk` above. */
+  durabilityWarning?: string;
 }
 
 const pathEl = document.querySelector<HTMLElement>("#status-path")!;
@@ -28,6 +32,9 @@ const lineEndingEl = document.querySelector<HTMLElement>(
 const warningEl = document.querySelector<HTMLElement>("#status-warning")!;
 const readonlyEl = document.querySelector<HTMLElement>("#status-readonly")!;
 const missingEl = document.querySelector<HTMLElement>("#status-missing")!;
+const durabilityWarningEl = document.querySelector<HTMLElement>(
+  "#status-durability-warning",
+)!;
 const indexingEl = document.querySelector<HTMLElement>("#status-indexing")!;
 const updatingEl = document.querySelector<HTMLElement>("#status-updating")!;
 const cursorEl = document.querySelector<HTMLElement>("#status-cursor")!;
@@ -274,6 +281,14 @@ export function updateStatusBar(doc: StatusInfo | null): void {
   // tabs.ts's Doc.missingOnDisk doc comment.
   missingEl.hidden = !doc?.missingOnDisk;
   missingEl.textContent = doc?.missingOnDisk ? t("statusbar.missingOnDisk") : "";
+  // Issue #328 (third review round): purely informational, independent of
+  // every other badge here — a save that landed but couldn't confirm its
+  // own durability says nothing about the file's current readonly/missing/
+  // decode state, so this never suppresses or is suppressed by any of them.
+  durabilityWarningEl.hidden = !doc?.durabilityWarning;
+  durabilityWarningEl.textContent = doc?.durabilityWarning
+    ? t("statusbar.durabilityWarning", doc.durabilityWarning)
+    : "";
 }
 
 /** Re-render the status bar after a locale change, using the last known

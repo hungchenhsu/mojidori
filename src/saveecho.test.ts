@@ -45,7 +45,16 @@ describe("isLikelySaveEcho", () => {
     );
   });
 
-  it("inside the window, no baseline fingerprint recorded (contract violation): fails closed, suppresses", () => {
+  it("inside the window, no baseline fingerprint recorded (contract violation): fails open, does not suppress (issue #324)", () => {
+    // This used to assert `true` (suppress) here — a "fail closed"
+    // fallback that issue #324 identified as actually hiding a real
+    // external change behind an unproven baseline: a missing fingerprint
+    // is not proof this event is our own echo, so there is nothing to
+    // fail *closed* about in the first place. `save_document` (`lib.rs`)
+    // now makes a successful write coming back with `fingerprint: null`
+    // essentially impossible in practice, but this module doesn't get to
+    // assume that invariant holds — failing open is correct on its own
+    // terms regardless of what the backend currently guarantees.
     const noBaseline: SaveEchoRecord = { time: 1_000, fingerprint: null };
     expect(
       isLikelySaveEcho({
@@ -53,7 +62,7 @@ describe("isLikelySaveEcho", () => {
         record: noBaseline,
         current: { len: 42, modified: { secs: 1_000, nanos: 0 } },
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("inside the window, current fingerprint matches recorded exactly: suppresses (genuine echo)", () => {

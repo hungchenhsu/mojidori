@@ -878,7 +878,20 @@ fn execute_one(
     }
 
     match crate::atomic_write(&write_target, &out_bytes) {
-        Ok(()) => ReplaceExecuteEntry {
+        // `atomic_write` now returns a `CommitOutcome` (issues #324/#328).
+        // Neither `fingerprint` nor `durability_warning` has anywhere
+        // meaningful to land in `ReplaceExecuteEntry`: search-and-replace
+        // doesn't track a per-file staleness baseline the way
+        // `save_document` does, and `findinfiles.ts`'s own failures list
+        // never displays `message` for an `ok`/`STATUS_OK` entry at all
+        // (only the grouped-failures view reads it), so putting the
+        // warning there would be exactly as silent as dropping it
+        // outright while looking like it wasn't. Out of this round's
+        // explicit scope (only `save_document` and the two streaming
+        // commit paths were asked to surface this) -- discarded here for
+        // the same reason `store.rs`/`backup.rs`/`migrate.rs::write_marker`
+        // already do.
+        Ok(_outcome) => ReplaceExecuteEntry {
             path: path_str,
             replaced_count,
             status: STATUS_OK.to_string(),

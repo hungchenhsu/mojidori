@@ -190,6 +190,18 @@ export interface SaveResult {
    *  rejection both have nothing new to show). See `showLossySaveConfirm`
    *  (src/lossysave.ts) for how this drives the confirm dialog. */
   lossyReport: LossyReport | null;
+  /** The raw I/O error string from a failed parent-directory `fsync`
+   *  attempt — populated only when `written` is true (the content-rename
+   *  itself succeeded) *and* that follow-up durability confirmation could
+   *  not be completed (issue #328's third review round; see
+   *  `lib.rs::finish_atomic_commit`'s doc comment). `null` on every other
+   *  result, including every ordinary successful save. This must never be
+   *  treated as a failed save — the bytes really are on disk — only
+   *  surfaced non-blockingly (see tabs.ts's `Doc.durabilityWarning`
+   *  and statusbar.ts's badge); `written`/`fingerprint` are populated
+   *  exactly as they would be for a save with no durability concern at
+   *  all. */
+  durabilityWarning: string | null;
 }
 
 /**
@@ -1069,6 +1081,15 @@ export interface StreamReplaceReport {
    *  `src-tauri/src/streamreplace.rs`'s `StreamReplaceReport` doc comment.
    *  Drives `streamreplace.ts`'s result-message note (issue #175). */
   unmatchedRegionReencoded: boolean;
+  /** Same contract as `SaveResult.durabilityWarning` (see there): the raw
+   *  I/O error string from a failed parent-directory `fsync`, populated
+   *  only when at least one replacement actually landed (`replacements >
+   *  0`) and that follow-up durability confirmation failed. `null`
+   *  whenever `replacements` is 0 (nothing was written) or the write's own
+   *  durability was confirmed normally. Never a failure on its own — see
+   *  `streamreplace.ts`'s result-message note (issue #328's third review
+   *  round). */
+  durabilityWarning: string | null;
 }
 
 /**
@@ -1111,6 +1132,14 @@ export interface StreamConvertReport {
    *  (src/lossysave.ts) drives this exactly like the regular save path's
    *  lossy gate. `null` on every other result. */
   lossyReport: LossyReport | null;
+  /** Same contract as `SaveResult.durabilityWarning` (see there): the raw
+   *  I/O error string from a failed parent-directory `fsync`, populated
+   *  only when `written` is true and that follow-up durability
+   *  confirmation failed. `null` whenever `written` is false or the
+   *  write's own durability was confirmed normally. Never a failure on its
+   *  own — see `streamconvert.ts`'s result-message note (issue #328's
+   *  third review round). */
+  durabilityWarning: string | null;
 }
 
 /**

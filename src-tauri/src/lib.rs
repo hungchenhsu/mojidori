@@ -260,10 +260,16 @@ pub struct SaveResult {
     /// re-invoke with `force: true` (after explicit user confirmation to
     /// overwrite) or reload the file's fresh content first (issue #113).
     stale: bool,
-    /// The file's fingerprint immediately after a successful write, opaque
-    /// to the frontend (see `fsguard.rs`) — store it and pass it back as
-    /// the next save's `expected_fingerprint`. `None` unless `written` is
-    /// true.
+    /// The written file's fingerprint, opaque to the frontend (see
+    /// `fsguard.rs`) — store it and pass it back as the next save's
+    /// `expected_fingerprint`. `None` unless `written` is true; whenever
+    /// `written` *is* true this is always `Some` (issue #324) —
+    /// `atomic_write` captures it via a fresh, post-close stat of its own
+    /// temp file, immediately before the rename, so a successful write can
+    /// never come back with a missing or stale-by-construction baseline
+    /// the way an independent stat *of `path` itself* after the fact could
+    /// if an external replace raced into the gap between the rename and
+    /// that stat.
     fingerprint: Option<Fingerprint>,
     /// Which characters can't be represented in `encoding`, not just that
     /// some can't (ROADMAP.md v0.4 Track A "Lossy-save character preview")
@@ -273,6 +279,17 @@ pub struct SaveResult {
     /// and a `stale` rejection both have nothing new to show, and the
     /// frontend never re-triggers the lossy-preview dialog from either.
     lossy_report: Option<normalize::LossySaveReport>,
+    /// The raw I/O error string from a failed parent-directory `fsync`
+    /// (`CommitOutcome::durability_warning`) — populated only when
+    /// `written` is true and that follow-up durability confirmation
+    /// failed; `None` on every other result, including every ordinary
+    /// successful save (PR #328's third review round). This is never a
+    /// failure in its own right: the content-rename already succeeded, so
+    /// `written`/`fingerprint` are populated exactly as they would be with
+    /// no durability concern at all — the frontend surfaces this
+    /// non-blockingly (see `src/tabs.ts`'s `Doc.durabilityWarning`) rather
+    /// than treating it as a save failure or dropping it silently.
+    durability_warning: Option<String>,
 }
 
 /// Read a file from disk, decoding with the given encoding label or with
@@ -589,7 +606,7 @@ fn explain_detection(
 }
 
 /// Process-local counter mixed into temporary-file names (alongside a
-/// timestamp) so that two [`create_tmp_exclusive`] calls in the same
+/// timestamp) so that two [`create_tmp_for_target`] calls in the same
 /// process can never produce the same candidate, even within the same
 /// nanosecond.
 static TMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -620,6 +637,14 @@ fn tmp_candidate_path(dir: &std::path::Path, file_name: &str) -> std::path::Path
 /// issue #60: an attacker who pre-plants a symlink at a path we are about
 /// to use as a temp file can no longer redirect our write to the
 /// symlink's target, because we never open through it in the first place.
+///
+/// `#[allow(dead_code)]`: still the real production implementation behind
+/// [`open_exclusive_with_mode`]'s Windows fallback (no mode to pass
+/// there), but on Unix its only caller is this crate's own
+/// `tmp_file_creation_refuses_preexisting_symlink` unit test, exercising
+/// this exact `create_new` guarantee directly -- which a plain, non-test
+/// Unix build has no other caller for at all.
+#[allow(dead_code)]
 fn open_exclusive(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new()
         .write(true)
@@ -627,24 +652,105 @@ fn open_exclusive(path: &std::path::Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
-/// Create a same-directory temporary file with an unpredictable name,
-/// refusing to follow any symlink already occupying a candidate path (see
-/// [`open_exclusive`]). Retries up to 16 times on `AlreadyExists` — a
-/// genuine name collision and a pre-planted symlink look identical from
-/// here, and both are handled the same way: try the next unpredictable
-/// candidate. Any other error is returned immediately. On exhausting all
-/// attempts, returns the last `AlreadyExists` error. Returns the open file
-/// together with the path it was created at, since the caller needs the
-/// path for `rename` and for cleanup on a later failure.
-fn create_tmp_exclusive(
+/// Same exclusive-create guarantee as [`open_exclusive`], but the file is
+/// created with `mode`'s permission bits from the very first instant it
+/// exists when `mode` is `Some` (issue #323): a pre-existing target's mode
+/// is never briefly widened to the process's default create-mode (masked
+/// by umask alone) while the temp file's content is being written,
+/// because there is no create-then-chmod window at all — the temp file is
+/// born at (up to umask narrowing) the target's own mode. The kernel can
+/// still narrow the requested mode further via umask, never widen it, so
+/// a `0600` target can never produce a temp file that's briefly `0644`.
+///
+/// `mode: None` — no pre-existing target, i.e. a brand-new file — falls
+/// back to the ordinary default create mode, exactly as before this fix:
+/// there is no prior permission model such a file could widen away from,
+/// so the umask alone is the correct, unchanged boundary there.
+///
+/// Windows has no "create with mode" API — only the coarse-grained
+/// readonly attribute, which would also block writing the temp file's own
+/// bytes if applied up front — so `mode` is accepted but ignored there;
+/// the caller's later permission-matching step (readonly attribute only)
+/// is the sole mechanism on that platform. Accepted, documented platform
+/// difference, the same reasoning `migrate.rs`'s
+/// `create_file_no_wider_than_source` already applies to the equivalent
+/// migration-copy case.
+#[cfg(unix)]
+fn open_exclusive_with_mode(
+    path: &std::path::Path,
+    mode: Option<&std::fs::Permissions>,
+) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    if let Some(perm) = mode {
+        opts.mode(perm.mode());
+    }
+    opts.open(path)
+}
+
+#[cfg(not(unix))]
+fn open_exclusive_with_mode(
+    path: &std::path::Path,
+    _mode: Option<&std::fs::Permissions>,
+) -> std::io::Result<std::fs::File> {
+    open_exclusive(path)
+}
+
+/// Create a same-directory temporary file for eventually replacing
+/// `target`: an unpredictable, exclusively-created name (issue #60, via
+/// [`open_exclusive_with_mode`], refusing to follow any symlink already
+/// occupying a candidate path), created with `target`'s existing
+/// permissions from the very first instant it exists when `target`
+/// already exists (issue #323).
+///
+/// Retries up to 16 times on `AlreadyExists` — a genuine name collision
+/// and a pre-planted symlink look identical from here, and both are
+/// handled the same way: try the next unpredictable candidate. Any other
+/// error is returned immediately. On exhausting all attempts, returns the
+/// last `AlreadyExists` error.
+///
+/// Returns the open file and the path it was created at — the caller
+/// needs this for writing, and later for `rename` and for cleanup on a
+/// later failure.
+///
+/// Reading `target`'s permissions here (to decide the temp file's
+/// creation-time mode) is itself fail-closed: any error *other than*
+/// "target doesn't exist" (a real stat failure — permission denied, a
+/// transient I/O error, ...) propagates immediately rather than being
+/// treated as "no existing target" — silently falling back to a
+/// less-restrictive default create mode for a target that might still be
+/// there, just unreadable, would be exactly the widening issue #323 exists
+/// to close.
+///
+/// This snapshot is used *only* to pick the temp file's initial mode —
+/// deliberately not threaded through to the caller for restoring exact
+/// permissions once writing is done. [`finish_atomic_commit`] re-reads
+/// `target`'s permissions itself, fresh, right before commit, instead of
+/// reusing whatever this function saw at creation time: a caller that
+/// streams a large file for minutes between creating the temp file and
+/// committing it could otherwise silently roll back a legitimate external
+/// `chmod` that landed on `target` during that window (PR #328's second
+/// review round). The brief gap between *this* read and the temp file's
+/// creation, by contrast, only ever affects that initial mode, is
+/// unavoidably tiny (a single syscall apart), and is harmless either way
+/// since the umask can only narrow it further and the final mode always
+/// comes from the fresh read in `finish_atomic_commit` regardless.
+pub(crate) fn create_tmp_for_target(
     dir: &std::path::Path,
     file_name: &str,
+    target: &std::path::Path,
 ) -> std::io::Result<(std::fs::File, std::path::PathBuf)> {
+    let existing_permissions = match std::fs::metadata(target) {
+        Ok(meta) => Some(meta.permissions()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
     let mut last_err =
         std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no candidate attempted");
     for _ in 0..16 {
         let candidate = tmp_candidate_path(dir, file_name);
-        match open_exclusive(&candidate) {
+        match open_exclusive_with_mode(&candidate, existing_permissions.as_ref()) {
             Ok(file) => return Ok((file, candidate)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = e,
             Err(e) => return Err(e),
@@ -662,6 +768,36 @@ fn create_tmp_exclusive(
 /// forever (PR #317 review).
 const MAX_SYMLINK_HOPS: u32 = 40;
 
+/// Canonicalize `path`'s *parent* directory only, then rejoin `path`'s own
+/// final component onto that canonical parent (issue #321). Used at the
+/// top of every hop in [`resolve_symlink_target`]'s loop, so a symlink
+/// anywhere in the ancestor chain — not just the final component that
+/// loop already chases — is pinned to its real, stable location before
+/// that hop's own final component is even inspected.
+///
+/// Deliberately splits parent from final component rather than
+/// canonicalizing the whole path outright: `std::fs::canonicalize`
+/// requires *every* component, including the last one, to already exist,
+/// which would break the dangling-symlink case `resolve_symlink_target`
+/// must still support (see its own doc comment) — only the parent needs
+/// to exist for this to succeed, exactly like every other operation here
+/// that must tolerate a not-yet-created final component.
+///
+/// A path with no parent component at all (a bare root, or a relative
+/// segment whose implicit parent is the empty path) is returned
+/// unchanged — nothing to canonicalize.
+fn canonicalize_parent(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let Some(file_name) = path.file_name() else {
+        return Ok(path.to_path_buf());
+    };
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let canonical_parent = std::fs::canonicalize(parent)?;
+    Ok(canonical_parent.join(file_name))
+}
+
 /// Resolve `path` to the file an atomic write should actually replace:
 /// `path` itself, unchanged, when it is not a symlink (including when it
 /// does not exist at all — the ordinary new-file save path); otherwise the
@@ -670,24 +806,32 @@ const MAX_SYMLINK_HOPS: u32 = 40;
 /// every intermediate link) untouched preserves the whole link topology
 /// (issue #301).
 ///
-/// Deliberately not `std::fs::canonicalize`: canonicalize requires every
-/// path component, including the final target, to already exist. That
-/// would turn saving through a *dangling* symlink into a hard error, when
-/// creating a fresh file at the link's target — leaving the dangling link
-/// now pointing at something real — is exactly the well-defined behavior
-/// this function enables (see
+/// Deliberately not `std::fs::canonicalize` applied to the *whole* path in
+/// one call: canonicalize requires every component, including the final
+/// target, to already exist. That would turn saving through a *dangling*
+/// symlink into a hard error, when creating a fresh file at the link's
+/// target — leaving the dangling link now pointing at something real — is
+/// exactly the well-defined behavior this function enables (see
 /// `atomic_write_through_dangling_symlink_heals_target`). Instead this
-/// walks the chain one hop at a time with `symlink_metadata`, which
+/// walks the chain one hop at a time: [`canonicalize_parent`] first pins
+/// every *ancestor* directory component to its real location (issue #321
+/// — a parent or grandparent symlink is resolved exactly as eagerly as
+/// the final component always was), then `symlink_metadata` — which
 /// (unlike `metadata`) reports the final path component itself rather
-/// than following it, and stops as soon as a hop is not a symlink —
-/// whether or not that final path exists yet.
+/// than following it — inspects that same final component and stops as
+/// soon as a hop is not a symlink, whether or not that final path exists
+/// yet. Both steps run on *every* hop, not just the first, so a link
+/// target whose own ancestors are symlinked (e.g. a relative target
+/// pointing through another symlinked directory) gets the identical
+/// treatment on the next iteration.
 ///
 /// A `symlink_metadata` error partway through the chain is *not* treated
 /// uniformly: `NotFound` means the current candidate is a dangling
 /// target — nothing more to resolve, so it is the answer (the
 /// dangling-symlink case above). Any other error (permission denied, a
-/// transient I/O failure, ...) is propagated immediately rather than
-/// swallowed as "not a symlink" — treating, say, a `PermissionDenied`
+/// transient I/O failure, a missing *ancestor* directory surfacing via
+/// `canonicalize_parent` instead, ...) is propagated immediately rather
+/// than swallowed as "not a symlink" — treating, say, a `PermissionDenied`
 /// stat as "this must be a plain file" would hand `atomic_write` a
 /// candidate that is actually still a symlink, and it would rename over
 /// the link itself, exactly the corruption issue #301 fixes (PR #317
@@ -696,10 +840,20 @@ const MAX_SYMLINK_HOPS: u32 = 40;
 /// sees, never a silently mis-resolved destination.
 ///
 /// Each relative link target is resolved against the directory of the
-/// symlink that named it (`read_link`'s own contract), not against
-/// `path`'s directory or the process's current directory, so a multi-hop
-/// chain of relative links spread across different directories resolves
-/// exactly the way the OS would resolve it.
+/// symlink that named it (`read_link`'s own contract) — which, since the
+/// previous step already canonicalized it, is itself already a real,
+/// symlink-free directory — not against `path`'s original directory or
+/// the process's current directory, so a multi-hop chain of relative
+/// links spread across different directories resolves exactly the way
+/// the OS would resolve it.
+///
+/// Because every ancestor is canonicalized, the returned path is
+/// generally *not* byte-identical to `path` even when nothing along the
+/// chain is actually a symlink — `std::env::temp_dir()` itself sits behind
+/// a real symlink on macOS (`/var` → `/private/var`), so this resolves
+/// through it just like it would through any other ancestor symlink.
+/// Callers (and their tests) must compare against a path resolved the
+/// same way, not `path` verbatim.
 ///
 /// TOCTOU note: resolving once and reusing the result for both a
 /// fingerprint check and the eventual write (see
@@ -707,20 +861,29 @@ const MAX_SYMLINK_HOPS: u32 = 40;
 /// #317's fifth review round found — a symlink repoint landing between an
 /// independent check-time resolve and a separate, later write-time
 /// resolve, which let content validated against one target get committed
-/// to a completely different, never-checked file. It does not, and
-/// cannot, close the narrower gap between *this* resolution and the
-/// eventual rename: a link in the chain can still be repointed in that
-/// window, but because the write always lands on the exact path this
-/// function already returned, the effect of a repoint there is at worst
-/// writing back to that same, already-validated target — never to some
-/// other file the caller never checked. No portable API closes even that
-/// narrower window — no rename is conditional on file identity — so this
-/// remains a narrowing, not an elimination, the same trade-off every
-/// other fingerprint/rename check in this file already makes.
+/// to a completely different, never-checked file. Canonicalizing every
+/// ancestor (issue #321) closes a second hole in that same family: a
+/// *parent*-directory symlink repointed between the check and a
+/// destination-side write that (before this fix) re-derived its target
+/// directory from the still-symlinked ancestor. Neither closes, nor can
+/// close, the narrower gap between *this* resolution and the eventual
+/// rename: the specific real directory this function resolves to could
+/// still be replaced, or a symlink planted exactly there, between this
+/// call returning and the caller's `rename` landing — an attacker who can
+/// already manipulate that resolved, real location on short notice, not
+/// merely repoint a symlink leading to it. No portable API closes even
+/// that narrower window — no rename is conditional on a whole directory
+/// chain's identity, and holding an open directory handle across the
+/// whole commit (an `openat`-style design) would be needed to close it
+/// fully, which is a much larger change than this fix's scope for a gap
+/// this narrow — so this remains a narrowing, not an elimination, the
+/// same trade-off every other fingerprint/rename check in this file
+/// already makes.
 fn resolve_symlink_target(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     let mut current = path.to_path_buf();
     let mut hops = 0u32;
     loop {
+        current = canonicalize_parent(&current)?;
         let meta = match std::fs::symlink_metadata(&current) {
             Ok(meta) => meta,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(current),
@@ -755,9 +918,11 @@ fn resolve_symlink_target(path: &std::path::Path) -> std::io::Result<std::path::
 }
 
 /// Resolve `path` past any destination symlink to the file a commit-time
-/// write should actually replace (see [`resolve_symlink_target`]), and
-/// split the result into the directory and file name a same-filesystem
-/// temp file for it needs (`create_tmp_exclusive`'s own parameters).
+/// write should actually replace (see [`resolve_symlink_target`] —
+/// including issue #321's ancestor-directory canonicalization, not just
+/// the final component), and split the result into the directory and file
+/// name a same-filesystem temp file for it needs
+/// (`create_tmp_for_target`'s own parameters).
 ///
 /// Shared by every guarded, user-document write path in this codebase —
 /// `save_document` here, `batch.rs::commit_conversion`, and
@@ -811,26 +976,184 @@ pub(crate) fn resolve_write_destination(
     Ok((write_target, dir, file_name))
 }
 
-/// Write bytes atomically: create a temporary file in the same directory
-/// (same filesystem) — with an unpredictable name and exclusive create, so
-/// the temp-file step can never be redirected through a pre-planted
-/// symlink (see [`create_tmp_exclusive`], [`open_exclusive`]; issue #60) —
-/// write it, fsync, then rename over the target. A crash mid-save leaves
-/// either the old file or the new one — never a half-written file.
-/// Existing file permissions are carried over to the replacement.
+/// Outcome of a successful [`finish_atomic_commit`]/[`atomic_write`]: the
+/// bytes are on disk at `target` either way — `durability_warning`
+/// distinguishes "the rename is confirmed durable" (`None`) from "the
+/// rename itself succeeded, but the parent-directory `fsync` that would
+/// confirm it survives an immediate crash could not be completed"
+/// (`Some`, the raw I/O error string from that failed `fsync` attempt) —
+/// PR #328's third review round. The latter must never be treated as a
+/// write failure by any caller: the content genuinely landed, so document
+/// state (dirty/fingerprint) must advance exactly as it would for any
+/// other successful write; what's unconfirmed is durability, not the
+/// write itself. See `save_document`'s use of this for how it reaches the
+/// frontend as a non-blocking, surfaced-not-silent warning rather than
+/// either an error or a silently dropped detail.
+#[derive(Debug)]
+pub(crate) struct CommitOutcome {
+    pub(crate) fingerprint: Fingerprint,
+    pub(crate) durability_warning: Option<String>,
+}
+
+/// Finish an atomic commit for a temp file already fully written and
+/// ready to replace `target`: this is the single, shared "commit tail"
+/// [`atomic_write`] and both streaming commit paths
+/// (`streamconvert.rs::stream_convert_file`,
+/// `streamreplace.rs::stream_replace_in_file`) all funnel through, so
+/// issues #322/#323/#324 are each fixed exactly once, not once per
+/// caller.
 ///
-/// This is a no-follow write: if `path` itself is a symlink, the rename
-/// replaces the *link* with a regular file, exactly like `std::fs::rename`
-/// normally would — it is never followed. For `store.rs`'s
-/// preferences/session/recent-files JSON, `backup.rs`'s hot-exit backups,
-/// and `migrate.rs`'s durable marker, that is deliberate: all three write
-/// to a path inside the app's own config/data directory that a user never
-/// chooses and never expects to be a symlink, so replacing a pre-planted
-/// symlink there (rather than following it) is what stops another process
-/// that can write to that directory from redirecting the write to an
-/// arbitrary target it chose — the same threat model issue #60 already
-/// defends the temp-file step against, just applied to the destination
-/// too.
+/// In order:
+///
+/// 1. **Issue #323, hardened (PR #328 second review round)** — read
+///    `target`'s *current* permissions fresh, right here, and restore them
+///    onto `tmp` now that content is fully written — never a snapshot
+///    [`create_tmp_for_target`] captured back when the temp file was
+///    created. Between those two points a caller may have spent minutes
+///    streaming a large file, long enough for a legitimate external
+///    `chmod` on `target` (unrelated to this write's own content) to land
+///    in between; applying a stale creation-time snapshot here would
+///    silently roll that back, exactly the "the file gets silently
+///    widened again" failure mode issue #323 was about, just triggered by
+///    a live permission change instead of by never narrowing at all. Any
+///    failure reading or applying this is fail-closed — propagated
+///    immediately, before ever renaming, never silently ignored the way a
+///    bare `let _ = set_permissions(...)` would.
+/// 2. `tmp.sync_all()` — the temp file's *content* is durable before
+///    anything is renamed over the target.
+/// 3. `drop(tmp)`, then **issue #324, hardened (PR #328 third review
+///    round)** — capture a [`Fingerprint`] via a fresh `Fingerprint::
+///    from_path(&tmp_path)`, *after* closing the handle rather than from
+///    the still-open one: Windows' last-write-time can remain provisional
+///    until a handle closes, so a `from_file` fingerprint captured before
+///    that point can disagree with what any later, independent stat of
+///    the identical bytes sees, breaking both the frontend's echo-
+///    suppression comparison and the next save's staleness check on that
+///    platform (`Fingerprint` there has no inode identity to fall back on
+///    — see `fsguard.rs`). Unix has no such lazy-timestamp behavior, so
+///    the extra close-before-stat costs nothing there and this stays one
+///    code path for both platforms rather than two that could drift.
+///    `tmp_path` is still safe to stat for provenance purposes at this
+///    point: it is the unpredictable, exclusively-created path this
+///    function alone created (`create_tmp_for_target`/
+///    `open_exclusive_with_mode`; issue #60), not yet renamed into
+///    `target`'s public location, so nothing else could plausibly have
+///    touched it in the gap between closing the handle and this stat —
+///    the same reasoning every other resolve-to-commit gap in this file
+///    already accepts (narrows, doesn't eliminate).
+/// 4. `std::fs::rename(&tmp_path, target)` — replaces the destination on
+///    every platform (`MOVEFILE_REPLACE_EXISTING` on Windows). The
+///    content is now committed; nothing past this point can turn this
+///    call back into "nothing was written".
+/// 5. **Issue #322, hardened (PR #328 third review round)** — `fsync`
+///    `target`'s parent directory (via `sync_parent_dir`, production
+///    callers always passing `migrate::fsync_dir`), so the rename
+///    *itself* — not just the temp file's content — survives a crash or
+///    power loss immediately after this returns. Unlike the first version
+///    of this fix, a failure here is *not* propagated as an `Err` — the
+///    rename already succeeded, so reporting this call a failure would be
+///    indistinguishable from "nothing was written" to every caller
+///    (`save_document` would tell the frontend the save failed while
+///    `expected_fingerprint`/`doc.fingerprint` stayed pointed at the old,
+///    now-stale content — the *next* save would then see its own,
+///    already-landed bytes and misreport them as an external change).
+///    Instead this becomes `Some(error string)` in the returned
+///    `CommitOutcome`, a durability warning riding along with a perfectly
+///    normal success. A crash between the rename and this `fsync` is the
+///    one window nothing here can protect after the fact (the write
+///    already happened); what this step guarantees is that the attempt is
+///    always made and its result always surfaced, never silently
+///    skipped. Windows has no portable directory-handle-flush API, so
+///    this is a documented, accepted best-effort no-op there (`fsync_dir`'s
+///    own doc comment) — the file-level `sync_all` in step 2 still runs on
+///    every platform regardless.
+///
+/// On a failure in steps 1-4, the temp file is removed and the error
+/// propagates — nothing was committed. Step 5 never causes that cleanup
+/// (or an `Err` at all): by the time it runs, `tmp_path` no longer exists
+/// (already renamed to `target`), and its own failure becomes part of a
+/// successful `Ok(CommitOutcome)` instead.
+///
+/// `sync_parent_dir` is a parameter (rather than calling
+/// `migrate::fsync_dir` directly) purely so tests can inject a failing
+/// stand-in and observe the `Ok(CommitOutcome { durability_warning:
+/// Some(_), .. })` shape directly — see
+/// `atomic_write_surfaces_durability_warning_when_parent_directory_sync_fails`.
+pub(crate) fn finish_atomic_commit(
+    tmp: std::fs::File,
+    tmp_path: std::path::PathBuf,
+    target: &std::path::Path,
+    sync_parent_dir: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> std::io::Result<CommitOutcome> {
+    let result = (|| {
+        // Issue #323 (PR #328 second review round): fresh read, not a
+        // stale snapshot from when the temp file was created.
+        match std::fs::metadata(target) {
+            Ok(meta) => tmp.set_permissions(meta.permissions())?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Brand new file: no prior permission model to restore.
+            }
+            Err(e) => return Err(e),
+        }
+        tmp.sync_all()?;
+        drop(tmp);
+        // Issue #324 (PR #328 third review round): stat *after* closing,
+        // not from the open handle -- see this function's own doc comment
+        // for the Windows timestamp-finalization rationale.
+        let fingerprint = Fingerprint::from_path(&tmp_path)?;
+        // std::fs::rename replaces the destination on every platform
+        // (MOVEFILE_REPLACE_EXISTING on Windows). From here on the
+        // content is committed -- a parent-directory sync failure below is
+        // a durability-confirmation gap, not a write failure.
+        std::fs::rename(&tmp_path, target)?;
+        let durability_warning = target
+            .parent()
+            .and_then(|parent| sync_parent_dir(parent).err())
+            .map(|e| e.to_string());
+        Ok(CommitOutcome {
+            fingerprint,
+            durability_warning,
+        })
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
+}
+
+/// Write bytes atomically: create a temporary file in the same directory
+/// (same filesystem) — with an unpredictable name, exclusive create, and
+/// (when `path` already exists) that existing file's own permission mode
+/// from the moment the temp file is created (see [`create_tmp_for_target`];
+/// issues #60/#323) — write it, then commit via [`finish_atomic_commit`]:
+/// restore *fresh* permissions, `fsync`, capture a provenance-bound
+/// [`Fingerprint`] via a post-close stat, rename, and `fsync` the parent
+/// directory so the rename itself is crash-durable (issues #322/#323/#324,
+/// hardened in PR #328's second and third review rounds — see
+/// `finish_atomic_commit`'s own doc comment for the full detail on each).
+/// A crash mid-save leaves either the old file or the new one — never a
+/// half-written file. Returns a [`CommitOutcome`]: the write can succeed
+/// with its durability confirmed (`durability_warning: None`) or succeed
+/// with that confirmation incomplete (`Some`) — never as an outright
+/// failure for a parent-directory `fsync` alone, since the content really
+/// did land either way.
+///
+/// This is the single durable, provenance-bound commit primitive every
+/// write path in this codebase shares — internal app-state writes
+/// (`store.rs`'s preferences/session/recent-files JSON, `backup.rs`'s
+/// hot-exit backups, `migrate.rs`'s durable marker) and every
+/// guarded user-document path alike (PR #317/#321-#324 review). It is a
+/// no-follow write: if `path` itself is a symlink, the rename replaces
+/// the *link* with a regular file, exactly like `std::fs::rename`
+/// normally would — it is never followed. For the internal callers above,
+/// that is deliberate: all three write to a path inside the app's own
+/// config/data directory that a user never chooses and never expects to
+/// be a symlink, so replacing a pre-planted symlink there (rather than
+/// following it) is what stops another process that can write to that
+/// directory from redirecting the write to an arbitrary target it chose —
+/// the same threat model issue #60 already defends the temp-file step
+/// against, just applied to the destination too.
 ///
 /// A *user*-chosen document path is a different threat model: there, the
 /// symlink is the user's own, deliberately placed (dotfiles, managed
@@ -847,7 +1170,7 @@ pub(crate) fn resolve_write_destination(
 /// `resolve_write_destination`'s doc comment for why resolving
 /// independently for the check and the write was a bug in its own right,
 /// and why reusing one resolution fixes it).
-pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<CommitOutcome> {
     use std::io::Write;
 
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -855,24 +1178,13 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".into());
-    let (mut tmp, tmp_path) = create_tmp_exclusive(dir, &file_name)?;
+    let (mut tmp, tmp_path) = create_tmp_for_target(dir, &file_name, path)?;
 
-    let result = (|| {
-        tmp.write_all(bytes)?;
-        tmp.sync_all()?;
-        drop(tmp);
-        if let Ok(meta) = std::fs::metadata(path) {
-            let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
-        }
-        // std::fs::rename replaces the destination on every platform
-        // (MOVEFILE_REPLACE_EXISTING on Windows).
-        std::fs::rename(&tmp_path, path)
-    })();
-
-    if result.is_err() {
+    if let Err(e) = tmp.write_all(bytes) {
         let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
     }
-    result
+    finish_atomic_commit(tmp, tmp_path, path, migrate::fsync_dir)
 }
 
 /// Encode LF-normalized content with the given encoding and line ending,
@@ -907,8 +1219,13 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
 /// explicitly chooses to overwrite. `expected_fingerprint: None` also skips
 /// the check: there is no prior on-disk baseline to compare against for an
 /// untitled document's first save or a Save As to a brand-new path. On a
-/// successful write, the fresh post-write fingerprint is returned so the
-/// caller can use it as the baseline for the *next* save.
+/// successful write, `atomic_write`'s own provenance-bound `Fingerprint` —
+/// captured from the still-open temp handle *before* the rename, never a
+/// fresh, independent `Fingerprint::from_path` afterward — is returned so
+/// the caller can use it as the baseline for the *next* save (issue #324:
+/// a post-rename path stat has a gap an external replace could race into
+/// between the rename and that stat, handing the frontend a fingerprint
+/// that describes someone else's write, not this call's own).
 ///
 /// Like the streaming-replace guard this shares `fsguard.rs` with (#102),
 /// the check narrows the race to the tiny stat-to-rename window rather
@@ -945,6 +1262,7 @@ fn save_document(
             stale: false,
             fingerprint: None,
             lossy_report: Some(lossy_report),
+            durability_warning: None,
         });
     }
     let target = std::path::Path::new(&path);
@@ -970,17 +1288,28 @@ fn save_document(
                     stale: true,
                     fingerprint: None,
                     lossy_report: None,
+                    durability_warning: None,
                 });
             }
         }
     }
-    atomic_write(&write_target, &bytes).map_err(|e| format!("Failed to write {path}: {e}"))?;
+    // Issue #324: `fingerprint` is `atomic_write`'s own provenance-bound
+    // capture (a fresh, post-close stat of its own temp file, immediately
+    // before the rename) -- not a fresh `Fingerprint::from_path(&write_target)`
+    // here, which would reopen exactly the race this issue reports.
+    // `durability_warning` (PR #328's third review round): a parent-directory
+    // `fsync` failure never fails this call outright -- the content really
+    // is on disk -- it just rides along as a non-blocking warning; see
+    // `CommitOutcome`'s own doc comment.
+    let outcome =
+        atomic_write(&write_target, &bytes).map_err(|e| format!("Failed to write {path}: {e}"))?;
     Ok(SaveResult {
         unmappable,
         written: true,
         stale: false,
-        fingerprint: Fingerprint::from_path(&write_target).ok(),
+        fingerprint: Some(outcome.fingerprint),
         lossy_report: None,
+        durability_warning: outcome.durability_warning,
     })
 }
 
@@ -1303,6 +1632,8 @@ mod tests {
     use super::resolve_symlink_target;
     #[cfg(unix)]
     use super::resolve_write_destination;
+    #[cfg(unix)]
+    use super::{create_tmp_for_target, finish_atomic_commit, CommitOutcome};
 
     /// Test-only stand-in for the "resolve once, reuse for the write"
     /// discipline every guarded caller (`save_document`,
@@ -1314,7 +1645,10 @@ mod tests {
     /// end-to-end go through this instead of calling `atomic_write`
     /// directly on a symlink path.
     #[cfg(unix)]
-    fn write_through_symlinks(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn write_through_symlinks(
+        path: &std::path::Path,
+        bytes: &[u8],
+    ) -> std::io::Result<CommitOutcome> {
         let (write_target, _, _) = resolve_write_destination(path)?;
         atomic_write(&write_target, bytes)
     }
@@ -1730,9 +2064,16 @@ mod tests {
         symlink(&old_target, &link).unwrap();
 
         // Step 1: resolve once -- exactly what every guarded caller does
-        // before its fingerprint check.
+        // before its fingerprint check. `write_target` is canonicalized
+        // (issue #321 -- every ancestor directory, not just the final
+        // component, is pinned via `std::fs::canonicalize`), so compare
+        // against `old_target` canonicalized the same way rather than the
+        // literal path -- on macOS, `std::env::temp_dir()` itself sits
+        // behind a real symlink (`/var` -> `/private/var`), so the two
+        // differ even though nothing in this test's own fixture is a
+        // symlink.
         let (write_target, _, _) = resolve_write_destination(&link).unwrap();
-        assert_eq!(write_target, old_target);
+        assert_eq!(write_target, std::fs::canonicalize(&old_target).unwrap());
 
         // Step 2: a dotfile manager (or any other process able to write
         // where `link` lives) repoints it -- as if this happened right
@@ -1756,6 +2097,447 @@ mod tests {
             b"unrelated new target, never checked",
             "the file the link was repointed to must never receive a write \
              this call never validated against it"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #321 — the basic regression: a symlinked *parent* directory,
+    /// not just a symlinked final component, must be resolved to its real
+    /// location. `current -> real` is a directory symlink; opening/saving
+    /// `current/doc.txt` must resolve to `real/doc.txt`, not stay pinned
+    /// to the `current` name at all. Compared canonicalized on both sides
+    /// (see `resolve_symlink_target`'s doc comment on why the result is
+    /// never byte-identical to the input once ancestor canonicalization
+    /// is involved — macOS's `/var` -> `/private/var` alone guarantees
+    /// this for every test under `std::env::temp_dir()`).
+    #[cfg(unix)]
+    #[test]
+    fn resolve_write_destination_resolves_through_symlinked_parent_directory() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-parent-symlink-basic-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("doc.txt"), b"content").unwrap();
+        let current = dir.join("current");
+        symlink(&real, &current).unwrap();
+
+        let (write_target, _, _) = resolve_write_destination(&current.join("doc.txt")).unwrap();
+        assert_eq!(
+            write_target,
+            std::fs::canonicalize(&real).unwrap().join("doc.txt")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #321 — the same resolution, but through a *chain* of
+    /// symlinked ancestor directories (`current -> mid -> real`), not
+    /// just one hop, so a symlinked grandparent (or deeper) is pinned
+    /// exactly as eagerly as a direct parent.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_write_destination_resolves_through_multi_level_symlinked_parent_directories() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-parent-symlink-multilevel-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("doc.txt"), b"content").unwrap();
+        let mid = dir.join("mid");
+        symlink(&real, &mid).unwrap();
+        let current = dir.join("current");
+        symlink(&mid, &current).unwrap();
+
+        let (write_target, _, _) = resolve_write_destination(&current.join("doc.txt")).unwrap();
+        assert_eq!(
+            write_target,
+            std::fs::canonicalize(&real).unwrap().join("doc.txt")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #321 — the core exploit reproduction: a parent-directory
+    /// symlink repointed between a guarded caller's resolve and its
+    /// eventual write must not redirect that write to a completely
+    /// different, never-validated directory. Mirrors
+    /// `resolve_once_then_write_survives_a_repoint_by_writing_back_to_the_resolved_target`
+    /// exactly, except the repointed symlink here is `current` (a
+    /// *directory*, i.e. an ancestor of the final path) rather than the
+    /// final component itself -- before this fix, `resolve_symlink_target`
+    /// only ever inspected the final component, so `write_target` would
+    /// have stayed `current/doc.txt` verbatim and the write below would
+    /// have landed in whichever directory `current` pointed to *at write
+    /// time*, not the one validated at resolve time.
+    #[cfg(unix)]
+    #[test]
+    fn parent_directory_repoint_after_resolve_writes_back_to_originally_resolved_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-parent-symlink-repoint-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let dir_a = dir.join("A");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::write(dir_a.join("doc.txt"), b"A's original content").unwrap();
+        let dir_b = dir.join("B");
+        std::fs::create_dir_all(&dir_b).unwrap();
+        std::fs::write(dir_b.join("doc.txt"), b"unrelated B content, never checked").unwrap();
+        let current = dir.join("current");
+        symlink(&dir_a, &current).unwrap();
+
+        // Step 1: resolve once, exactly as every guarded caller does.
+        let (write_target, _, _) = resolve_write_destination(&current.join("doc.txt")).unwrap();
+
+        // Step 2: the parent-directory symlink is repointed -- as if a
+        // dotfile manager (or any other process able to write where
+        // `current` lives) did this between the resolve and the write.
+        std::fs::remove_file(&current).unwrap();
+        symlink(&dir_b, &current).unwrap();
+
+        // Step 3: the write itself, using the resolution from step 1 --
+        // never re-resolving `current`.
+        atomic_write(&write_target, b"validated content from A").unwrap();
+
+        assert_eq!(
+            std::fs::read(dir_a.join("doc.txt")).unwrap(),
+            b"validated content from A",
+            "a parent-directory repoint after the resolve must only ever \
+             redirect the write back to the SAME, already-resolved directory"
+        );
+        assert_eq!(
+            std::fs::read(dir_b.join("doc.txt")).unwrap(),
+            b"unrelated B content, never checked",
+            "the directory `current` was repointed to must never receive a \
+             write this call never validated against it"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #322, hardened in PR #328's third review round — the
+    /// distinguishing guarantee: a parent-directory `fsync` failure must
+    /// never be reported as an outright write failure (the rename already
+    /// succeeded — the content is genuinely on disk), but it must also
+    /// never be silently dropped. Injects a `sync_parent_dir` that always
+    /// fails (the seam `finish_atomic_commit`'s own doc comment describes)
+    /// and confirms all three at once: the function still returns `Ok`
+    /// (never turns an already-successful rename into a reported
+    /// failure), the returned `CommitOutcome::durability_warning` carries
+    /// the failure's own message (never silently dropped), and the rename
+    /// had already actually happened on disk by then.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_surfaces_durability_warning_when_parent_directory_sync_fails() {
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-fsync-dir-ordering-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+
+        let (tmp, tmp_path) = create_tmp_for_target(&dir, "doc.txt", &target).unwrap();
+        use std::io::Write;
+        (&tmp).write_all(b"content that does get renamed").unwrap();
+
+        let result = finish_atomic_commit(tmp, tmp_path, &target, |_| {
+            Err(std::io::Error::other(
+                "simulated parent-directory fsync failure",
+            ))
+        });
+
+        let outcome = result.unwrap_or_else(|e| {
+            panic!(
+                "a parent-directory sync failure must not turn an \
+                 already-successful rename into a reported failure; got Err({e})"
+            )
+        });
+        assert_eq!(
+            outcome.durability_warning.as_deref(),
+            Some("simulated parent-directory fsync failure"),
+            "the sync failure must be surfaced as a durability warning, \
+             never silently dropped"
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"content that does get renamed",
+            "the rename itself must have actually happened -- this is a \
+             durability-confirmation gap, not a write failure"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #324, hardened in PR #328's third review round (Windows
+    /// timestamp finalization): `finish_atomic_commit` fingerprints its
+    /// temp file via a fresh `Fingerprint::from_path` *after* closing the
+    /// handle, not from the still-open handle -- because on Windows the
+    /// last-write-time can remain provisional until the handle actually
+    /// closes, a `from_file` fingerprint captured before that point could
+    /// disagree with what any later, independent stat of the identical
+    /// bytes sees. This can't reproduce the Windows-specific timing
+    /// quirk itself on this platform, but it does pin the invariant the
+    /// fix depends on: the fingerprint `atomic_write` returns must be
+    /// *identical* to a fresh, independent stat of the file at `target`
+    /// taken right after this call returns -- proving the close-before-
+    /// stat sequencing produces a result that is indistinguishable from
+    /// "stat the real, settled file", the property that stops it from
+    /// ever disagreeing with a later reader on any platform.
+    #[test]
+    fn atomic_writes_fingerprint_matches_a_fresh_independent_stat_of_the_renamed_file() {
+        let dir =
+            std::env::temp_dir().join(format!("mojidori-close-before-stat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+
+        let outcome = atomic_write(&target, b"settled content").unwrap();
+        let independent_stat = Fingerprint::from_path(&target).unwrap();
+
+        assert_eq!(
+            outcome.fingerprint, independent_stat,
+            "the fingerprint atomic_write returns must exactly match a \
+             fresh, independent stat of the renamed file -- any drift here \
+             is exactly what a from-file (pre-close) capture could produce \
+             on a platform whose last-write-time finalizes at handle close"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #323 — the actual regression: the temp file must already
+    /// carry the target's exact mode the moment it exists, before any
+    /// content is written, not a default create-mode later chmod'd after
+    /// the write. `0o600` is used specifically because umask can only
+    /// *narrow* a requested mode, never widen it -- so if this ever
+    /// regresses to "default mode, chmod after", the temp file would
+    /// still be readable by group/other for however briefly, and this
+    /// assertion (checked before a single byte is written) would catch it
+    /// even under a permissive `0o000` umask.
+    #[cfg(unix)]
+    #[test]
+    fn create_tmp_for_target_creates_file_with_targets_mode_before_any_content_is_written() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("mojidori-transient-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("secret.txt");
+        std::fs::write(&target, b"private content").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let (_tmp, tmp_path) = create_tmp_for_target(&dir, "secret.txt", &target).unwrap();
+
+        // Checked immediately after creation, before any `write_all` --
+        // this is the exact instant issue #323 reports as briefly `0644`
+        // (or wider) under the old create-default-then-chmod-after design.
+        let mode_at_creation = std::fs::metadata(&tmp_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode_at_creation, 0o600,
+            "the temp file must already be 0600 the instant it exists, \
+             before any content is written -- got {mode_at_creation:o}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #323, hardened in PR #328's second review round — the
+    /// streaming-path rollback regression: `create_tmp_for_target` snapshots
+    /// `target`'s permissions once, at temp-file-creation time, purely to
+    /// pick that file's *initial* mode. A long streaming operation
+    /// (`stream_convert_file`/`stream_replace_in_file`) can then run for
+    /// minutes between that creation and the eventual commit — long enough
+    /// for a legitimate external `chmod` on `target` (its content
+    /// untouched, so `verify_unchanged`'s identity/size/mtime check still
+    /// passes) to land in between. This reproduces exactly that ordering
+    /// directly against the shared primitives every commit path funnels
+    /// through (`create_tmp_for_target` then, later, `finish_atomic_commit`)
+    /// and pins that the *external* chmod wins: `finish_atomic_commit`
+    /// must read `target`'s permissions fresh, right before committing,
+    /// never reapply the stale creation-time snapshot and silently roll
+    /// the file back to a wider mode than the one actually in effect when
+    /// the operation finished.
+    #[cfg(unix)]
+    #[test]
+    fn finish_atomic_commit_applies_a_permission_change_that_lands_during_a_long_operation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-permission-mid-operation-chmod-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("shared.txt");
+        std::fs::write(&target, b"original content").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Mirrors the streaming paths' own sequence: create the temp file
+        // (snapshotting target's permissions as they are *now*, 0644,
+        // purely for its own initial mode) well before the eventual
+        // commit.
+        let (tmp, tmp_path) = create_tmp_for_target(&dir, "shared.txt", &target).unwrap();
+        use std::io::Write;
+        (&tmp).write_all(b"converted content").unwrap();
+
+        // A security tool (or the user) tightens the shared file's
+        // permissions while the "long streaming operation" is still in
+        // flight -- unrelated to this write's own content, so a real
+        // verify_unchanged identity/size/mtime check would not catch it
+        // (chmod changes neither).
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        finish_atomic_commit(tmp, tmp_path, &target, crate::migrate::fsync_dir).unwrap();
+
+        let final_mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            final_mode, 0o600,
+            "the external chmod that landed during the operation must win -- \
+             a stale creation-time snapshot would have silently restored \
+             0644 here instead, widening a file someone deliberately \
+             tightened moments before this commit; got {final_mode:o}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #323 — fail-closed on a permission *read* failure: if
+    /// `target`'s existing permissions can't even be read (here,
+    /// `PermissionDenied` from a search-permission-less parent directory,
+    /// the same technique PR #317's review used for
+    /// `resolve_symlink_target_propagates_non_notfound_stat_errors`), that
+    /// must propagate as an error rather than being treated as "no
+    /// existing target" and silently falling back to a less-restrictive
+    /// default create mode. Simulating a permission-*apply* failure
+    /// (`tmp.set_permissions` itself failing after content is written)
+    /// deterministically, without root or platform-specific `chflags`
+    /// tooling, isn't practical in a portable unit test -- that half of
+    /// the fail-closed path shares the exact same `?`-propagation this
+    /// test already exercises for the read side, just one line later in
+    /// `finish_atomic_commit`.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_fails_closed_when_existing_target_permissions_cannot_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-permission-read-failure-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let blocked = dir.join("blocked");
+        std::fs::create_dir_all(&blocked).unwrap();
+        let target = blocked.join("secret.txt");
+        std::fs::write(&target, b"private content").unwrap();
+
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Sanity-check the permission actually blocks stat in this
+        // environment before asserting anything about it -- running as
+        // root (or some other permission-bypassing context) would make
+        // `metadata` succeed regardless, and the rest of this test would
+        // then be asserting nothing meaningful.
+        let sanity = std::fs::metadata(&target);
+        if sanity.is_ok() {
+            std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::remove_dir_all(&dir).ok();
+            eprintln!(
+                "skipping atomic_write_fails_closed_when_existing_target_permissions_cannot_be_read: \
+                 this process appears to bypass directory permission checks (root?)"
+            );
+            return;
+        }
+
+        let result = atomic_write(&target, b"new content, must never land");
+
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            result.is_err(),
+            "a permission-read failure on an existing target must propagate, \
+             never be silently treated as \"no existing target\"; got {result:?}"
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"private content",
+            "the original content must survive completely untouched"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #324 — demonstrates the exact provenance gap the fix closes.
+    /// The *old* design's fingerprint came from a fresh, independent
+    /// `Fingerprint::from_path(target)` call made *after* the rename --
+    /// reproduced directly here as `post_rename_path_stat` -- which an
+    /// external write landing in that now-eliminated gap could make
+    /// describe someone else's content instead of this call's own bytes.
+    /// `atomic_write`'s actual fingerprint (`outcome.fingerprint`) has no
+    /// such gap at all: it is a fresh stat of its own temp file, captured
+    /// immediately before the rename (right after closing the handle --
+    /// see `finish_atomic_commit`'s doc comment for why the close has to
+    /// happen first, on every platform), so it is architecturally
+    /// incapable of describing anything other than what this specific
+    /// call wrote, no matter what happens to `target` afterward.
+    #[test]
+    fn post_rename_path_stat_can_drift_but_atomic_writes_own_fingerprint_cannot() {
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-provenance-bound-fingerprint-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+
+        let outcome = atomic_write(&target, b"this call's own content").unwrap();
+        assert_eq!(
+            outcome.fingerprint.len,
+            b"this call's own content".len() as u64
+        );
+
+        // Reproduces the *old* design's exposure directly: an external
+        // process replacing `target` in the window a fresh, independent
+        // post-rename path stat would have raced against.
+        std::fs::write(
+            &target,
+            b"a different process's write, landed after our rename",
+        )
+        .unwrap();
+        let post_rename_path_stat = Fingerprint::from_path(&target).unwrap();
+
+        assert_ne!(
+            post_rename_path_stat.len, outcome.fingerprint.len,
+            "a post-rename path stat can drift from what was actually \
+             written -- exactly the provenance gap issue #324 reports"
+        );
+        // atomic_write's own returned fingerprint is completely unaffected
+        // by any of this -- it already, permanently describes exactly
+        // what this call wrote.
+        assert_eq!(
+            outcome.fingerprint.len,
+            b"this call's own content".len() as u64
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -1848,8 +2630,9 @@ mod tests {
     /// Issue #60, layer 2 — the unit-level guarantee that actually closes
     /// the hole: opening a temp-file candidate must refuse to follow a
     /// symlink already sitting at that path, rather than silently writing
-    /// through it. This is the same open call `create_tmp_exclusive` uses
-    /// for every candidate.
+    /// through it. `create_tmp_for_target`'s own `open_exclusive_with_mode`
+    /// shares this exact `create_new` guarantee for every candidate, just
+    /// with an optional mode alongside it (issue #323).
     #[cfg(unix)]
     #[test]
     fn tmp_file_creation_refuses_preexisting_symlink() {

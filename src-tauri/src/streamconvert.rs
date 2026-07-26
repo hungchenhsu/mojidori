@@ -120,6 +120,14 @@ pub struct StreamConvertReport {
     /// can drive the identical confirm dialog (`showLossySaveConfirm`).
     /// `None` on every other result.
     pub lossy_report: Option<normalize::LossySaveReport>,
+    /// Mirrors `lib.rs::SaveResult::durability_warning` exactly: the raw
+    /// I/O error string from a failed parent-directory `fsync`, populated
+    /// only when `written` is true and that follow-up durability
+    /// confirmation failed (PR #328's third review round). `None` on every
+    /// other result, including every ordinary successful conversion. Never
+    /// a failure in its own right -- see `streamconvert.ts`'s result
+    /// message note.
+    pub durability_warning: Option<String>,
 }
 
 /// Fail closed if the file at `path` is no longer the file described by
@@ -258,14 +266,17 @@ fn run_convert_loop(
 /// 3. A target BOM prefix is written up front only when `target_with_bom`
 ///    and `target_encoding` is UTF-8 (see the module doc comment).
 /// 4. `path` is resolved past any destination symlink exactly once
-///    (`lib.rs::resolve_write_destination`; issue #301, streaming-path
-///    follow-up), then the source is streamed, decoded, scanned for
-///    target-representability, and re-encoded to a temp file in the
-///    *resolved* target's directory (`create_tmp_exclusive`) -- see
-///    [`run_convert_loop`]. Any malformed source byte sequence aborts
-///    immediately: the temp file is discarded and the original is never
-///    touched. This resolve never happens a second time later (unlike the
-///    bug PR #317's fifth review round found in
+///    (`lib.rs::resolve_write_destination`, which also canonicalizes
+///    every *ancestor* directory component, not just the final one --
+///    issue #321; issue #301, streaming-path follow-up), then the source
+///    is streamed, decoded, scanned for target-representability, and
+///    re-encoded to a temp file in the *resolved* target's directory,
+///    created with that target's existing permissions from the moment it
+///    exists if it already had any (`lib.rs::create_tmp_for_target`;
+///    issue #323) -- see [`run_convert_loop`]. Any malformed source byte
+///    sequence aborts immediately: the temp file is discarded and the
+///    original is never touched. This resolve never happens a second time
+///    later (unlike the bug PR #317's fifth review round found in
 ///    `save_document`/`commit_conversion`/`execute_one`): step 6 below is
 ///    what actually guards against a symlink repoint happening during the
 ///    stream, by re-checking `path`'s identity fresh against the
@@ -291,13 +302,26 @@ fn run_convert_loop(
 ///    `repoint_after_resolve_but_before_verify_aborts_without_touching_either_target`
 ///    for why this fresh, late identity check is what makes a second,
 ///    independent resolve at write time unnecessary here.
-/// 7. On success: `sync_all`, the fingerprint check above, carry over the
-///    resolved target's permissions, then `rename` over the *same*
-///    resolved target step 4 produced -- never over `path` itself when it
-///    names a symlink, so the link survives, and never a fresh
-///    re-resolve -- the same atomic discipline as `lib.rs::atomic_write`
-///    and `stream_replace_in_file`, just fed by a temp file filled
-///    incrementally instead of from one in-memory buffer.
+/// 7. On success: `lib.rs::finish_atomic_commit` -- the exact same commit
+///    tail `atomic_write` itself uses -- restores the resolved target's
+///    exact, *freshly re-read* permissions (fail-closed on any failure;
+///    issue #323, hardened in PR #328's second review round so a
+///    legitimate external `chmod` landing during this potentially
+///    long-running stream is never silently rolled back to whatever
+///    `create_tmp_for_target` saw when the temp file was created),
+///    `sync_all`s, closes the handle and captures a provenance-bound
+///    `Fingerprint` from a fresh, *post-close* stat of the temp file
+///    (issue #324, hardened in PR #328's third round for Windows'
+///    provisional-until-close last-write-time -- though this command has
+///    no per-file staleness baseline to hand the result to), `rename`s
+///    over the *same* resolved target step 4 produced -- never over
+///    `path` itself when it names a symlink, so the link survives, and
+///    never a fresh re-resolve -- then `fsync`s the parent directory so
+///    the rename itself is crash-durable (issue #322); a failure at just
+///    that last step becomes `StreamConvertReport::durability_warning`
+///    rather than an error (PR #328's third round), since the conversion
+///    itself already landed. Just fed by a temp file filled incrementally
+///    instead of from one in-memory buffer.
 #[tauri::command]
 pub fn stream_convert_file(
     path: String,
@@ -338,7 +362,12 @@ pub fn stream_convert_file(
     // (PR #317 review, round 5).
     let (write_target, dir, file_name) = crate::resolve_write_destination(path_ref)
         .map_err(|e| format!("Failed to write {path}: {e}"))?;
-    let (mut tmp_file, tmp_path) = crate::create_tmp_exclusive(&dir, &file_name)
+    // Issue #323: the temp file is created with `write_target`'s existing
+    // permissions (if any) from the very first instant it exists -- see
+    // `create_tmp_for_target`'s doc comment -- rather than the previous
+    // default-create-mode-then-chmod-after window a private target's
+    // content could sit in a wider-than-intended mode during.
+    let (mut tmp_file, tmp_path) = crate::create_tmp_for_target(&dir, &file_name, &write_target)
         .map_err(|e| format!("Failed to create temp file: {e}"))?;
 
     // Target BOM: a fresh decision independent of whatever the source had
@@ -380,33 +409,46 @@ pub fn stream_convert_file(
                     samples,
                     samples_truncated: outcome.samples_truncated,
                 }),
+                durability_warning: None,
             })
         }
         Ok(outcome) => {
-            if let Err(e) = tmp_file.sync_all() {
-                drop(tmp_file);
-                let _ = std::fs::remove_file(&tmp_path);
-                return Err(format!("Failed to write {path}: {e}"));
-            }
-            drop(tmp_file);
+            // The late, pre-commit identity check (step 6 in the doc
+            // comment above): must run *before* `finish_atomic_commit`,
+            // which owns `tmp_file` from here on and does the actual
+            // `sync_all`/rename/directory-`fsync` tail.
             if let Err(e) = verify_unchanged(path_ref, &fingerprint) {
+                drop(tmp_file);
                 let _ = std::fs::remove_file(&tmp_path);
                 return Err(e);
             }
-            if let Ok(meta) = std::fs::metadata(&write_target) {
-                let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
-            }
-            // Renaming onto `write_target` rather than `path_ref` is what
-            // keeps a symlink at `path` intact -- see
-            // `resolve_write_destination`'s doc comment.
-            if let Err(e) = std::fs::rename(&tmp_path, &write_target) {
-                let _ = std::fs::remove_file(&tmp_path);
-                return Err(format!("Failed to write {path}: {e}"));
-            }
+            // Issues #322/#323/#324: the same commit tail `atomic_write`
+            // uses -- restore `write_target`'s fresh permissions
+            // (fail-closed on any failure), `fsync`, capture a
+            // provenance-bound `Fingerprint` via a post-close stat, rename
+            // onto `write_target` (never `path_ref` itself, so a symlink
+            // at `path` survives -- see `resolve_write_destination`'s doc
+            // comment), then `fsync` the parent directory so the rename
+            // itself is durable -- a failure there becomes
+            // `durability_warning`, not an error (PR #328's third review
+            // round). The fingerprint isn't surfaced in
+            // `StreamConvertReport` (this command has no per-file
+            // staleness baseline to update), so only that part is
+            // discarded.
+            let commit = match crate::finish_atomic_commit(
+                tmp_file,
+                tmp_path,
+                &write_target,
+                crate::migrate::fsync_dir,
+            ) {
+                Ok(commit) => commit,
+                Err(e) => return Err(format!("Failed to write {path}: {e}")),
+            };
             Ok(StreamConvertReport {
                 written: true,
                 bytes_written: bom_prefix_len + outcome.bytes_written,
                 lossy_report: None,
+                durability_warning: commit.durability_warning,
             })
         }
         Err(e) => {
@@ -1141,8 +1183,15 @@ mod tests {
         let source = std::fs::File::open(&link).unwrap();
         let fingerprint = Fingerprint::from_file(&source).unwrap();
         drop(source);
+        // `write_target` is canonicalized (issue #321 -- every ancestor
+        // directory, not just the final component, is pinned via
+        // `std::fs::canonicalize`), so compare against `target_a`
+        // canonicalized the same way rather than the literal path -- on
+        // macOS, `std::env::temp_dir()` itself sits behind a real symlink
+        // (`/var` -> `/private/var`), so the two differ even though
+        // nothing in this test's own fixture is a symlink.
         let (write_target, _, _) = crate::resolve_write_destination(&link).unwrap();
-        assert_eq!(write_target, target_a);
+        assert_eq!(write_target, std::fs::canonicalize(&target_a).unwrap());
 
         // The attacker repoints the link -- as if this happened at some
         // point during the streaming conversion, between the resolve

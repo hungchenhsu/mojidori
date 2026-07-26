@@ -28,7 +28,14 @@ fn write_backup(dir: &Path, name: &str, content: &str) -> Result<(), String> {
         return Err(format!("Invalid backup name: {name}"));
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create backups dir: {e}"))?;
+    // `atomic_write` now returns a `CommitOutcome` (issues #324/#328) and
+    // durably `fsync`s the backups directory after renaming (issue #322)
+    // -- hot-exit backups have no staleness baseline to track and no
+    // user-facing surface for a durability warning to reach, so the whole
+    // outcome is discarded here, but the stronger durability guarantee
+    // (best-effort, its own failure non-fatal) applies for free.
     crate::atomic_write(&dir.join(name), content.as_bytes())
+        .map(|_outcome| ())
         .map_err(|e| format!("Failed to write backup: {e}"))
 }
 

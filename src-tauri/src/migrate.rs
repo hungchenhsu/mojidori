@@ -327,13 +327,20 @@ fn copy_file_synced(src: &Path, dst: &Path) -> io::Result<u64> {
 /// [`copy_file_synced`]'s pitfall above, this one specific case is fine as
 /// a read-only `File::open`: it's `#[cfg(unix)]`-only and never runs on
 /// Windows at all, so the write-handle requirement never applies to it.)
+///
+/// `pub(crate)`: shared with `lib.rs`'s `finish_atomic_commit`, the single
+/// durable-commit primitive every user-document save path and every
+/// internal app-state write (`store.rs`, `backup.rs`, this module's own
+/// [`write_marker`]) now goes through (issue #322) — this was previously
+/// migration-only, but the same crash-durability gap it closes here
+/// applies identically to every other atomic rename in the app.
 #[cfg(unix)]
-fn fsync_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn fsync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
 #[cfg(not(unix))]
-fn fsync_dir(_dir: &Path) -> io::Result<()> {
+pub(crate) fn fsync_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -511,21 +518,33 @@ fn lock_path(new_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(&name))
 }
 
-/// Write the completion marker durably: temp file + `fsync` + rename (via
-/// `crate::atomic_write`), then `fsync` the parent directory too (Unix
-/// only — see [`fsync_dir`]) so the rename itself survives a crash right
-/// after this returns.
+/// Write the completion marker durably: temp file + `fsync` + rename, then
+/// `fsync` the parent directory too (Unix only), so the rename itself
+/// survives a crash right after this returns.
 ///
-/// The parent `fsync`'s failure is propagated as `Err`, not swallowed:
-/// if the marker's own rename isn't confirmed durable, a crash right
-/// after could make the marker vanish on the next launch anyway, but
-/// returning `Ok` here regardless would additionally mean the *caller*
-/// (`migrate`) reports this call a success when it can't actually back
-/// that up. Propagating costs nothing extra — the marker write is safe
-/// to just retry from scratch (`crate::atomic_write` already discards and
-/// recreates its own temp file every call) — and keeps this consistent
-/// with [`migrate_dir`] and [`merge_recover`]'s equivalent `fsync`
-/// failures, which are propagated for the same reason.
+/// This used to call [`fsync_dir`] on the parent directory itself, right
+/// after `crate::atomic_write` returned, propagating that `fsync`'s
+/// failure as `Err` rather than swallowing it (a crash before the parent
+/// directory entry was durable could make the marker vanish on the next
+/// launch anyway, and returning `Ok` regardless would additionally mean
+/// the *caller*, `migrate`, reports this call a success it can't actually
+/// back up). `crate::atomic_write` now provides that same durable-commit
+/// mechanism for every caller in this codebase (issue #322's unified
+/// commit primitive), so this function no longer needs its own,
+/// independent parent-directory `fsync` call.
+///
+/// It does, however, still need its *severity*: `atomic_write` reports a
+/// parent-directory `fsync` failure as `Ok(CommitOutcome {
+/// durability_warning: Some(_), .. })`, not an `Err` (PR #328's third
+/// review round) — correct for a document save, where the content really
+/// did land and the frontend can surface a non-blocking warning instead of
+/// lying about the write having failed. The migration marker has no such
+/// audience and a stricter requirement: `migrate`'s whole retry/resume
+/// design depends on the marker either being durably there or not existing
+/// at all (see `migrate_dir`'s own doc comment), so an unconfirmed rename
+/// here is exactly as unacceptable as it was before — this explicitly
+/// upgrades a `durability_warning` back into an `Err`, preserving the
+/// original hard-fail behavior this function has always had.
 fn write_marker(
     marker_path: &Path,
     source_identifier: &str,
@@ -534,20 +553,17 @@ fn write_marker(
     let body = format!(
         "{{\"source_identifier\":\"{source_identifier}\",\"outcome\":\"{outcome_label}\"}}\n"
     );
-    crate::atomic_write(marker_path, body.as_bytes()).map_err(|e| {
+    let outcome = crate::atomic_write(marker_path, body.as_bytes()).map_err(|e| {
         format!(
             "failed to write migration marker {}: {e}",
             marker_path.display()
         )
     })?;
-    if let Some(parent) = marker_path.parent() {
-        fsync_dir(parent).map_err(|e| {
-            format!(
-                "wrote migration marker {} but could not fsync {}: {e}",
-                marker_path.display(),
-                parent.display()
-            )
-        })?;
+    if let Some(durability_warning) = outcome.durability_warning {
+        return Err(format!(
+            "wrote migration marker {} but could not confirm durability: {durability_warning}",
+            marker_path.display()
+        ));
     }
     Ok(())
 }

@@ -33,15 +33,32 @@ function basename(path: string): string {
  * representation canonicalized along the way. Never fires in practice when
  * `replacements` is 0 (the field is always false then), but this makes no
  * such assumption itself.
+ *
+ * Also appends a note when `durabilityWarning` is non-null (issue #328's
+ * third review round — `StreamReplaceReport.durabilityWarning`'s own doc
+ * comment): the replace itself landed on disk, but the follow-up
+ * parent-directory `fsync` that would confirm it survives an immediate
+ * crash could not be completed. Never a failure on its own, so this stays
+ * on the same success dialog rather than gating anything — both notes can
+ * appear together.
  */
 export function buildStreamReplaceResultMessage(
   replacements: number,
   unmatchedRegionReencoded: boolean,
+  durabilityWarning: string | null,
 ): string {
-  const base = t("streamReplace.resultMessage", replacements);
-  return unmatchedRegionReencoded
-    ? `${base} ${t("streamReplace.unmatchedRegionReencodedNote")}`
-    : base;
+  let message = t("streamReplace.resultMessage", replacements);
+  if (unmatchedRegionReencoded) {
+    message = `${message} ${t("streamReplace.unmatchedRegionReencodedNote")}`;
+  }
+  // Truthy check, not `!== null`, to match `unmatchedRegionReencoded`
+  // above: an older/looser mock or caller that omits this field entirely
+  // (`undefined`) must behave identically to an explicit `null`, not
+  // append a stray "undefined" note.
+  if (durabilityWarning) {
+    message = `${message} ${t("statusbar.durabilityWarning", durabilityWarning)}`;
+  }
+  return message;
 }
 
 /**
@@ -160,6 +177,7 @@ export function showStreamReplace(
       const resultMessage = buildStreamReplaceResultMessage(
         report.replacements,
         report.unmatchedRegionReencoded,
+        report.durabilityWarning,
       );
       if (report.replacements > 0) {
         status.textContent = "";
