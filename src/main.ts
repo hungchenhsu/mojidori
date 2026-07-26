@@ -37,7 +37,7 @@ import {
   checkByteDrift,
   checkRepresentable,
   clearRecentFiles,
-  documentMetadata,
+  documentFingerprint,
   listBackups,
   loadBackup,
   loadRecentFiles,
@@ -1406,10 +1406,10 @@ function syncClearRecentState(): void {
   });
 }
 
-/** Timestamp (and best-effort on-disk snapshot) of our own saves, to tell
- *  the watcher echo they cause apart from a real external change landing
- *  in the same short window (issue #302) — see saveecho.ts's
- *  isLikelySaveEcho and recordOwnSave below. */
+/** Timestamp and on-disk fingerprint of our own saves, to tell the watcher
+ *  echo they cause apart from a real external change landing in the same
+ *  short window (issue #302) — see saveecho.ts's isLikelySaveEcho and
+ *  recordOwnSave below. */
 const recentSaves = new Map<string, SaveEchoRecord>();
 /** Paths with a reload-confirmation dialog currently open. */
 const reloadPrompts = new Set<string>();
@@ -1425,31 +1425,21 @@ const pendingSaveResolvers = new Map<number, Array<(result: SaveFlowResult) => v
 /**
  * Record that `path` was just written by us (issue #302), so the next
  * watcher event for it can be told apart from a genuine external change.
- * The timestamp is recorded synchronously — the suppression window starts
- * counting from the write, not from whenever this best-effort metadata
- * fetch happens to resolve. The metadata fetch itself is fire-and-forget:
- * awaiting it here would delay every save's own success side effects
- * (dirty clearing, title update, ...) for a stat call that only matters if
- * a watcher event happens to land inside the window. `recentSaves.get(path)
- * === record` guards against attaching this fetch's result to a *newer*
- * save's record if another save to the same path lands before this one
- * resolves — the guard target (`record`) is the exact object this call's
- * own `.set` below installed, so identity is a precise "still mine" check.
+ * `fingerprint` must be the exact `SaveResult.fingerprint` this write's own
+ * `saveDocument` call already returned — captured synchronously by the
+ * caller from that response, not re-fetched here via a second, later IPC
+ * call. An earlier version of this fix did the latter (a fire-and-forget
+ * `documentMetadata(path)` after the fact) and a review caught the race it
+ * opens: if a third-party write lands between `saveDocument`'s resolve and
+ * that later stat actually being serviced, the stat reads *that* write's
+ * metadata, and this function would record it as if it were our own —
+ * reproducing the exact bug issue #302 exists to fix (Codex P2 finding
+ * #1). Reading the fingerprint the write's own response already carries
+ * has no such gap: there is nothing to race, because there is no second
+ * fetch at all.
  */
-function recordOwnSave(path: string): void {
-  const record: SaveEchoRecord = { time: Date.now(), metadata: null };
-  recentSaves.set(path, record);
-  void documentMetadata(path).then(
-    (metadata) => {
-      if (recentSaves.get(path) === record) record.metadata = metadata;
-    },
-    () => {
-      // Best-effort only (matches missingondisk.ts's isConfirmedMissing
-      // precedent for treating documentMetadata failures as non-fatal):
-      // record.metadata stays null, so isLikelySaveEcho falls back to
-      // time-only suppression for this path, same as before this fix.
-    },
-  );
+function recordOwnSave(path: string, fingerprint: unknown): void {
+  recentSaves.set(path, { time: Date.now(), fingerprint });
 }
 
 /** Acquire `doc`'s save/reload lock for the duration of `body`, then
@@ -1905,11 +1895,24 @@ async function handleExternalChange(path: string): Promise<void> {
   // Issue #302: a blind elapsed-time check here used to swallow a genuine
   // external change landing in the same short window as our own save's
   // watcher echo, with nothing left to notice it once the window closed.
-  // The extra documentMetadata fetch only runs once `now` is already
+  // The extra documentFingerprint fetch only runs once `now` is already
   // inside the window — the common case (no save in the last 1.5s) never
   // pays for it.
   if (record && now - record.time < SAVE_ECHO_WINDOW_MS) {
-    const current = await documentMetadata(path).catch(() => null);
+    // This fetch is itself an await gap (Codex P2 review finding #3
+    // against an earlier version of this fix): the user can close this
+    // doc's tab, or Save As it to a different path, while it's in flight.
+    // Guarded the same way every other post-await mutation in this file is
+    // (asyncguard.ts's captureIdentity/validateIdentity) — "closed" bails
+    // outright, and an explicit doc.path check covers the Save As case
+    // validateIdentity's id/revision fields don't (a plain path/title
+    // reassignment doesn't bump doc.revision). Either way there is nothing
+    // left for *this* path's watcher event to do to `doc`: no tab to
+    // reload, no tab to show a reload prompt for.
+    const guard = captureIdentity(doc);
+    const current = await documentFingerprint(path).catch(() => null);
+    if (validateIdentity(guard, doc, tabs.docs.includes(doc)) === "closed") return;
+    if (doc.path !== path) return;
     if (isLikelySaveEcho({ now, record, current })) return;
   }
   if (!doc.dirty) {
@@ -2271,7 +2274,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
     // clearing this is unconditional on `written`, not on
     // completion.clearDirty.
     doc.missingOnDisk = false;
-    recordOwnSave(path);
+    recordOwnSave(path, result.fingerprint);
     // Checked before this flow's own Save As (below) reassigns doc.path —
     // true only if some concurrent flow already moved this doc to a
     // different path while this save's IPC round trip was in flight

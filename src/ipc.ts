@@ -270,6 +270,21 @@ export function documentMetadata(path: string): Promise<DocumentMetadata> {
   return invoke<DocumentMetadata>("document_metadata", { path });
 }
 
+/**
+ * Fresh on-disk `Fingerprint` for `path` — the same opaque shape as
+ * `OpenedDocument`/`SaveResult`'s own `fingerprint` field
+ * (src-tauri/src/fsguard.rs), comparable via savemutex.ts's
+ * `fingerprintsEqual`. A plain stat, no content read — same cost as
+ * `documentMetadata` above. Added for `saveecho.ts`'s watcher-echo
+ * suppression (issue #302 review, Codex P2 finding #2):
+ * `documentMetadata`'s `modifiedMs` is millisecond-truncated, so a fast
+ * same-size external rewrite could alias onto an unrelated file version
+ * under that comparison; this exact, inode-aware fingerprint cannot.
+ */
+export function documentFingerprint(path: string): Promise<unknown> {
+  return invoke<unknown>("document_fingerprint", { path });
+}
+
 export interface LineEndingDistribution {
   lf: number;
   crlf: number;

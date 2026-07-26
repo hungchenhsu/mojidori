@@ -1,41 +1,52 @@
-// Save-echo suppression policy (issue #302): main.ts's handleExternalChange
-// ignores a watcher event for `path` within a short window after our own
-// save landed there, so the file-system echo that write itself causes never
-// gets mistaken for an external change. A blind elapsed-time check, though,
-// can't tell that guaranteed self-echo apart from a genuine external write
-// landing in the same short window — it swallows both alike, so a real
-// change right after a save could sit un-reloaded (and the user unnotified)
-// until some unrelated later event happens to re-trigger the check.
+// Save-echo suppression policy (issue #302; hardened per PR #319's Codex
+// P2 review). main.ts's handleExternalChange ignores a watcher event for
+// `path` within a short window after our own save landed there, so the
+// filesystem echo that write itself causes never gets mistaken for an
+// external change. A blind elapsed-time check, though, can't tell that
+// guaranteed self-echo apart from a genuine external write landing in the
+// same short window — it swallows both alike, so a real change right
+// after a save could sit un-reloaded (and the user unnotified) until some
+// unrelated later event happens to re-trigger the check.
+//
+// Comparison uses the exact opaque `Fingerprint` (fsguard.rs) every other
+// staleness check in this codebase already uses (savemutex.ts's
+// fingerprintsEqual), not a separately-read size/mtime pair — an earlier
+// version of this fix used the latter and two review findings killed it:
+// (1) a size/mtime snapshot fetched via a *second*, later IPC call
+// (documentMetadata, run after the save's own IPC call had already
+// resolved) has its own await gap a third-party write can land in,
+// corrupting the very baseline this module compares against, and
+// reproducing the bug this fix exists to close. Using the fingerprint
+// `save_document` already returns — captured synchronously by main.ts's
+// recordOwnSave from that same response, no separate fetch at all — has no
+// such gap. (2) `documentMetadata`'s `modifiedMs` is millisecond-truncated
+// (coarser still on some filesystems), so a fast same-size external
+// rewrite could alias onto an unrelated file version under that
+// comparison; `Fingerprint` carries full mtime precision plus, on Unix,
+// inode identity, so it can't.
 //
 // Pulled out as a pure function for the same reason savecompletion.ts's
 // decideSaveCompletion was: main.ts is wired directly into IPC/DOM/editor
 // and isn't unit-testable on its own, so the decision table itself gets
 // full-branch vitest coverage instead.
 
-/** Fresh on-disk size/mtime — ipc.ts's DocumentMetadata shape, duplicated
- *  here as a structural type (not imported) so this module stays a pure
- *  leaf with no runtime dependency on ipc.ts, matching missingondisk.ts's
- *  own preference for structural typing over a hard import where only the
- *  shape is actually needed. */
-export interface SaveEchoMetadata {
-  size: number;
-  modifiedMs: number;
-}
+import { fingerprintsEqual } from "./savemutex";
 
 /** How long a watcher event for a just-saved path is treated as *possibly*
  *  our own echo — main.ts's original (pre-#302) constant, unchanged: it's
  *  still the first, cheapest filter, just no longer the only one. */
 export const SAVE_ECHO_WINDOW_MS = 1500;
 
-/** What main.ts records right after a successful save completes. `metadata`
- *  is a best-effort documentMetadata(path) snapshot taken immediately after
- *  the write — null if that read hasn't resolved yet or failed, in which
- *  case suppression below falls back to time alone, exactly like before
- *  this fix (never worse than the pre-#302 behavior). */
+/** What main.ts records right after a successful save completes.
+ *  `fingerprint` is the exact opaque `Fingerprint` `save_document`
+ *  returned for that write (ipc.ts's `SaveResult.fingerprint`), captured
+ *  synchronously from that response — never a separate stat call, so
+ *  there is no gap for a third-party write to race into before the
+ *  baseline is set (Codex P2 finding #1). */
 export interface SaveEchoRecord {
   /** Date.now() when this save's write landed. */
   time: number;
-  metadata: SaveEchoMetadata | null;
+  fingerprint: unknown;
 }
 
 export interface SaveEchoInput {
@@ -44,15 +55,16 @@ export interface SaveEchoInput {
    *  path this session (or the record aged out), which alone means this
    *  can't be a save echo. */
   record: SaveEchoRecord | undefined;
-  /** A fresh documentMetadata(path) read taken in response to the watcher
-   *  event under consideration, fetched only once `now` is already inside
-   *  the record's window (no need to pay for it otherwise). `undefined`
-   *  when the caller deliberately skips that fetch (time-only fast path);
-   *  `null` when the fetch itself was attempted and failed (most plausibly
-   *  the file is gone) — distinct from `undefined` because a failed stat is
-   *  itself a signal something changed, the opposite of `undefined`'s "no
-   *  extra information yet, trust time alone" meaning. */
-  current?: SaveEchoMetadata | null;
+  /** A fresh documentFingerprint(path) read taken in response to the
+   *  watcher event under consideration, fetched only once `now` is already
+   *  inside the record's window (no need to pay for it otherwise).
+   *  `undefined` when the caller deliberately skips that fetch (time-only
+   *  fast path some callers may still want); `null` when the fetch itself
+   *  was attempted and failed (most plausibly the file is gone) — distinct
+   *  from `undefined` because a failed stat is itself a signal something
+   *  changed, the opposite of `undefined`'s "no extra information yet,
+   *  trust time alone" meaning. */
+  current?: unknown;
 }
 
 /**
@@ -73,21 +85,19 @@ export interface SaveEchoInput {
  *    watch — never our own echo, and exactly the case the downstream
  *    missing-file flow (main.ts's markMissingIfConfirmed) exists to
  *    surface, so this must not hide it behind the window.
- * 4. No baseline to compare (`record.metadata` is null — our own post-save
- *    stat hasn't resolved yet or failed): suppress, same fail-closed
- *    fallback as before this fix.
- * 5. Both snapshots present: suppress only if size and mtime both match —
- *    anything else means the file moved since our own write, even though
- *    we're still inside the nominal window.
+ * 4. No baseline to compare (`record.fingerprint` is null/undefined — the
+ *    write that produced it somehow reported no fingerprint): suppress,
+ *    same fail-closed fallback as before this fix.
+ * 5. Both snapshots present: suppress only if the opaque fingerprints are
+ *    exactly equal (savemutex.ts's fingerprintsEqual) — anything else
+ *    means the file moved since our own write, even though we're still
+ *    inside the nominal window.
  */
 export function isLikelySaveEcho(input: SaveEchoInput): boolean {
   const { record } = input;
   if (!record || input.now - record.time >= SAVE_ECHO_WINDOW_MS) return false;
   if (input.current === undefined) return true;
   if (input.current === null) return false;
-  if (record.metadata === null) return true;
-  return (
-    record.metadata.size === input.current.size &&
-    record.metadata.modifiedMs === input.current.modifiedMs
-  );
+  if (record.fingerprint === null || record.fingerprint === undefined) return true;
+  return fingerprintsEqual(record.fingerprint, input.current);
 }
