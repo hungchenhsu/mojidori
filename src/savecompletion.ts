@@ -70,3 +70,53 @@ export function decideSaveCompletion(
     updateFingerprint: true,
   };
 }
+
+/**
+ * Issue #276 (a pre-existing cosmetic edge #275's own adversarial review
+ * flagged, not fixed there): the "Save with Encoding" menu action's write-
+ * failure rollback (main.ts's reopenWithEncoding-adjacent action, `.then`
+ * handler on its own `saveFlow` call) undoes the force-dirty transition
+ * issue #221/#231 require — but only when it's safe to, per two gates
+ * already established there: `wasClean` (the force actually fired) and an
+ * `asyncguard.ts` identity check (nothing else touched the doc while the
+ * save's IPC round trip was in flight). Neither gate says anything about
+ * *why* the write failed. A **stale** failure (`written: false, stale:
+ * true` — the user saw the stale-file dialog and chose "cancel", the only
+ * stale outcome that reaches this rollback at all; "reload" already clears
+ * `doc.speculativeEncoding` via `applyOpenedForReload`, which excludes it
+ * before this function would even run) means the disk was already proven
+ * to differ from what this doc's save assumed. Restoring `dirty: false` in
+ * that case tells the user "buffer matches disk" when it provably doesn't
+ * — the opposite of what `wasClean`/identity were protecting: real edits
+ * never at risk, but a false "clean" signal painted over a known external
+ * change instead of letting main.ts's ordinary fileChanged/reload flow
+ * (handleExternalChange, reevaluateReload) surface it.
+ *
+ * `written` is checked here too, even though every real call site already
+ * gates on `!written` before reaching this decision — same
+ * fails-closed-on-a-contract-violation defense decideSaveCompletion's own
+ * `stale` field docs above describe, not a case any caller is expected to
+ * exercise.
+ */
+export interface EncodingRollbackInput {
+  /** Whether this Save with Encoding attempt's bytes reached disk. */
+  written: boolean;
+  /** Whether the failure was specifically the stale-file gate rejecting a
+   *  write the user then cancelled out of, rather than any other failure
+   *  (permission, disk full, lossy-encode declined, dialog cancelled). */
+  stale: boolean;
+  /** Whether the force-dirty transition actually fired for this action —
+   *  false means the doc was already dirty before this call started, so
+   *  its dirty/backup state belongs to real unsaved edits this rollback
+   *  must never touch regardless of `stale` (issue #231). */
+  wasClean: boolean;
+  /** asyncguard.ts's validateIdentity(...) result for the doc, checked
+   *  against the guard captured right after the force-dirty transition. */
+  identity: "apply" | "closed" | "edited";
+}
+
+export function shouldRollbackForceDirty(input: EncodingRollbackInput): boolean {
+  return (
+    !input.written && !input.stale && input.wasClean && input.identity === "apply"
+  );
+}

@@ -122,7 +122,7 @@ import { orphanBackups } from "./orphans";
 import { showPalette } from "./palette";
 import { showQuickOpen } from "./quickopen";
 import { showFilterableMenu, showMenu, type MenuItem } from "./popup";
-import { decideSaveCompletion } from "./savecompletion";
+import { decideSaveCompletion, shouldRollbackForceDirty } from "./savecompletion";
 import { isLikelySaveEcho, SAVE_ECHO_WINDOW_MS, type SaveEchoRecord } from "./saveecho";
 import { fingerprintsEqual, mustDefer, nextDrainStep } from "./savemutex";
 import { createSessionPersister } from "./sessionpersist";
@@ -1420,7 +1420,7 @@ const reloadPrompts = new Set<string>();
  *  for a doc settle together, once, with whatever the pending save
  *  actually resolves to once drained (see drainLock below) — never
  *  dropped, so a coalesced caller's promise can never hang. */
-const pendingSaveResolvers = new Map<number, Array<(written: boolean) => void>>();
+const pendingSaveResolvers = new Map<number, Array<(result: SaveFlowResult) => void>>();
 
 /**
  * Record that `path` was just written by us (issue #302), so the next
@@ -1516,8 +1516,10 @@ async function drainLock(doc: Doc): Promise<void> {
     // would make the *common* coalesce case misreport failure — e.g. the
     // save-with-encoding menu would roll its speculative encoding back
     // even though the save it coalesced into genuinely wrote (see its
-    // .then(written) handler below).
-    for (const resolve of resolvers) resolve(true);
+    // .then(written) handler below). `stale: false` for the same reason —
+    // neither the coalesce nor the consented-discard case is a stale
+    // rejection the caller needs to distinguish.
+    for (const resolve of resolvers) resolve({ written: true, stale: false });
     await drainLock(doc);
     return;
   }
@@ -1540,11 +1542,11 @@ async function drainLock(doc: Doc): Promise<void> {
     // Resolved `false`, not `true` like dropSave above, since nothing was
     // written this time.
     blockedByReadOnly(doc);
-    for (const resolve of resolvers) resolve(false);
+    for (const resolve of resolvers) resolve({ written: false, stale: false });
     await drainLock(doc); // something else may have queued up meanwhile
     return;
   }
-  let result = false;
+  let result: SaveFlowResult = { written: false, stale: false };
   await withLock(doc, "save", async () => {
     result = await runSaveFlow(doc, step.saveAs);
   });
@@ -2067,19 +2069,31 @@ function blockedByReadOnly(doc: Doc): boolean {
  * resolves once drainLock actually runs the coalesced request (see
  * pendingSaveResolvers above) and reports that attempt's real outcome.
  */
-async function saveFlow(saveAs: boolean): Promise<boolean> {
+/** saveFlow/runSaveFlow's outcome (issue #276). `written` alone used to be
+ *  the only thing any caller could observe; the Save with Encoding
+ *  rollback below also needs to tell a stale-cancel failure apart from
+ *  every other failure reason (see savecompletion.ts's
+ *  shouldRollbackForceDirty doc comment for why), so both fields now flow
+ *  out to every caller, not just the one that actually branches on
+ *  `stale`. */
+interface SaveFlowResult {
+  written: boolean;
+  stale: boolean;
+}
+
+async function saveFlow(saveAs: boolean): Promise<SaveFlowResult> {
   const doc = tabs.active;
-  if (!doc) return false;
-  if (blockedByReadOnly(doc)) return false;
+  if (!doc) return { written: false, stale: false };
+  if (blockedByReadOnly(doc)) return { written: false, stale: false };
   if (mustDefer({ inFlight: doc.saveReloadInFlight })) {
-    return new Promise<boolean>((resolve) => {
+    return new Promise<SaveFlowResult>((resolve) => {
       doc.pendingSaveAs = saveAs;
       const resolvers = pendingSaveResolvers.get(doc.id) ?? [];
       resolvers.push(resolve);
       pendingSaveResolvers.set(doc.id, resolvers);
     });
   }
-  let result = false;
+  let result: SaveFlowResult = { written: false, stale: false };
   await withLock(doc, "save", async () => {
     result = await runSaveFlow(doc, saveAs);
   });
@@ -2090,12 +2104,12 @@ async function saveFlow(saveAs: boolean): Promise<boolean> {
  *  exactly saveFlow's pre-#124 implementation, taking the already-resolved
  *  active doc as a parameter (rather than re-reading tabs.active) since
  *  drainLock also calls this directly for a coalesced pending save. */
-async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
+async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
   const oldPath = doc.path;
   let path = doc.path;
   if (saveAs || path === null) {
     path = await saveDialog({ defaultPath: path ?? doc.title });
-    if (path === null) return false;
+    if (path === null) return { written: false, stale: false };
   }
   try {
     // ROADMAP.md v0.7 Track C "trim trailing whitespace on save"
@@ -2183,7 +2197,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
             okLabel: t("dialog.byteDriftConfirm"),
           }),
       );
-      if (!proceed) return false;
+      if (!proceed) return { written: false, stale: false };
     }
     let result = await saveDocument({
       ...saveParams,
@@ -2207,7 +2221,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
       // exception: if trim-on-save fired at the top of this flow, that
       // edit stays in the buffer (it is a real, undoable edit, not part
       // of the aborted write) — "as before Save" except already trimmed.
-      if (!proceed) return false;
+      if (!proceed) return { written: false, stale: false };
       result = await saveDocument({
         ...saveParams,
         allowLossy: true,
@@ -2217,15 +2231,25 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
     }
     if (result.stale && !result.written) {
       const choice = await showStaleFileConfirm(doc.title);
-      if (choice === "cancel") return false;
+      // Issue #276: reported as stale so the Save with Encoding rollback
+      // (savecompletion.ts's shouldRollbackForceDirty) can skip restoring
+      // dirty:false — disk is already proven to differ from the buffer,
+      // so a "clean" doc here would be a false sync signal even though no
+      // real edits are at risk.
+      if (choice === "cancel") return { written: false, stale: true };
       if (choice === "reload") {
         // Replaces the tab's buffer with the newer on-disk version,
         // exactly like the passive watcher-triggered reload — the user's
         // unsaved edits in this tab are discarded along with the save
         // attempt (the dialog message warns about this explicitly), and
-        // nothing is written to disk.
+        // nothing is written to disk. Also reported stale for consistency
+        // with the "cancel" branch above, though it makes no observable
+        // difference to the Save with Encoding rollback: applyOpenedForReload
+        // (run inside reloadFromDisk) already cleared doc.speculativeEncoding,
+        // so that rollback's own reference-equality check already skips it
+        // regardless of this result's stale flag.
         await reloadFromDisk(doc);
-        return false;
+        return { written: false, stale: true };
       }
       // "overwrite": the user explicitly chose to clobber the external
       // change. Keep whatever allowLossy decision was already resolved
@@ -2239,7 +2263,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
     }
     // Only once the bytes are actually on disk do we touch doc state or
     // run any of the success side effects below.
-    if (!result.written) return false;
+    if (!result.written) return { written: false, stale: result.stale };
     // A successful write means the file exists on disk right now,
     // regardless of the revisionMatches gate decideSaveCompletion applies
     // to dirty/fingerprint just below — a save recreates the file even for
@@ -2288,13 +2312,13 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
       void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
     }
     persistSession();
-    return true;
+    return { written: true, stale: false };
   } catch (error) {
     await messageDialog(String(error), {
       title: t("dialog.saveFailedTitle"),
       kind: "error",
     });
-    return false;
+    return { written: false, stale: false };
   }
 }
 
@@ -2818,7 +2842,7 @@ function showEncodingMenu(anchor: HTMLElement): void {
             backupFlush.schedule();
             updateStatusBar(doc);
             void saveFlow(false)
-              .then((written) => {
+              .then(({ written, stale }) => {
                 if (!written && doc.speculativeEncoding === original) {
                   doc.encoding = original.encoding;
                   doc.withBom = original.withBom;
@@ -2828,21 +2852,28 @@ function showEncodingMenu(anchor: HTMLElement): void {
                   // speculativeEncoding above via applyOpenedForReload,
                   // so this never runs for that case) must also undo the
                   // force-dirty transition above, not just
-                  // encoding/withBom, when it's still safe to — BOTH
-                  // gates below are load-bearing: wasClean means the
-                  // force above actually fired (an already-dirty doc's
-                  // dirty and backup belong to real unsaved edits this
-                  // rollback must never touch — see wasClean's own doc
-                  // comment); "apply" means the doc is still open and
-                  // its revision hasn't moved since forceDirtyGuard was
-                  // captured, i.e. no real edit (or other save/reload)
-                  // landed while this save's IPC round trip was in
-                  // flight. Either failing means dirty must stay —
-                  // genuinely edited content, or nothing left to fix.
+                  // encoding/withBom, when it's still safe to. Delegated to
+                  // savecompletion.ts's shouldRollbackForceDirty (issue
+                  // #276) rather than an inline check: wasClean/identity
+                  // alone say "this doc's dirty/backup state is ours to
+                  // touch", but a stale failure the user cancelled out of
+                  // (`stale: true`) additionally means disk is already
+                  // proven to differ from the buffer — restoring dirty:false
+                  // there would be a false "in sync" signal even though no
+                  // real edits are at risk, so that combination must also
+                  // block the rollback (see shouldRollbackForceDirty's own
+                  // doc comment for the full branch table).
                   if (
-                    wasClean &&
-                    validateIdentity(forceDirtyGuard, doc, tabs.docs.includes(doc)) ===
-                      "apply"
+                    shouldRollbackForceDirty({
+                      written,
+                      stale,
+                      wasClean,
+                      identity: validateIdentity(
+                        forceDirtyGuard,
+                        doc,
+                        tabs.docs.includes(doc),
+                      ),
+                    })
                   ) {
                     doc.dirty = false;
                     tabs.render();

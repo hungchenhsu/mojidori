@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { decideSaveCompletion, type SaveCompletionInput } from "./savecompletion";
+import {
+  decideSaveCompletion,
+  shouldRollbackForceDirty,
+  type EncodingRollbackInput,
+  type SaveCompletionInput,
+} from "./savecompletion";
 
 /** A promise plus its resolve/reject, exposed for manual settlement — lets
  *  a test hold a save IPC call open across a synchronous "user kept
@@ -323,5 +328,48 @@ describe("issue #160 — a line-ending switch during an in-flight save must coun
     // line ending. No save in flight, so this is just an ordinary edit.
     setLineEndingSim(doc, "CRLF");
     expect(doc.dirty).toBe(true);
+  });
+});
+
+// Issue #276: the Save with Encoding write-failure rollback must not
+// restore dirty:false when the failure was specifically a stale rejection
+// the user cancelled out of — disk is proven to differ from the buffer at
+// that point, so a "clean" doc would be lying about being in sync.
+describe("shouldRollbackForceDirty — full branch table", () => {
+  const base: EncodingRollbackInput = {
+    written: false,
+    stale: false,
+    wasClean: true,
+    identity: "apply",
+  };
+
+  it("ordinary (non-stale) write failure, clean doc, identity holds: rolls back", () => {
+    expect(shouldRollbackForceDirty(base)).toBe(true);
+  });
+
+  it("issue #276: stale failure (cancel path) — never rolls back, even with every other gate green", () => {
+    expect(shouldRollbackForceDirty({ ...base, stale: true })).toBe(false);
+  });
+
+  it("doc was already dirty entering the action (wasClean false): never rolls back, stale or not", () => {
+    expect(shouldRollbackForceDirty({ ...base, wasClean: false })).toBe(false);
+    expect(shouldRollbackForceDirty({ ...base, wasClean: false, stale: true })).toBe(
+      false,
+    );
+  });
+
+  it("an edit landed mid-flight (identity 'edited'): never rolls back", () => {
+    expect(shouldRollbackForceDirty({ ...base, identity: "edited" })).toBe(false);
+  });
+
+  it("tab closed mid-flight (identity 'closed'): never rolls back", () => {
+    expect(shouldRollbackForceDirty({ ...base, identity: "closed" })).toBe(false);
+  });
+
+  it("written:true (contract-violating combination): fails closed regardless of other fields", () => {
+    expect(shouldRollbackForceDirty({ ...base, written: true })).toBe(false);
+    expect(
+      shouldRollbackForceDirty({ ...base, written: true, stale: false, identity: "apply" }),
+    ).toBe(false);
   });
 });
