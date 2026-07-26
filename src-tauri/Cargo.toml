@@ -43,6 +43,11 @@ tauri-plugin-window-state = "2"
 # D2 auto-update.
 tauri-plugin-updater = "2"
 
-[target."cfg(any(target_os = \"windows\", target_os = \"linux\"))".dependencies]
+[target."cfg(any(target_os = \"windows\", target_os = \"linux\", target_os = \"macos\"))".dependencies]
+# Confirmed macOS-supported since this crate line: see
+# tauri-plugin-single-instance 2.4.3's own
+# `[package.metadata.platforms.support.macos]` (level = "full") and its
+# `src/platform_impl/macos.rs` (Unix-domain-socket lock in `/tmp`,
+# forwarding argv/cwd to the running instance) — issue #305.
 tauri-plugin-single-instance = "2"
 

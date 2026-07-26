@@ -749,9 +749,31 @@ pub fn run() {
 
     let builder = tauri::Builder::default();
 
-    // On Windows and Linux, opening an associated file launches a second
-    // process; forward its arguments to the running instance instead.
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    // Opening an associated file (or launching the app again while it's
+    // already running) can spawn a second process; forward its arguments
+    // to the running instance instead of letting two processes both read
+    // and read-modify-write session/preferences/recent/hot-exit state
+    // (issue #305 — cross-process last-writer-wins data loss).
+    //
+    // Included on macOS too (as of tauri-plugin-single-instance 2.4.3,
+    // whose own `Cargo.toml` declares
+    // `[package.metadata.platforms.support.macos] level = "full"`, and
+    // whose `src/platform_impl/macos.rs` implements the lock with a
+    // Unix-domain socket under `/tmp` — no App Sandbox entitlement is in
+    // play here, see `src-tauri/tauri.conf.json`, so that path is
+    // writable). On macOS this plugin's second-instance path calls
+    // `std::process::exit(0)` from its own plugin `setup()` — which runs
+    // during `.build()`, before this app's window or `.run()` event loop
+    // ever starts — as soon as it detects a running instance. That means
+    // this callback and the Apple-Events-based `RunEvent::Opened` handler
+    // below can never both fire for the same file-open action: a forced
+    // second process (`open -n`, or launching the bundled binary again
+    // directly) exits immediately here and forwards its argv/cwd; the
+    // ordinary case (Finder double-click, or a plain `open`) never spawns
+    // a second process at all, so macOS delivers the Apple Event straight
+    // to the sole running instance's `RunEvent::Opened` handler instead.
+    // No additional de-duplication is needed beyond what's already here.
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
         use tauri::Manager;
         if let Some(window) = app.get_webview_window("main") {
@@ -897,7 +919,10 @@ pub fn run() {
         .run(|_app, _event| {
             // macOS delivers associated files through Apple Events; they can
             // arrive before the frontend is listening, so they are queued in
-            // PendingFiles as well as emitted.
+            // PendingFiles as well as emitted. This only ever runs in the
+            // single surviving instance — see the single-instance plugin
+            // registration above for why it can't race with that plugin's
+            // own argv/cwd-forwarding callback (issue #305).
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = _event {
                 use tauri::Manager;
