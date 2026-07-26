@@ -373,3 +373,143 @@ describe("shouldRollbackForceDirty — full branch table", () => {
     ).toBe(false);
   });
 });
+
+// PR #319 second-round Codex review (P2): main.ts's backupFlush.schedule()
+// debounces on a fixed 2-second timer, entirely independent of how long the
+// stale/lossy/byte-drift confirm dialogs the Save with Encoding action can
+// show stay open. If that debounce fires while one of those dialogs is
+// still up, its flush->persistSession chain (see main.ts's backupFlush
+// wiring) writes session.json with whatever doc.encoding/withBom are *at
+// that moment* — the speculative target this action set before the dialog
+// ever opened, not the original the rollback below is about to restore.
+// On the stale-cancel path in particular, shouldRollbackForceDirty (issue
+// #276, just above) deliberately keeps dirty/the backup alive, so that
+// stale session entry keeps pointing at a real backup file a crash before
+// any *other* persistSession() call would restore tagged with the wrong
+// encoding. sessionEncodingSim below mirrors main.ts's rollback closure by
+// hand (same "kept in sync manually" pattern as setLineEndingSim above) to
+// pin that a persistSession() call after the encoding/withBom revert
+// closes this window, regardless of which shouldRollbackForceDirty branch
+// ran.
+interface SessionEncodingDoc {
+  encoding: string;
+  withBom: boolean;
+  dirty: boolean;
+}
+
+/** Mirrors main.ts's Save with Encoding menu action up through setting the
+ *  speculative encoding/withBom and forcing dirty (issues #221/#231) —
+ *  returns the pre-action snapshot the eventual rollback needs, exactly
+ *  like that action's own local `original` constant. */
+function beginSaveWithEncodingSim(
+  doc: SessionEncodingDoc,
+  target: { encoding: string; withBom: boolean },
+): { encoding: string; withBom: boolean } {
+  const original = { encoding: doc.encoding, withBom: doc.withBom };
+  doc.encoding = target.encoding;
+  doc.withBom = target.withBom;
+  if (!doc.dirty) doc.dirty = true;
+  return original;
+}
+
+/** Mirrors main.ts's saveFlow(false).then(...) rollback handler: reverts
+ *  encoding/withBom on any write failure, applies shouldRollbackForceDirty
+ *  for the dirty/backup decision, then — the fix under test here —
+ *  re-persists the session once those fields have settled, regardless of
+ *  which branch ran. `persistSession` is injected so the test can observe
+ *  every call's snapshot instead of main.ts's own IPC-backed version. */
+function resolveSaveWithEncodingSim(
+  doc: SessionEncodingDoc,
+  original: { encoding: string; withBom: boolean },
+  wasClean: boolean,
+  outcome: { written: boolean; stale: boolean },
+  persistSession: () => void,
+): void {
+  if (outcome.written) return;
+  doc.encoding = original.encoding;
+  doc.withBom = original.withBom;
+  if (
+    shouldRollbackForceDirty({
+      written: outcome.written,
+      stale: outcome.stale,
+      wasClean,
+      identity: "apply",
+    })
+  ) {
+    doc.dirty = false;
+  }
+  persistSession();
+}
+
+describe("Save with Encoding rollback re-persists session once encoding reverts (PR #319 second-round review)", () => {
+  it("stale-cancel: a debounce flush mid-dialog persisted the speculative encoding — rollback re-persists the reverted one, dirty/backup left alone", () => {
+    const doc: SessionEncodingDoc = { encoding: "UTF-8", withBom: false, dirty: false };
+    const snapshots: Array<{ encoding: string; withBom: boolean }> = [];
+    const persistSession = (): void => {
+      snapshots.push({ encoding: doc.encoding, withBom: doc.withBom });
+    };
+
+    const original = beginSaveWithEncodingSim(doc, { encoding: "Big5", withBom: false });
+
+    // The 2-second backup debounce fires while the stale dialog is still
+    // open — session.json is written with the speculative target.
+    persistSession();
+    expect(snapshots[snapshots.length - 1]).toEqual({ encoding: "Big5", withBom: false });
+
+    // User cancels the stale dialog.
+    resolveSaveWithEncodingSim(
+      doc,
+      original,
+      /* wasClean */ true,
+      { written: false, stale: true },
+      persistSession,
+    );
+
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.dirty).toBe(true); // issue #276: stale-cancel keeps dirty
+    expect(snapshots[snapshots.length - 1]).toEqual({ encoding: "UTF-8", withBom: false });
+  });
+
+  it("control — non-stale failure on a doc that started clean: also re-persists after the full rollback (dirty cleared)", () => {
+    const doc: SessionEncodingDoc = { encoding: "UTF-8", withBom: false, dirty: false };
+    const snapshots: Array<{ encoding: string; withBom: boolean }> = [];
+    const persistSession = (): void => {
+      snapshots.push({ encoding: doc.encoding, withBom: doc.withBom });
+    };
+
+    const original = beginSaveWithEncodingSim(doc, { encoding: "Big5", withBom: false });
+    persistSession(); // debounce fires mid-flight here too
+
+    resolveSaveWithEncodingSim(
+      doc,
+      original,
+      /* wasClean */ true,
+      { written: false, stale: false },
+      persistSession,
+    );
+
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.dirty).toBe(false);
+    expect(snapshots[snapshots.length - 1]).toEqual({ encoding: "UTF-8", withBom: false });
+  });
+
+  it("no debounce fired at all: rollback still re-persists once (not a no-op skip)", () => {
+    const doc: SessionEncodingDoc = { encoding: "UTF-8", withBom: false, dirty: false };
+    const snapshots: Array<{ encoding: string; withBom: boolean }> = [];
+    const persistSession = (): void => {
+      snapshots.push({ encoding: doc.encoding, withBom: doc.withBom });
+    };
+
+    const original = beginSaveWithEncodingSim(doc, { encoding: "Big5", withBom: false });
+    resolveSaveWithEncodingSim(
+      doc,
+      original,
+      /* wasClean */ true,
+      { written: false, stale: true },
+      persistSession,
+    );
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toEqual({ encoding: "UTF-8", withBom: false });
+  });
+});

@@ -2899,6 +2899,28 @@ function showEncodingMenu(anchor: HTMLElement): void {
                     backups.drop(doc);
                   }
                   updateStatusBar(doc);
+                  // PR #319 second-round review: encoding is session-
+                  // persisted (applyOpenedForReopen's own persistSession
+                  // call above has the same "encoding is session-persisted"
+                  // reasoning), but the backupFlush.schedule() call above
+                  // fired persistSession() too, on its own 2-second
+                  // debounce, entirely independent of however long the
+                  // stale/lossy/byte-drift dialogs above stayed open. If
+                  // that debounce landed while a dialog was still up, it
+                  // already wrote session.json with the *speculative*
+                  // target encoding/withBom this rollback just reverted —
+                  // and, on the stale-cancel path in particular,
+                  // shouldRollbackForceDirty deliberately leaves dirty/the
+                  // backup in place (issue #276), so that stale session
+                  // entry keeps pointing at a real, still-live backup file.
+                  // A crash before any *other* persistSession() call would
+                  // then restore that backup tagged with the wrong target
+                  // encoding, silently re-encoding its content differently
+                  // than the user ever saw. Re-persisting here — regardless
+                  // of which branch above ran — closes that window
+                  // immediately instead of leaving it open until whatever
+                  // next unrelated action happens to call persistSession().
+                  persistSession();
                 }
               })
               .finally(() => {
