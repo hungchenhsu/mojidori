@@ -1167,7 +1167,10 @@ mod tests {
     fn atomic_write_through_symlink_updates_target_and_preserves_link() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-basic");
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-atomic-symlink-basic-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1208,7 +1211,10 @@ mod tests {
     fn atomic_write_through_dangling_symlink_heals_target() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-dangling");
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-atomic-symlink-dangling-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1248,7 +1254,10 @@ mod tests {
     fn atomic_write_through_multi_hop_symlink_chain_resolves_to_final_target() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-chain");
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-atomic-symlink-chain-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1283,7 +1292,10 @@ mod tests {
     fn atomic_write_through_symlink_cycle_fails_cleanly() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-cycle");
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-atomic-symlink-cycle-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1313,7 +1325,10 @@ mod tests {
     fn atomic_write_through_exactly_max_hops_symlink_chain_still_resolves() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-exactly-max-hops");
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-atomic-symlink-exactly-max-hops-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1371,7 +1386,10 @@ mod tests {
     fn resolve_symlink_target_propagates_non_notfound_stat_errors() {
         use std::os::unix::fs::{symlink, PermissionsExt};
 
-        let dir = std::env::temp_dir().join("mojidori-symlink-stat-error-propagates");
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-symlink-stat-error-propagates-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1447,7 +1465,10 @@ mod tests {
     fn atomic_write_replaces_preplanted_symlink_destination_without_following_it() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join("mojidori-atomic-no-follow-internal-path");
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-atomic-no-follow-internal-path-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -2375,7 +2396,10 @@ mod tests {
     fn save_document_through_symlink_preserves_link_and_keeps_fingerprint_valid() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join("mojidori-save-through-symlink");
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-save-through-symlink-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
