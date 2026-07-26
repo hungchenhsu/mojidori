@@ -572,8 +572,11 @@ fn create_tmp_exclusive(
 
 /// Maximum symlink hops [`resolve_symlink_target`] follows before
 /// concluding a chain is cyclic (or simply absurd). Matches the
-/// traditional Unix `MAXSYMLINKS` (Linux, *BSD) so a self-referential
-/// chain fails with a clear error instead of looping forever.
+/// traditional Unix `MAXSYMLINKS` (Linux, *BSD): a chain of exactly this
+/// many symlinks followed by a non-symlink still resolves successfully —
+/// the same as the OS's own path resolution would — and only attempting
+/// one hop *beyond* that fails with a clear error instead of looping
+/// forever (PR #317 review).
 const MAX_SYMLINK_HOPS: u32 = 40;
 
 /// Resolve `path` to the file an atomic write should actually replace:
@@ -594,12 +597,20 @@ const MAX_SYMLINK_HOPS: u32 = 40;
 /// walks the chain one hop at a time with `symlink_metadata`, which
 /// (unlike `metadata`) reports the final path component itself rather
 /// than following it, and stops as soon as a hop is not a symlink —
-/// whether or not that final path exists yet. A `symlink_metadata` error
-/// at any hop (dangling target, permission denied, ...) is treated the
-/// same way: nothing more to resolve, so the current candidate is the
-/// answer. A genuine permission problem still surfaces, just later — at
-/// the real write attempt against that candidate — with an I/O error tied
-/// to the actual destination instead of a synthetic one from here.
+/// whether or not that final path exists yet.
+///
+/// A `symlink_metadata` error partway through the chain is *not* treated
+/// uniformly: `NotFound` means the current candidate is a dangling
+/// target — nothing more to resolve, so it is the answer (the
+/// dangling-symlink case above). Any other error (permission denied, a
+/// transient I/O failure, ...) is propagated immediately rather than
+/// swallowed as "not a symlink" — treating, say, a `PermissionDenied`
+/// stat as "this must be a plain file" would hand `atomic_write` a
+/// candidate that is actually still a symlink, and it would rename over
+/// the link itself, exactly the corruption issue #301 fixes (PR #317
+/// review). This keeps faith with this repo's fail-closed, surfaced-not-
+/// silent error policy: a real stat error becomes a failed save the user
+/// sees, never a silently mis-resolved destination.
 ///
 /// Each relative link target is resolved against the directory of the
 /// symlink that named it (`read_link`'s own contract), not against
@@ -618,13 +629,29 @@ const MAX_SYMLINK_HOPS: u32 = 40;
 /// already makes.
 fn resolve_symlink_target(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     let mut current = path.to_path_buf();
-    for _ in 0..MAX_SYMLINK_HOPS {
-        let is_symlink = std::fs::symlink_metadata(&current)
-            .map(|meta| meta.file_type().is_symlink())
-            .unwrap_or(false);
-        if !is_symlink {
+    let mut hops = 0u32;
+    loop {
+        let meta = match std::fs::symlink_metadata(&current) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(current),
+            Err(e) => return Err(e),
+        };
+        if !meta.file_type().is_symlink() {
             return Ok(current);
         }
+        // `current` is a symlink and needs one more hop. Only refuse it
+        // once `MAX_SYMLINK_HOPS` hops have already happened -- checked
+        // here, before consuming the hop, so a chain of exactly
+        // `MAX_SYMLINK_HOPS` symlinks followed by a real file still
+        // resolves (the check above already returned for it); only the
+        // (`MAX_SYMLINK_HOPS` + 1)th symlink in a row hits this.
+        if hops >= MAX_SYMLINK_HOPS {
+            return Err(std::io::Error::other(format!(
+                "too many levels of symbolic links resolving {}",
+                path.display()
+            )));
+        }
+        hops += 1;
         let link_target = std::fs::read_link(&current)?;
         current = if link_target.is_absolute() {
             link_target
@@ -635,10 +662,6 @@ fn resolve_symlink_target(path: &std::path::Path) -> std::io::Result<std::path::
                 .join(link_target)
         };
     }
-    Err(std::io::Error::other(format!(
-        "too many levels of symbolic links resolving {}",
-        path.display()
-    )))
 }
 
 /// Write bytes atomically: create a temporary file in the same directory
@@ -1012,10 +1035,12 @@ mod tests {
         save_document, tmp_candidate_path, Fingerprint, EXPLAIN_SAMPLE_BYTES, LARGE_FILE_THRESHOLD,
         PREVIEW_BYTES,
     };
-    // Only the unix-gated symlink test uses this; an unconditional import
+    // Only the unix-gated symlink tests use these; an unconditional import
     // is an unused-import error under -D warnings on Windows.
     #[cfg(unix)]
     use super::open_exclusive;
+    #[cfg(unix)]
+    use super::resolve_symlink_target;
 
     #[test]
     fn atomic_write_replaces_content_and_leaves_no_temp_files() {
@@ -1180,6 +1205,136 @@ mod tests {
 
         let result = atomic_write(&a, b"never written");
         assert!(result.is_err(), "a cyclic symlink chain must be rejected");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// PR #317 review, point 2 (off-by-one) — a chain of *exactly*
+    /// `MAX_SYMLINK_HOPS` symlinks followed by a real file is a chain the
+    /// OS itself can resolve (Linux's `MAXSYMLINKS` semantics: only the
+    /// hop *past* the limit fails), so `resolve_symlink_target` must
+    /// resolve it too rather than rejecting a path the OS would have
+    /// opened just fine. Before the fix, the loop consumed all
+    /// `MAX_SYMLINK_HOPS` iterations just reaching the real file and
+    /// never got to check that final, non-symlink candidate, so this
+    /// failed-test-first red with "too many levels of symbolic links"
+    /// even though the chain was exactly at, not past, the limit.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_exactly_max_hops_symlink_chain_still_resolves() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-exactly-max-hops");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let target = dir.join("target.txt");
+        std::fs::write(&target, b"original").unwrap();
+
+        // link_0 -> link_1 -> ... -> link_{N-1} -> target, N == MAX_SYMLINK_HOPS:
+        // exactly MAX_SYMLINK_HOPS symlink hops stand between link_0 and the
+        // real file.
+        let hop_count = super::MAX_SYMLINK_HOPS as usize;
+        let links: Vec<_> = (0..hop_count)
+            .map(|i| dir.join(format!("link_{i}.txt")))
+            .collect();
+        for i in 0..hop_count {
+            let dest = if i + 1 < hop_count {
+                &links[i + 1]
+            } else {
+                &target
+            };
+            symlink(dest, &links[i]).unwrap();
+        }
+
+        let result = atomic_write(&links[0], b"resolved through the max-length chain");
+        assert!(
+            result.is_ok(),
+            "a chain of exactly MAX_SYMLINK_HOPS symlinks must still resolve, \
+             got {result:?}"
+        );
+        assert!(
+            std::fs::symlink_metadata(&links[0])
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the entry link must still be a symlink"
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"resolved through the max-length chain"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// PR #317 review, point 1 — a `symlink_metadata` error partway
+    /// through the chain that is *not* `NotFound` (here: `PermissionDenied`
+    /// from a search-permission-less parent directory) must propagate as
+    /// an error, never be silently folded into "this is not a symlink".
+    /// Before the fix, `.unwrap_or(false)` treated any such error as "not
+    /// a symlink", handing `atomic_write` a candidate that was actually
+    /// still the symlink itself -- which it would then rename over,
+    /// exactly the corruption issue #301 exists to prevent.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_symlink_target_propagates_non_notfound_stat_errors() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = std::env::temp_dir().join("mojidori-symlink-stat-error-propagates");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let blocked = dir.join("blocked");
+        std::fs::create_dir_all(&blocked).unwrap();
+        let target = dir.join("target.txt");
+        std::fs::write(&target, b"target content").unwrap();
+        let link = blocked.join("link.txt");
+        symlink(&target, &link).unwrap();
+
+        // Deny search (`--x`) permission on `blocked`: without it, `stat`/
+        // `lstat` on anything inside cannot even resolve the path
+        // component, so `symlink_metadata(&link)` fails with
+        // `PermissionDenied` -- a real stat error, not `NotFound`.
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Sanity-check the permission actually blocks stat in this
+        // environment before asserting anything about it: running as
+        // root (or some other permission-bypassing context) would make
+        // `symlink_metadata` succeed regardless, and the rest of this
+        // test would then be asserting nothing meaningful.
+        let sanity = std::fs::symlink_metadata(&link);
+        if sanity.is_ok() {
+            std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::remove_dir_all(&dir).ok();
+            eprintln!(
+                "skipping resolve_symlink_target_propagates_non_notfound_stat_errors: \
+                 this process appears to bypass directory permission checks (root?), \
+                 so denying `--x` on `blocked` did not block stat as the test requires"
+            );
+            return;
+        }
+        assert_eq!(
+            sanity.as_ref().unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "sanity check: expected a PermissionDenied stat error, got {sanity:?}"
+        );
+
+        let result = resolve_symlink_target(&link);
+
+        // Restore permissions before any assertion can early-return via
+        // panic, so the fixture directory is always removable.
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            result.is_err(),
+            "a non-NotFound symlink_metadata error must propagate, never be \
+             silently treated as \"not a symlink\"; got {result:?}"
+        );
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
