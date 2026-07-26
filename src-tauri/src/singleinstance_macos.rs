@@ -700,6 +700,19 @@ mod tests {
     /// test can inspect it afterward.
     type Recorded = Arc<Mutex<Vec<(String, Vec<String>)>>>;
 
+    /// Every fixture below builds its identifier through this, rather
+    /// than a bare literal, so two `cargo test` processes running
+    /// concurrently (CI plus a local run, a flaky-test detector invoking
+    /// the suite more than once, etc.) never collide on the same
+    /// `lock_path`/`socket_path` in the shared per-user temp dir — both
+    /// are keyed only by identifier, with no process-level separation of
+    /// their own. Same lesson as issue #317. Stable and predictable
+    /// *within* one process (every test still gets a fixed, distinct name
+    /// per fixture); just no longer shared *across* processes.
+    fn test_identifier(name: &str) -> String {
+        format!("com.mojidori.test.{name}.{}", std::process::id())
+    }
+
     /// Validates the semantic assumption the whole design in this module's
     /// doc comment rests on: `File::try_lock` is held per *open file
     /// description*, so two genuinely independent `open()`s of the same
@@ -712,7 +725,7 @@ mod tests {
     /// every other test in this module would be building on sand.
     #[test]
     fn two_independent_opens_of_the_same_lock_file_are_mutually_exclusive() {
-        let path = lock_path("com.mojidori.test.lock-semantics");
+        let path = lock_path(&test_identifier("lock-semantics"));
         let _ = std::fs::remove_file(&path);
 
         let open = || {
@@ -757,7 +770,8 @@ mod tests {
     /// anything (there's nothing to deliver it *to* yet).
     #[test]
     fn primary_accepts_and_buffers_a_forwarded_launch_before_any_app_handle_is_installed() {
-        let identifier = "com.mojidori.test.roundtrip";
+        let identifier = test_identifier("roundtrip");
+        let identifier = identifier.as_str();
         let _ = std::fs::remove_file(lock_path(identifier));
         let _ = std::fs::remove_file(socket_path(identifier));
 
@@ -817,7 +831,8 @@ mod tests {
     /// later message directly, live — not queue it again.
     #[test]
     fn install_deliver_drains_the_buffer_once_and_then_delivers_live() {
-        let identifier = "com.mojidori.test.install-deliver";
+        let identifier = test_identifier("install-deliver");
+        let identifier = identifier.as_str();
         let delivered: Recorded = Arc::new(Mutex::new(Vec::new()));
 
         enqueue_or_deliver(identifier, "/a".to_string(), vec!["one".to_string()]);
@@ -865,7 +880,7 @@ mod tests {
     #[test]
     fn install_deliver_and_a_concurrent_new_message_never_lose_or_duplicate_it() {
         for order in [ConcurrentOrder::EnqueueFirst, ConcurrentOrder::InstallFirst] {
-            let identifier = format!("com.mojidori.test.concurrent-flush-{order:?}");
+            let identifier = test_identifier(&format!("concurrent-flush-{order:?}"));
             let delivered: Recorded = Arc::new(Mutex::new(Vec::new()));
 
             enqueue_or_deliver(&identifier, "/pre".to_string(), vec!["pre".to_string()]);
@@ -951,7 +966,8 @@ mod tests {
     /// promptly ACKs must make the send succeed.
     #[test]
     fn send_and_await_ack_succeeds_once_the_peer_acks_after_processing() {
-        let identifier = "com.mojidori.test.ack-success";
+        let identifier = test_identifier("ack-success");
+        let identifier = identifier.as_str();
         let path = socket_path(identifier);
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).unwrap();
@@ -990,7 +1006,8 @@ mod tests {
     /// nobody ever actually processed it.
     #[test]
     fn send_and_await_ack_fails_when_the_peer_closes_without_acking() {
-        let identifier = "com.mojidori.test.ack-missing";
+        let identifier = test_identifier("ack-missing");
+        let identifier = identifier.as_str();
         let path = socket_path(identifier);
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).unwrap();
@@ -1030,7 +1047,8 @@ mod tests {
     /// this test's later `acquire_or_forward` call is that winner).
     #[test]
     fn recovers_a_stale_socket_left_by_a_crashed_primary_once_its_lock_is_free() {
-        let identifier = "com.mojidori.test.stale-socket";
+        let identifier = test_identifier("stale-socket");
+        let identifier = identifier.as_str();
         let lock = lock_path(identifier);
         let socket = socket_path(identifier);
         let _ = std::fs::remove_file(&lock);
@@ -1081,7 +1099,8 @@ mod tests {
     /// prompt `None`, not a hang waiting for bytes that will never come.
     #[test]
     fn read_forwarded_argv_cwd_rejects_a_declared_length_over_the_cap() {
-        let identifier = "com.mojidori.test.oversize-header";
+        let identifier = test_identifier("oversize-header");
+        let identifier = identifier.as_str();
         let path = socket_path(identifier);
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).unwrap();
@@ -1117,7 +1136,8 @@ mod tests {
     /// must treat as still acceptable, not off-by-one reject.
     #[test]
     fn read_forwarded_argv_cwd_accepts_a_message_exactly_at_the_cap() {
-        let identifier = "com.mojidori.test.exact-cap";
+        let identifier = test_identifier("exact-cap");
+        let identifier = identifier.as_str();
         let path = socket_path(identifier);
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).unwrap();
@@ -1186,7 +1206,8 @@ mod tests {
     /// having already given up.
     #[test]
     fn retries_the_lock_after_its_socket_is_unreachable_and_recovers_once_released() {
-        let identifier = "com.mojidori.test.exit-race";
+        let identifier = test_identifier("exit-race");
+        let identifier = identifier.as_str();
         let lock = lock_path(identifier);
         let socket = socket_path(identifier);
         let _ = std::fs::remove_file(&lock);

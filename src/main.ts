@@ -4133,7 +4133,10 @@ async function drainPendingFiles(): Promise<void> {
 // `take_pending_files` empties its queue atomically, so no matter which of
 // the two callers' `takePendingFiles()` call wins the race, each path is
 // still delivered exactly once (issue #305 follow-up review).
-void listen("mojidori://open-files", async () => {
+// Not `void`-discarded: the startup IIFE below awaits this promise before
+// its own one-shot drain — see the comment there for why the ordering
+// matters (issue #305 follow-up review).
+const openFilesListenerReady = listen("mojidori://open-files", async () => {
   await drainPendingFiles();
 });
 
@@ -4197,6 +4200,21 @@ void (async () => {
   // pointing at why (v0.6 V2 IPC-error-surfacing audit #3) — the dialog
   // inside drainPendingFiles is void, not awaited, so it can't delay the
   // rest of startup.
+  //
+  // Awaiting `openFilesListenerReady` first establishes an ordering
+  // invariant this drain depends on: the listener must actually be
+  // registered before this, the last drain there is, ever runs.
+  // `listen()` is itself async (it round-trips to the Rust core to
+  // register the event channel), so without this await there'd be a gap
+  // between this drain draining whatever's queued right now and the
+  // listener actually going live — a forwarded launch or Apple Event
+  // nudge landing in exactly that gap would be caught by neither (this
+  // drain already ran; the listener isn't live yet to react to the
+  // nudge) and its path would sit stranded in the backend's PendingFiles
+  // queue with nothing left that will ever drain it again (issue #305
+  // follow-up review). With the listener guaranteed live first, any
+  // nudge from this point on always has it there to catch.
+  await openFilesListenerReady;
   await drainPendingFiles();
   // Cold-start probe hook: no-op unless MOJIDORI_STARTUP_PROBE=1 (see
   // scripts/startup-bench.mjs). Marks "frontend ready" for the benchmark.
