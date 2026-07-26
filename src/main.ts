@@ -37,6 +37,7 @@ import {
   checkByteDrift,
   checkRepresentable,
   clearRecentFiles,
+  documentMetadata,
   listBackups,
   loadBackup,
   loadRecentFiles,
@@ -122,6 +123,7 @@ import { showPalette } from "./palette";
 import { showQuickOpen } from "./quickopen";
 import { showFilterableMenu, showMenu, type MenuItem } from "./popup";
 import { decideSaveCompletion } from "./savecompletion";
+import { isLikelySaveEcho, SAVE_ECHO_WINDOW_MS, type SaveEchoRecord } from "./saveecho";
 import { fingerprintsEqual, mustDefer, nextDrainStep } from "./savemutex";
 import { createSessionPersister } from "./sessionpersist";
 import { runStreamConvert } from "./streamconvert";
@@ -1404,8 +1406,11 @@ function syncClearRecentState(): void {
   });
 }
 
-/** Timestamps of our own saves, to ignore the watcher echo they cause. */
-const recentSaves = new Map<string, number>();
+/** Timestamp (and best-effort on-disk snapshot) of our own saves, to tell
+ *  the watcher echo they cause apart from a real external change landing
+ *  in the same short window (issue #302) — see saveecho.ts's
+ *  isLikelySaveEcho and recordOwnSave below. */
+const recentSaves = new Map<string, SaveEchoRecord>();
 /** Paths with a reload-confirmation dialog currently open. */
 const reloadPrompts = new Set<string>();
 /** Resolvers for saveFlow calls coalesced into doc.pendingSaveAs while the
@@ -1416,6 +1421,36 @@ const reloadPrompts = new Set<string>();
  *  actually resolves to once drained (see drainLock below) — never
  *  dropped, so a coalesced caller's promise can never hang. */
 const pendingSaveResolvers = new Map<number, Array<(written: boolean) => void>>();
+
+/**
+ * Record that `path` was just written by us (issue #302), so the next
+ * watcher event for it can be told apart from a genuine external change.
+ * The timestamp is recorded synchronously — the suppression window starts
+ * counting from the write, not from whenever this best-effort metadata
+ * fetch happens to resolve. The metadata fetch itself is fire-and-forget:
+ * awaiting it here would delay every save's own success side effects
+ * (dirty clearing, title update, ...) for a stat call that only matters if
+ * a watcher event happens to land inside the window. `recentSaves.get(path)
+ * === record` guards against attaching this fetch's result to a *newer*
+ * save's record if another save to the same path lands before this one
+ * resolves — the guard target (`record`) is the exact object this call's
+ * own `.set` below installed, so identity is a precise "still mine" check.
+ */
+function recordOwnSave(path: string): void {
+  const record: SaveEchoRecord = { time: Date.now(), metadata: null };
+  recentSaves.set(path, record);
+  void documentMetadata(path).then(
+    (metadata) => {
+      if (recentSaves.get(path) === record) record.metadata = metadata;
+    },
+    () => {
+      // Best-effort only (matches missingondisk.ts's isConfirmedMissing
+      // precedent for treating documentMetadata failures as non-fatal):
+      // record.metadata stays null, so isLikelySaveEcho falls back to
+      // time-only suppression for this path, same as before this fix.
+    },
+  );
+}
 
 /** Acquire `doc`'s save/reload lock for the duration of `body`, then
  *  release it and drain whatever queued up while it was held (issue
@@ -1863,8 +1898,18 @@ function applyOpenedForReload(doc: Doc, opened: OpenedDocument): void {
 async function handleExternalChange(path: string): Promise<void> {
   const doc = tabs.docs.find((d) => d.path === path);
   if (!doc) return;
-  const savedAt = recentSaves.get(path) ?? 0;
-  if (Date.now() - savedAt < 1500) return;
+  const now = Date.now();
+  const record = recentSaves.get(path);
+  // Issue #302: a blind elapsed-time check here used to swallow a genuine
+  // external change landing in the same short window as our own save's
+  // watcher echo, with nothing left to notice it once the window closed.
+  // The extra documentMetadata fetch only runs once `now` is already
+  // inside the window — the common case (no save in the last 1.5s) never
+  // pays for it.
+  if (record && now - record.time < SAVE_ECHO_WINDOW_MS) {
+    const current = await documentMetadata(path).catch(() => null);
+    if (isLikelySaveEcho({ now, record, current })) return;
+  }
   if (!doc.dirty) {
     await reloadFromDisk(doc);
     return;
@@ -2202,7 +2247,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
     // clearing this is unconditional on `written`, not on
     // completion.clearDirty.
     doc.missingOnDisk = false;
-    recentSaves.set(path, Date.now());
+    recordOwnSave(path);
     // Checked before this flow's own Save As (below) reassigns doc.path —
     // true only if some concurrent flow already moved this doc to a
     // different path while this save's IPC round trip was in flight
