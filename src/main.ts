@@ -2214,7 +2214,41 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
   const oldPath = doc.path;
   let path = doc.path;
   if (saveAs || path === null) {
-    path = await saveDialog({ defaultPath: path ?? doc.title });
+    // Issue #325: this await used to be unguarded — a rejection from the
+    // dialog plugin's own IPC (never an ordinary user Cancel, which
+    // resolves with `null` instead of rejecting) escaped runSaveFlow
+    // entirely, bypassing the save-failed dialog the main catch below
+    // shows and leaving saveFlow's caller with a *rejected* promise
+    // instead of a resolved SaveFlowResult. That contract violation
+    // cascaded well past a missing error message: drainLock's coalesced-
+    // save branch further down only resolves every queued caller once
+    // runSaveFlow actually returns, so a throw here left them pending
+    // forever; the Save with Encoding menu action's rollback only runs its
+    // `.then` handler on a resolved promise, so a rejection here also left
+    // its speculative encoding/dirty/backup state never rolled back.
+    // saveFlow must never reject — every other failure in this function
+    // (the main catch below) and every caller elsewhere in this file
+    // already depends on that — so this one gets the exact same treatment
+    // instead of a second, inconsistent failure path: the same save-failed
+    // dialog, then a normal `{written:false, stale:false}` return. A
+    // dedicated try/catch here (rather than moving this whole block inside
+    // the main try below) is deliberate, not just incidental scoping: `path`
+    // is reassigned by this await and read again immediately after by the
+    // `path === null` check below, and TypeScript's narrowing of a
+    // reassigned `let` through the closures the rest of this function
+    // passes `path` into (e.g. checkByteDrift's callback) only survives
+    // when the reassignment happens outside the main try — moving it in
+    // reproduces exactly the P1-adjacent build break that would be, not a
+    // cosmetic style choice.
+    try {
+      path = await saveDialog({ defaultPath: path ?? doc.title });
+    } catch (error) {
+      await messageDialog(String(error), {
+        title: t("dialog.saveFailedTitle"),
+        kind: "error",
+      });
+      return { written: false, stale: false };
+    }
     if (path === null) return { written: false, stale: false };
   }
   // Issue #319 third-round review: sticky across the rest of this attempt,
