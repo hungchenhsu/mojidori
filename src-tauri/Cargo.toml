@@ -43,11 +43,19 @@ tauri-plugin-window-state = "2"
 # D2 auto-update.
 tauri-plugin-updater = "2"
 
-[target."cfg(any(target_os = \"windows\", target_os = \"linux\", target_os = \"macos\"))".dependencies]
-# Confirmed macOS-supported since this crate line: see
-# tauri-plugin-single-instance 2.4.3's own
-# `[package.metadata.platforms.support.macos]` (level = "full") and its
-# `src/platform_impl/macos.rs` (Unix-domain-socket lock in `/tmp`,
-# forwarding argv/cwd to the running instance) — issue #305.
+[target."cfg(any(target_os = \"windows\", target_os = \"linux\"))".dependencies]
+# Deliberately NOT macOS (see `src-tauri/src/singleinstance_macos.rs`'s
+# module doc for the full writeup, issue #305 follow-up review): this
+# crate's own `src/platform_impl/macos.rs` (confirmed on the published
+# 2.4.3 and on the unreleased `v2` branch tip, 2026-07-26 — no upstream fix
+# exists at any version) hardcodes its coordination socket at a
+# machine-wide `/tmp/<identifier>_si.sock`, not a per-user path. On macOS
+# `/tmp` is shared by every local account, so any other unprivileged local
+# user can pre-claim that exact predictable path and either deny this app
+# the ability to ever become the running instance, or silently receive
+# this app's forwarded argv/cwd into an unrelated session. That's a real
+# local DoS / cross-session leak, not just a narrow edge case, so macOS
+# uses a hand-rolled single-instance module instead (per-user
+# `std::env::temp_dir()`), wired up in `src-tauri/src/lib.rs`'s `run()`.
 tauri-plugin-single-instance = "2"
 
