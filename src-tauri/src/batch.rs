@@ -819,17 +819,24 @@ fn rebuild_output_bytes(
 /// module doc's `"keep"` + `"keep"` caveat and `encoding::encode`'s
 /// round-trip contract note.
 ///
-/// Issue #114: immediately before the commit (`atomic_write`), `path` is
-/// re-fingerprinted and compared against `fingerprint` — the snapshot
-/// [`read_for_conversion`] captured when it read `bytes`. A mismatch
-/// (including the file no longer existing at all) means some other
-/// process atomically replaced the file after this conversion read it but
-/// before it wrote back; this fails closed, reporting the file `ok: false`
-/// without ever touching its now-external content — the same discipline
-/// `streamreplace.rs`'s `verify_unchanged` and `save_document`'s
-/// `expected_fingerprint` check already apply (both share `fsguard.rs`).
-/// One file failing this check never stops the rest of the batch: see
-/// `execute_batch_conversion`.
+/// Issue #114: immediately before the commit (`atomic_write`), the
+/// resolved destination (see below) is re-fingerprinted and compared
+/// against `fingerprint` — the snapshot [`read_for_conversion`] captured
+/// when it read `bytes`. A mismatch (including the file no longer
+/// existing at all) means some other process atomically replaced the file
+/// after this conversion read it but before it wrote back; this fails
+/// closed, reporting the file `ok: false` without ever touching its
+/// now-external content — the same discipline `streamreplace.rs`'s
+/// `verify_unchanged` and `save_document`'s `expected_fingerprint` check
+/// already apply (both share `fsguard.rs`). One file failing this check
+/// never stops the rest of the batch: see `execute_batch_conversion`.
+///
+/// `path` is resolved past any destination symlink exactly once
+/// (`lib.rs::resolve_write_destination`), and that same resolved path is
+/// what both the fingerprint check above and the eventual `atomic_write`
+/// use — never two independent resolves for the two steps (issue #301
+/// review, round 5; see `resolve_write_destination`'s doc comment for why
+/// that would reopen the exact redirection issue #301 itself was about).
 fn commit_conversion(
     path: &str,
     bytes: &[u8],
@@ -887,11 +894,34 @@ fn commit_conversion(
         };
     }
 
-    // Re-verify right before the write: fail closed if `path` no longer
-    // matches the fingerprint `read_for_conversion` captured when it read
-    // `bytes` — some other process atomically replaced the file in between
-    // (issue #114). Never write over content this call never actually saw.
-    if !fingerprint.matches_path(Path::new(path)) {
+    // Resolve the destination once, then use the SAME resolved path for
+    // both the re-verify check below and the write itself (issue #301
+    // review, round 5): resolving independently for each -- a fresh
+    // resolve inside a "follow symlinks" writer, decoupled from whatever
+    // path the check above validated -- would let a symlink repoint
+    // landing between the two resolves redirect content validated against
+    // the OLD target onto a completely different, never-checked file. See
+    // `lib.rs::resolve_write_destination`'s doc comment for the full
+    // rationale. `path` is always a file the user selected for batch
+    // conversion, never an internal app-state path, so following a
+    // destination symlink at all is correct in the first place.
+    let write_target = match crate::resolve_write_destination(Path::new(path)) {
+        Ok((target, _, _)) => target,
+        Err(e) => {
+            return BatchConvertResult {
+                path: path.to_string(),
+                ok: false,
+                message: format!("Failed to resolve destination: {e}"),
+            }
+        }
+    };
+
+    // Re-verify right before the write: fail closed if `write_target` no
+    // longer matches the fingerprint `read_for_conversion` captured when
+    // it read `bytes` -- some other process atomically replaced the file
+    // in between (issue #114). Never write over content this call never
+    // actually saw.
+    if !fingerprint.matches_path(&write_target) {
         return BatchConvertResult {
             path: path.to_string(),
             ok: false,
@@ -899,7 +929,7 @@ fn commit_conversion(
         };
     }
 
-    match crate::atomic_write(Path::new(path), &out_bytes) {
+    match crate::atomic_write(&write_target, &out_bytes) {
         Ok(()) => BatchConvertResult {
             path: path.to_string(),
             ok: true,
