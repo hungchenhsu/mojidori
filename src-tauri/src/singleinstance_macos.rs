@@ -141,6 +141,26 @@ const LOCK_RETRY_ROUNDS: u32 = 4;
 /// [`acquire_or_forward`]'s doc comment.
 const LOCK_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
 
+/// A successful `write_all` only proves the bytes reached the OS socket
+/// buffer, not that the primary ever read, parsed, or acted on them — if
+/// the primary is mid-exit right when it accepts the connection, the
+/// kernel can tear down that accepted-but-unread connection (and whatever
+/// was buffered in it) along with the rest of the dying process's file
+/// descriptors, and the secondary's `write_all` may already have returned
+/// `Ok` before that happens. [`send_and_await_ack`] treats the message as
+/// delivered only once the primary writes this single byte back, which it
+/// only does after [`spawn_accept_loop`] has finished calling
+/// `handle_single_instance_launch` — i.e. after the request has actually
+/// been processed, not merely received into a buffer (caught in PR #315's
+/// seventh review round).
+const ACK_BYTE: u8 = 1;
+/// How long [`send_and_await_ack`] waits for that byte before giving up.
+/// Generous relative to how fast `handle_single_instance_launch` actually
+/// runs (focusing a window and pushing onto an in-memory queue — no disk
+/// I/O), so this essentially never fires unless the primary is genuinely
+/// gone or wedged.
+const ACK_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Set once this process becomes the primary instance, so
 /// [`cleanup_if_primary`] only ever unlinks a socket this process itself
 /// created — never a different (possibly still-live) instance's.
@@ -321,14 +341,19 @@ pub(crate) fn acquire_or_forward(identifier: &str) -> SingleInstanceOutcome {
 /// Connect to the current lock holder's socket and forward `payload`
 /// (built by [`build_forward_payload_from`]), retrying with a short delay
 /// if the holder hasn't finished its bind yet (see
-/// [`acquire_or_forward`]'s doc comment). A write failure partway through
-/// is treated the same as a connect failure — worth retrying, since the
-/// peer may simply not have been ready yet — rather than silently
-/// swallowed as the previous, best-effort version of this function did.
+/// [`acquire_or_forward`]'s doc comment). Success requires the peer's ACK
+/// (see [`send_and_await_ack`]), not just a successful write — a write
+/// failure partway through, or no ACK within [`ACK_TIMEOUT`], are both
+/// treated the same as a connect failure — worth retrying (either another
+/// connection here, or eventually the lock itself again back in
+/// `acquire_or_forward`) — rather than silently swallowed as the
+/// previous, best-effort version of this function did.
 fn connect_and_forward(path: &std::path::Path, payload: &[u8]) -> std::io::Result<()> {
     let mut last_err = None;
     for attempt in 0..SECONDARY_CONNECT_ATTEMPTS {
-        match UnixStream::connect(path).and_then(|mut stream| send_framed(&mut stream, payload)) {
+        match UnixStream::connect(path)
+            .and_then(|mut stream| send_and_await_ack(&mut stream, payload))
+        {
             Ok(()) => return Ok(()),
             Err(e) => {
                 last_err = Some(e);
@@ -393,11 +418,31 @@ fn send_framed(stream: &mut UnixStream, payload: &[u8]) -> std::io::Result<()> {
     stream.write_all(payload)
 }
 
+/// Sends `payload` framed (see [`send_framed`]) and then blocks (up to
+/// [`ACK_TIMEOUT`]) waiting for the single-byte ACK
+/// [`spawn_accept_loop`] writes back once it has *finished processing*
+/// the message, not merely received it — see [`ACK_BYTE`]'s doc comment
+/// for why a successful `write_all` alone isn't proof of delivery. Any
+/// failure here (write error, timeout, or the peer closing the
+/// connection without ever writing the byte) is reported as an `Err`, the
+/// same as a connect failure — [`connect_and_forward`]'s caller treats
+/// "sent but never acked" exactly like "couldn't reach the peer at all":
+/// worth retrying, up to and including trying the lock itself again in
+/// case the old primary is gone for good.
+fn send_and_await_ack(stream: &mut UnixStream, payload: &[u8]) -> std::io::Result<()> {
+    send_framed(stream, payload)?;
+    stream.set_read_timeout(Some(ACK_TIMEOUT))?;
+    let mut ack = [0u8; 1];
+    stream.read_exact(&mut ack)
+}
+
 /// Parse one forwarded message off an accepted connection. Returns
 /// `None` on any I/O error, timeout, oversized declared length, or
 /// malformed message — the caller (the accept loop) just moves on to the
 /// next connection either way, the same as a dropped/ignored packet would
-/// be.
+/// be. Takes the stream by mutable reference, not by value: the caller
+/// (`spawn_accept_loop`) still owns it afterward, needed to write the ACK
+/// back once it's done processing whatever this returns.
 ///
 /// Reads an explicit 8-byte length prefix first, then reads *exactly*
 /// that many bytes with `read_exact` — never more, never fewer, and never
@@ -415,7 +460,7 @@ fn send_framed(stream: &mut UnixStream, payload: &[u8]) -> std::io::Result<()> {
 /// silently truncating, actually surfacing the rejection (via the caller
 /// logging it, see `spawn_accept_loop`) instead of pretending a partial
 /// message was the whole thing.
-fn read_forwarded_argv_cwd(mut stream: UnixStream) -> Option<(String, Vec<String>)> {
+fn read_forwarded_argv_cwd(stream: &mut UnixStream) -> Option<(String, Vec<String>)> {
     // A slow or hostile peer must not be able to wedge the accept loop
     // open indefinitely.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
@@ -451,13 +496,20 @@ fn read_forwarded_argv_cwd(mut stream: UnixStream) -> Option<(String, Vec<String
 /// [`SingleInstanceOutcome::Primary`] back in `run()`). Runs for the
 /// lifetime of the process; not joined anywhere, same as the plugin's own
 /// `tauri::async_runtime::spawn` accept loop never is.
+///
+/// Writes the ACK byte only *after* `handle_single_instance_launch`
+/// returns — i.e. after the window has been focused and the files queued
+/// — not right after parsing. See [`ACK_BYTE`]'s doc comment for why the
+/// secondary waits for this rather than treating its own successful
+/// `write_all` as proof the request was actually handled.
 pub(crate) fn spawn_accept_loop(app: tauri::AppHandle, listener: UnixListener) {
     std::thread::spawn(move || {
         for incoming in listener.incoming() {
             match incoming {
-                Ok(stream) => {
-                    if let Some((cwd, args)) = read_forwarded_argv_cwd(stream) {
+                Ok(mut stream) => {
+                    if let Some((cwd, args)) = read_forwarded_argv_cwd(&mut stream) {
                         crate::handle_single_instance_launch(&app, args.into_iter(), &cwd);
+                        let _ = stream.write_all(&[ACK_BYTE]);
                     }
                 }
                 Err(e) => {
@@ -536,7 +588,9 @@ mod tests {
     /// observe `TryLockError::WouldBlock` on the lock and report
     /// `ForwardedToRunning`, having sent this test process's own argv/cwd,
     /// which the "primary" side (simulating one connection of
-    /// `spawn_accept_loop`'s body, without needing a real `AppHandle`)
+    /// `spawn_accept_loop`'s body, without needing a real `AppHandle` —
+    /// including writing the ACK back afterward, or the secondary's
+    /// `acquire_or_forward` call below would time out waiting for one)
     /// must parse back out correctly.
     #[test]
     fn primary_secondary_round_trip_forwards_argv_and_cwd() {
@@ -551,8 +605,14 @@ mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let accept_thread = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept should succeed");
-            tx.send(read_forwarded_argv_cwd(stream)).unwrap();
+            let (mut stream, _) = listener.accept().expect("accept should succeed");
+            let parsed = read_forwarded_argv_cwd(&mut stream);
+            if parsed.is_some() {
+                stream
+                    .write_all(&[ACK_BYTE])
+                    .expect("acking should succeed");
+            }
+            tx.send(parsed).unwrap();
         });
 
         let outcome = acquire_or_forward(identifier);
@@ -574,6 +634,84 @@ mod tests {
         drop(lock); // release before cleanup, mirroring a normal process exit
         let _ = std::fs::remove_file(lock_path(identifier));
         let _ = std::fs::remove_file(socket_path(identifier));
+    }
+
+    /// Regression test for PR #315's seventh review round: a successful
+    /// `write_all` alone is not proof the primary ever processed the
+    /// message — this directly exercises [`send_and_await_ack`] (the
+    /// low-level piece, not the full retrying `connect_and_forward`) so
+    /// it's fast and precise. A peer that reads the message and then
+    /// promptly ACKs must make the send succeed.
+    #[test]
+    fn send_and_await_ack_succeeds_once_the_peer_acks_after_processing() {
+        let identifier = "com.mojidori.test.ack-success";
+        let path = socket_path(identifier);
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let accept_thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept should succeed");
+            let parsed = read_forwarded_argv_cwd(&mut stream);
+            assert!(
+                parsed.is_some(),
+                "the test's own well-formed payload must parse"
+            );
+            // Standing in for `handle_single_instance_launch` running to
+            // completion before the real accept loop acks.
+            stream
+                .write_all(&[ACK_BYTE])
+                .expect("acking should succeed");
+        });
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        let payload = build_forward_payload_from("/ack-test", &["file.txt".to_string()])
+            .expect("a small payload must not be rejected by the cap check");
+        send_and_await_ack(&mut client, &payload)
+            .expect("must succeed once the peer both reads and acks");
+
+        accept_thread.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Counterpart to the test above: a peer that reads the message but
+    /// closes the connection *without* ever writing the ACK byte — e.g.
+    /// simulating a primary dying between accepting the connection and
+    /// finishing `handle_single_instance_launch` — must make
+    /// `send_and_await_ack` report failure. Silently treating this as
+    /// delivered (the bug this round's review caught) would mean the
+    /// secondary exits believing its file-open request went through when
+    /// nobody ever actually processed it.
+    #[test]
+    fn send_and_await_ack_fails_when_the_peer_closes_without_acking() {
+        let identifier = "com.mojidori.test.ack-missing";
+        let path = socket_path(identifier);
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let accept_thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept should succeed");
+            let parsed = read_forwarded_argv_cwd(&mut stream);
+            assert!(
+                parsed.is_some(),
+                "the test's own well-formed payload must parse"
+            );
+            // Deliberately no ACK write here — `stream` is simply dropped,
+            // closing the connection, standing in for the primary process
+            // dying right after receiving the message.
+        });
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        let payload = build_forward_payload_from("/ack-test", &["file.txt".to_string()])
+            .expect("a small payload must not be rejected by the cap check");
+        let result = send_and_await_ack(&mut client, &payload);
+        assert!(
+            result.is_err(),
+            "a peer that never acks must be reported as a failure, not treated as \
+             successful delivery"
+        );
+
+        accept_thread.join().unwrap();
+        let _ = std::fs::remove_file(&path);
     }
 
     /// A crashed primary's socket file (left behind because a crash skips
@@ -641,8 +779,8 @@ mod tests {
         let listener = UnixListener::bind(&path).unwrap();
 
         let accept_thread = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept should succeed");
-            read_forwarded_argv_cwd(stream)
+            let (mut stream, _) = listener.accept().expect("accept should succeed");
+            read_forwarded_argv_cwd(&mut stream)
         });
 
         let mut stream = UnixStream::connect(&path).unwrap();
@@ -686,8 +824,8 @@ mod tests {
         assert_eq!(payload.len(), MAX_MESSAGE_BYTES);
 
         let accept_thread = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept should succeed");
-            read_forwarded_argv_cwd(stream)
+            let (mut stream, _) = listener.accept().expect("accept should succeed");
+            read_forwarded_argv_cwd(&mut stream)
         });
 
         let mut stream = UnixStream::connect(&path).unwrap();
