@@ -513,3 +513,78 @@ describe("Save with Encoding rollback re-persists session once encoding reverts 
     expect(snapshots[0]).toEqual({ encoding: "UTF-8", withBom: false });
   });
 });
+
+// PR #319 third-round Codex review (P2): main.ts's runSaveFlow wraps its
+// entire body — the initial save attempt, the lossy retry, the stale gate,
+// and the user's "overwrite" (force: true) retry — in one try/catch. Once
+// the stale gate has actually fired for this attempt (result.stale &&
+// !result.written), disk is proven to differ from the buffer; that fact
+// doesn't stop being true just because the user's chosen "overwrite" retry
+// then *throws* instead of resolving with written:false (the target
+// became unwritable, its directory disappeared, ...). Hardcoding
+// `stale: false` in the catch block erases that already-observed fact —
+// exactly the "buffer matches disk" false signal issue #276's
+// shouldRollbackForceDirty exists to prevent, just reached via a throw
+// instead of a resolved failure. runSaveFlowCatchStaleSim mirrors main.ts's
+// own try/catch shape (the "kept in sync by hand" pattern this file
+// already uses for setLineEndingSim/the Save with Encoding rollback sims
+// above) to pin that the catch preserves whatever staleness this attempt
+// already observed, rather than hardcoding false.
+async function runSaveFlowCatchStaleSim(
+  attempt: () => Promise<{ written: boolean; stale: boolean }>,
+  onStale?: () => Promise<void>,
+): Promise<{ written: boolean; stale: boolean }> {
+  let observedStale = false;
+  try {
+    const result = await attempt();
+    if (result.stale && !result.written) {
+      observedStale = true;
+      if (onStale) await onStale();
+    }
+    return result;
+  } catch {
+    // The fix under test: observedStale, not a hardcoded false.
+    return { written: false, stale: observedStale };
+  }
+}
+
+describe("runSaveFlow catch preserves already-observed staleness (PR #319 third-round review)", () => {
+  it("stale gate fired, then the overwrite retry throws: catch still reports stale:true", async () => {
+    const outcome = await runSaveFlowCatchStaleSim(
+      () => Promise.resolve({ written: false, stale: true }),
+      () => Promise.reject(new Error("EACCES: permission denied")),
+    );
+
+    expect(outcome).toEqual({ written: false, stale: true });
+
+    // Fed into the Save with Encoding rollback gate exactly like main.ts's
+    // own .then handler would: a clean doc, identity still "apply" — must
+    // NOT roll back dirty, the same protection issue #276 established for
+    // the ordinary stale-cancel path, now also holding for this
+    // throw-during-overwrite-retry path.
+    expect(
+      shouldRollbackForceDirty({
+        written: outcome.written,
+        stale: outcome.stale,
+        wasClean: true,
+        identity: "apply",
+      }),
+    ).toBe(false);
+  });
+
+  it("control — the initial attempt itself throws, before any staleness was ever observed: catch reports stale:false", async () => {
+    const outcome = await runSaveFlowCatchStaleSim(() =>
+      Promise.reject(new Error("ENOENT: no such file or directory")),
+    );
+
+    expect(outcome).toEqual({ written: false, stale: false });
+  });
+
+  it("control — a non-stale failure, no retry needed: resolves normally, no catch involved", async () => {
+    const outcome = await runSaveFlowCatchStaleSim(() =>
+      Promise.resolve({ written: false, stale: false }),
+    );
+
+    expect(outcome).toEqual({ written: false, stale: false });
+  });
+});

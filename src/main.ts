@@ -2114,6 +2114,22 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
     path = await saveDialog({ defaultPath: path ?? doc.title });
     if (path === null) return { written: false, stale: false };
   }
+  // Issue #319 third-round review: sticky across the rest of this attempt,
+  // including into the catch below, once the stale-file gate has actually
+  // fired for it — set only where that happens, just below. A `let` at
+  // function scope rather than reading `result.stale` at the point of
+  // catching: `result` is declared inside the try block below and isn't
+  // visible from its own catch, and more importantly, once staleness has
+  // been observed for this attempt (disk proven to differ from what the
+  // buffer assumed), that fact doesn't stop being true just because the
+  // user's chosen "overwrite" retry (force: true) then throws instead of
+  // resolving (file went unwritable, its directory disappeared, ...) —
+  // reporting `stale: false` there would let the Save with Encoding
+  // rollback's shouldRollbackForceDirty (savecompletion.ts, issue #276)
+  // wrongly restore dirty:false, exactly the "buffer matches disk" false
+  // signal that fix exists to prevent, just reached via a throw instead of
+  // a resolved `written: false`.
+  let observedStale = false;
   try {
     // ROADMAP.md v0.7 Track C "trim trailing whitespace on save"
     // (adversarial-review addition) [danger]: applied as a real editor edit
@@ -2233,6 +2249,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
       });
     }
     if (result.stale && !result.written) {
+      observedStale = true;
       const choice = await showStaleFileConfirm(doc.title);
       // Issue #276: reported as stale so the Save with Encoding rollback
       // (savecompletion.ts's shouldRollbackForceDirty) can skip restoring
@@ -2321,7 +2338,11 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
       title: t("dialog.saveFailedTitle"),
       kind: "error",
     });
-    return { written: false, stale: false };
+    // observedStale, not a hardcoded false: see this function's own
+    // opening doc comment on why an exception during the "overwrite"
+    // retry (or anything else after the stale gate already fired this
+    // attempt) must not erase that already-established fact.
+    return { written: false, stale: observedStale };
   }
 }
 
