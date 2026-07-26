@@ -43,9 +43,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::Emitter;
 
-/// Files requested via OS integration (file association, CLI args) before
-/// the frontend was ready to receive events. Drained by the frontend on
-/// startup through `take_pending_files`.
+/// Files requested via OS integration (file association, CLI args,
+/// tauri-plugin-single-instance forwarding) that the frontend may not have
+/// been listening for yet. This is the single source of truth for
+/// delivering them — `take_pending_files` (`std::mem::take` under the
+/// lock) hands the whole queue to exactly one caller and empties it, so no
+/// matter how many producers push into it (cold-start argv, single
+/// instance's forwarded argv, Apple Events) or how many callers try to
+/// drain it at once (the frontend's own startup drain, and its
+/// `mojidori://open-files` listener — both call `take_pending_files`,
+/// deliberately, rather than one of them reading a payload carried on the
+/// event itself), each path is still delivered exactly once (issue #305
+/// follow-up review: an emit that also carried the payload directly risked
+/// delivering the same path twice if both the event listener and the
+/// startup drain were live in the same tick).
 struct PendingFiles(Mutex<Vec<String>>);
 
 /// Extract existing file paths from process-style arguments, skipping the
@@ -792,50 +803,64 @@ pub fn run() {
     // writable). On macOS this plugin's second-instance path calls
     // `std::process::exit(0)` from its own plugin `setup()` — which runs
     // during `.build()`, before this app's window or `.run()` event loop
-    // ever starts — as soon as it detects a running instance. That means
-    // this callback and the Apple-Events-based `RunEvent::Opened` handler
-    // below can never both fire for the same file-open action: a forced
-    // second process (`open -n`, or launching the bundled binary again
-    // directly) exits immediately here and forwards its argv/cwd; the
-    // ordinary case (Finder double-click, or a plain `open`) never spawns
-    // a second process at all, so macOS delivers the Apple Event straight
-    // to the sole running instance's `RunEvent::Opened` handler instead.
-    // No additional de-duplication is needed beyond what's already here.
+    // ever starts — as soon as it detects a running instance.
     //
-    // Two more subtleties this callback must get right, on all three
-    // platforms (the plugin's Windows/Linux/macOS `platform_impl`s all
-    // forward the *sending* process's cwd the same way — see
-    // `windows.rs`/`linux.rs`/`macos.rs`'s own `std::env::current_dir()`
-    // call on the sending side):
-    //
-    // - The forwarded `cwd` is the *second* process's working directory,
-    //   not this (surviving) process's own — relative args must be
-    //   resolved against it, not against `std::env::current_dir()` here,
-    //   or a relative path typed in a different shell/cwd would silently
-    //   fail its `is_file()` check (or resolve to the wrong file) purely
-    //   because the two processes' cwds differ.
-    // - Like the `RunEvent::Opened` handler below, the resolved paths must
-    //   also be queued into `PendingFiles`, not just emitted: if the
-    //   second process connects before the frontend has attached its
-    //   `mojidori://open-files` listener (e.g. a very fast second launch
-    //   right after the window is created), an emit-only path would drop
-    //   the files silently — `take_pending_files` is what lets the
-    //   frontend recover them once it's ready, exactly as it already does
-    //   for the initial-argv and Apple-Events cases.
+    // Known limitation (issue #305 follow-up review, not fixed here):
+    // `open -n -a Mojidori file.txt` (or double-clicking the Dock icon
+    // while forcing a new instance) makes LaunchServices launch a genuine
+    // second process and deliver the file via an 'odoc' Apple Event
+    // addressed to *that new process* — not via argv, and not to the
+    // surviving instance (confirmed against Apple's own Launch Services
+    // docs and reproduced by tauri-plugin-single-instance's own
+    // Windows/Linux/macOS `platform_impl`s, which all just
+    // `std::process::exit(0)` the second process with no path to receive
+    // or forward that event; there is no known upstream handling of this
+    // either — no mention in the plugin's README/CHANGELOG or in
+    // tauri-apps/plugins-workspace issues). Since that second process
+    // exits (in this plugin's own `setup()`, during `.build()`) before
+    // this app's window or event loop is ever created, the Apple Event
+    // is never pumped and the file-open request is silently lost. This is
+    // narrow: it does NOT affect the ordinary case (Finder double-click,
+    // or a plain `open`, which macOS never spawns a second process for at
+    // all — the Apple Event goes straight to the sole running instance's
+    // `RunEvent::Opened` handler below), nor `open -n --args /path`
+    // (which passes the path as a real argv, forwarded by the callback
+    // below like any other cross-process arg). Fixing the odoc case
+    // would mean either forking this plugin's macOS implementation to
+    // intercept the Apple Event before exiting, or hand-rolling a
+    // lower-level AppKit delegate ourselves ahead of Tauri's plugin
+    // system — both far bigger than this fix and not attempted here; the
+    // trade-off accepted is keeping single-instance's protection against
+    // issue #305's cross-process last-writer-wins data loss at the cost
+    // of this one narrow launch pattern.
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
         use tauri::Manager;
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.set_focus();
         }
+        // The forwarded `cwd` is the *second* process's working
+        // directory, not this (surviving) process's own — relative args
+        // must be resolved against it, not against
+        // `std::env::current_dir()` here, or a relative path typed in a
+        // different shell/cwd would silently fail its `is_file()` check
+        // (or resolve to the wrong file) purely because the two
+        // processes' cwds differ. All three platforms' `platform_impl`s
+        // forward the sending process's own `std::env::current_dir()`
+        // the same way.
         let paths = existing_paths_from_args_in(argv.into_iter(), std::path::Path::new(&cwd));
         if !paths.is_empty() {
-            app.state::<PendingFiles>()
-                .0
-                .lock()
-                .unwrap()
-                .extend(paths.clone());
-            let _ = app.emit("mojidori://open-files", paths);
+            app.state::<PendingFiles>().0.lock().unwrap().extend(paths);
+            // No payload on this emit: `PendingFiles`/`take_pending_files`
+            // is the single delivery channel (see `PendingFiles`'s doc
+            // comment) — this is purely a nudge telling the frontend to
+            // go drain it now, in case its listener is already live. A
+            // payload-carrying emit here would risk delivering the same
+            // path twice: once via this event landing on an already-live
+            // listener, and again via the frontend's own startup drain,
+            // if both happened in the same tick (issue #305 follow-up
+            // review).
+            let _ = app.emit("mojidori://open-files", ());
         }
     }));
 
@@ -972,11 +997,18 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app, _event| {
             // macOS delivers associated files through Apple Events; they can
-            // arrive before the frontend is listening, so they are queued in
-            // PendingFiles as well as emitted. This only ever runs in the
-            // single surviving instance — see the single-instance plugin
-            // registration above for why it can't race with that plugin's
-            // own argv/cwd-forwarding callback (issue #305).
+            // arrive before the frontend is listening, so they are queued
+            // into PendingFiles the same way the single-instance callback
+            // above does (see that registration for the known limitation
+            // where a LaunchServices-forced new instance's Apple Event
+            // never reaches here at all). This only ever runs in the
+            // single surviving instance, so there's no cross-process race
+            // to worry about here specifically — but the emit is still
+            // payload-less for the same single-delivery-channel reason as
+            // the single-instance callback above: the frontend's listener
+            // and its own startup drain both call `take_pending_files`,
+            // which is what actually guarantees each path is delivered
+            // exactly once (issue #305 follow-up review).
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = _event {
                 use tauri::Manager;
@@ -986,12 +1018,8 @@ pub fn run() {
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
                 if !paths.is_empty() {
-                    _app.state::<PendingFiles>()
-                        .0
-                        .lock()
-                        .unwrap()
-                        .extend(paths.clone());
-                    let _ = _app.emit("mojidori://open-files", paths);
+                    _app.state::<PendingFiles>().0.lock().unwrap().extend(paths);
+                    let _ = _app.emit("mojidori://open-files", ());
                 }
             }
         });
@@ -1001,7 +1029,7 @@ pub fn run() {
 mod tests {
     use super::{
         atomic_write, existing_paths_from_args, existing_paths_from_args_in, explain_detection,
-        open_document, preview_slice, save_document, tmp_candidate_path, Fingerprint,
+        open_document, preview_slice, save_document, tmp_candidate_path, Fingerprint, PendingFiles,
         EXPLAIN_SAMPLE_BYTES, LARGE_FILE_THRESHOLD, PREVIEW_BYTES,
     };
     // Only the unix-gated symlink test uses this; an unconditional import
@@ -1364,6 +1392,61 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression test for issue #305's second follow-up review:
+    /// `PendingFiles` is the single delivery channel two independent
+    /// producers (single-instance's callback, `RunEvent::Opened`) feed and
+    /// two independent consumers (the frontend's `mojidori://open-files`
+    /// listener, its own startup drain) race to empty via
+    /// `take_pending_files`'s `std::mem::take`. That race must never
+    /// duplicate or drop a path: whichever consumer's `take` runs first
+    /// gets every path queued so far, and the other gets none of them —
+    /// this test simulates that race directly against the same `Mutex`
+    /// `take_pending_files` itself locks, standing in for it without
+    /// needing a full `tauri::State`/`AppHandle`.
+    #[test]
+    fn pending_files_take_is_atomic_and_delivers_each_path_exactly_once() {
+        use std::sync::{Arc, Barrier};
+
+        let state = Arc::new(PendingFiles(std::sync::Mutex::new(vec![
+            "/a.txt".to_string(),
+            "/b.txt".to_string(),
+            "/c.txt".to_string(),
+        ])));
+        let barrier = Arc::new(Barrier::new(2));
+
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let state = Arc::clone(&state);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    std::mem::take(&mut *state.0.lock().unwrap())
+                })
+            })
+            .collect();
+
+        let mut delivered: Vec<String> = Vec::new();
+        for handle in handles {
+            delivered.extend(handle.join().unwrap());
+        }
+        delivered.sort();
+
+        assert_eq!(
+            delivered,
+            vec![
+                "/a.txt".to_string(),
+                "/b.txt".to_string(),
+                "/c.txt".to_string()
+            ],
+            "every queued path must be delivered exactly once across the two racing takers, \
+             never duplicated and never dropped"
+        );
+        assert!(
+            state.0.lock().unwrap().is_empty(),
+            "the queue itself must end up empty — nothing left un-delivered"
+        );
     }
 
     /// Pull the encoding name out of a `"{encoding} ({reason})"` would-choose

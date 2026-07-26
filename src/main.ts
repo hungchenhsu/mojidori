@@ -4101,11 +4101,40 @@ async function restoreSession(): Promise<void> {
   }
 }
 
-// Files opened through the OS while the app is already running.
-void listen<string[]>("mojidori://open-files", async (event) => {
-  for (const path of event.payload) {
+// Single point of delivery for OS-provided files queued backend-side in
+// PendingFiles (cold-start argv, single-instance forwarding, Apple Events)
+// — see `take_pending_files`'s Rust-side doc comment for why this must be
+// the only place any of it is drained from. Called both by the
+// `mojidori://open-files` listener right below (a same-process nudge) and
+// once at startup, for files that triggered a cold launch; the backend's
+// `std::mem::take` guarantees whichever call lands first gets everything
+// queued so far and the other gets nothing, so calling it from both sites
+// can never open the same file twice (issue #305 follow-up review).
+async function drainPendingFiles(): Promise<void> {
+  const pending = await takePendingFiles().catch(() => {
+    void messageDialog(t("dialog.pendingFilesFailedMessage"), {
+      title: t("dialog.pendingFilesFailedTitle"),
+      kind: "warning",
+    });
+    return [] as string[];
+  });
+  for (const path of pending) {
     await openPath(path);
   }
+}
+
+// Files opened through the OS while the app is already running. The event
+// carries no payload on purpose — it's just a nudge that pending files may
+// be waiting. `takePendingFiles()` (via drainPendingFiles below) is the
+// single delivery channel for them, shared with the startup drain later in
+// this file: if this listener read paths directly off the event's own
+// payload instead, a file could be opened twice (once here, once by the
+// startup drain) whenever both were live in the same tick. The backend's
+// `take_pending_files` empties its queue atomically, so no matter which of
+// the two callers' `takePendingFiles()` call wins the race, each path is
+// still delivered exactly once (issue #305 follow-up review).
+void listen("mojidori://open-files", async () => {
+  await drainPendingFiles();
 });
 
 // Files dragged from the system onto the window.
@@ -4165,18 +4194,10 @@ void (async () => {
   // Files that triggered this launch open last so they end up focused. A
   // failure here means an OS "Open With"/CLI invocation asked Mojidori to
   // open specific files and they simply never arrive, with nothing else
-  // pointing at why (v0.6 V2 IPC-error-surfacing audit #3) — void, not
-  // awaited, so the dialog can't delay the rest of startup.
-  const pending = await takePendingFiles().catch(() => {
-    void messageDialog(t("dialog.pendingFilesFailedMessage"), {
-      title: t("dialog.pendingFilesFailedTitle"),
-      kind: "warning",
-    });
-    return [] as string[];
-  });
-  for (const path of pending) {
-    await openPath(path);
-  }
+  // pointing at why (v0.6 V2 IPC-error-surfacing audit #3) — the dialog
+  // inside drainPendingFiles is void, not awaited, so it can't delay the
+  // rest of startup.
+  await drainPendingFiles();
   // Cold-start probe hook: no-op unless MOJIDORI_STARTUP_PROBE=1 (see
   // scripts/startup-bench.mjs). Marks "frontend ready" for the benchmark.
   void reportStartupReady().catch(() => {});
