@@ -516,11 +516,27 @@ function shiftRanges(ranges: readonly ReplaceRange[], edits: readonly ReplaceEdi
  * next range's independent scan (see the module header) starts right back
  * at that same position and finds the identical match again — without
  * de-duping, both ranges would emit the same `{ from, to, insert }` edit
- * and the position would be inserted twice. A later range's candidate
- * match is skipped only when it is zero-length *and* sits exactly at the
- * immediately preceding non-empty range's `to`; this can never discard a
- * non-empty match (ranges don't overlap, so a non-empty match can't sit at
- * that exact shared point) or a zero-length match anywhere else.
+ * and the position would be inserted twice.
+ *
+ * Crucially, the earlier range does not always *find* that boundary match
+ * in the first place — a longer candidate starting before the boundary can
+ * cross it and get rejected outright, consuming the scan position without
+ * ever producing a match there (see `regexMatchesInRange`'s doc comment on
+ * `re.lastIndex` advancing past a rejected candidate too). For example,
+ * pattern `ab|(?=b)` on doc `"ab"` with ranges `[0, 1]` and `[1, 2]`: the
+ * first range's only raw candidate is `"ab"` itself (spanning `[0, 2)`),
+ * which crosses `range.to` and is rejected — the first range emits
+ * *nothing* — while the second range's scan legitimately finds the
+ * `(?=b)` lookahead's empty match at position 1. Naively assuming the
+ * shared boundary was "already handled" by the earlier range whenever a
+ * later range's candidate sits at that same position (an earlier version
+ * of this code did exactly that, keyed only on `range.to`) would discard
+ * this genuine match and turn the whole call into a no-op. So a later
+ * range's candidate is skipped only when it is zero-length, sits exactly
+ * at the immediately preceding non-empty range's `to`, *and* that
+ * preceding range's own scan actually accepted a match there (its last
+ * accepted match, since matches are found in ascending order) — never
+ * based on position alone.
  */
 export function replaceAllInSelection(
   docText: string,
@@ -530,14 +546,22 @@ export function replaceAllInSelection(
   if (query.search === "") return { edits: [], ranges: [...ranges] };
   const compiled = query.regexp ? buildRegExp(query) : null;
   const edits: ReplaceEdit[] = [];
-  let previousRangeTo: number | null = null;
+  // See the doc comment above: this is set from the *actual* last match a
+  // range's scan accepted (never assumed from `range.to` alone), and only
+  // when that match is zero-length and sits exactly at the range's own end.
+  let previousRangeClaimedBoundaryAt: number | null = null;
   for (const range of ranges) {
     if (range.from === range.to) continue;
-    for (const match of matchesInRange(docText, range, query, compiled)) {
-      if (match.from === match.to && match.from === previousRangeTo) continue;
+    const matches = matchesInRange(docText, range, query, compiled);
+    for (const match of matches) {
+      if (match.from === match.to && match.from === previousRangeClaimedBoundaryAt) continue;
       edits.push({ from: match.from, to: match.to, insert: expandReplacement(query, match) });
     }
-    previousRangeTo = range.to;
+    const lastMatch = matches[matches.length - 1];
+    previousRangeClaimedBoundaryAt =
+      lastMatch !== undefined && lastMatch.from === lastMatch.to && lastMatch.to === range.to
+        ? lastMatch.to
+        : null;
   }
   return { edits, ranges: shiftRanges(ranges, edits) };
 }
@@ -558,6 +582,22 @@ export function replaceAllInSelection(
  * Same empty-range and empty/invalid-query no-op rules as
  * `replaceAllInSelection` above; when no range contains any match at all,
  * this returns zero edits and `ranges` unchanged.
+ *
+ * A pattern that matches zero-length at *every* position (e.g. `x*` with
+ * no literal `x` anywhere in the document) is a known corner case where
+ * "steps through matches one at a time" does not mean "advances to a new
+ * offset each call": `shiftRanges`'s `"start"` mapping deliberately keeps a
+ * zero-length match's own position inside the resulting range rather than
+ * shifting past it (see `mapPosition`'s doc comment), so a range whose only
+ * available match sits at its own start re-finds that same offset on the
+ * next call too, repeatedly inserting there. This is not a divergence
+ * introduced by this module — driving CM6's own live `replaceNext` command
+ * repeatedly against the same document and query produces the identical
+ * "stuck at the same offset" behavior (`RegExpQuery.nextMatch` builds a
+ * fresh `RegExpCursor` per call, whose zero-length-match dedup state never
+ * carries over — verified in replacescope.test.ts), so matching it is what
+ * this function's own "the same way @codemirror/search's own... Replace
+ * button steps through the document" contract (above) requires.
  */
 export function replaceInSelection(
   docText: string,

@@ -525,6 +525,32 @@ describe("issue #300: zero-length regexp match boundary ownership and range mapp
     expect(applyEditsViaCodeMirrorState("ab", buggyEdits)).toBe("YaYYbY");
   });
 
+  it("boundary de-dup only suppresses a match the preceding range actually emitted, not any candidate at the same position (Codex PR #318 review)", () => {
+    // Counterexample from PR #318's review: an earlier version of the
+    // problem-one fix keyed the de-dup purely on position (`match.from ===
+    // previousRangeTo`), assuming a shared boundary was always already
+    // handled by the preceding range. That assumption is false here: doc
+    // "ab", ranges [0,1] and [1,2], pattern "ab|(?=b)". The first range's
+    // only raw candidate is the alternation's "ab" branch (spanning [0,2)),
+    // which crosses range [0,1]'s own end and is rejected outright — the
+    // first range's scan (see regexMatchesInRange's "always advance past a
+    // rejected candidate too" note) jumps straight past position 1 without
+    // ever emitting a match there. The second range [1,2] then legitimately
+    // finds the "(?=b)" lookahead's empty match at position 1 — a genuinely
+    // new match, not a duplicate of anything the first range produced.
+    // Position-only de-dup incorrectly discarded it, turning the whole call
+    // into a no-op; this pins that it must be kept.
+    const docText = "ab";
+    const query: ReplaceScopeQuery = { search: "ab|(?=b)", replace: "Y", regexp: true, caseSensitive: true };
+    const ranges: ReplaceRange[] = [
+      { from: 0, to: 1 },
+      { from: 1, to: 2 },
+    ];
+    const result = replaceAllInSelection(docText, ranges, query);
+    expect(result.edits).toEqual([{ from: 1, to: 1, insert: "Y" }]);
+    expect(applyEditsViaCodeMirrorState(docText, result.edits)).toBe("aYb");
+  });
+
   it("problem two: a single range spanning the whole match set maps its start/end to include every boundary match", () => {
     // Exact repro from the issue: doc "ab", one range [0, 2] (the whole
     // document as a single selection), same "x* -> Y" query. The core finds
@@ -561,6 +587,64 @@ describe("issue #300: zero-length regexp match boundary ownership and range mapp
     const finalText = applyEditsViaCodeMirrorState(docText, result.edits);
     expect(finalText).toBe("XYZdog");
     expect(result.ranges).toEqual([{ from: 0, to: finalText.length }]);
+  });
+
+  it("replaceInSelection's start-boundary handling of a zero-length match matches CM6's own repeated replaceNext, quirk and all (Codex PR #318 review)", () => {
+    // PR #318's review raised a second finding: replacing a zero-length
+    // match sitting at a range's own start keeps that position (rather than
+    // advancing past it), which — for a pattern that matches empty
+    // everywhere with no "x" in the doc — means repeated
+    // "Replace in Selection" calls insert at the same offset (0) forever
+    // instead of stepping to offsets 1, 2, .... This is real, but it is not
+    // a divergence from `@codemirror/search`: driving CM6's own live
+    // `replaceNext` command repeatedly, on the exact same document and
+    // query, produces the identical "stuck at offset 0, insert accumulates"
+    // behavior (verified below against a real `EditorView`) — a consequence
+    // of `RegExpQuery.nextMatch` building a *fresh* `RegExpCursor` on every
+    // call (node_modules/@codemirror/search), whose zero-length-match
+    // dedup state (`this.value` seeded to `{from:-1,to:-1}`) never carries
+    // over between calls, so the same offset-0 empty match is "new" again
+    // every time. `replaceInSelection`'s own doc comment already commits to
+    // "the same way @codemirror/search's own (whole-document) Replace
+    // button steps through the document" — matching this quirk (not
+    // "fixing" it to advance, which the CM6-comparison test below shows
+    // would be the actual divergence) is what that contract requires.
+    const query: ReplaceScopeQuery = { search: "x*", replace: "Y", regexp: true, caseSensitive: true };
+    const docText = "ab";
+
+    // Ground truth: CM6's own repeated replaceNext on an unattached view.
+    const cm6Log: string[] = [];
+    const state = EditorState.create({ doc: docText, extensions: [search()] });
+    const view = new EditorView({ state });
+    view.dispatch({
+      effects: setSearchQuery.of(new SearchQuery({ search: query.search, replace: query.replace, regexp: true })),
+    });
+    for (let i = 0; i < 4; i++) {
+      replaceNext(view);
+      cm6Log.push(`${view.state.doc.toString()}|${view.state.selection.main.from}-${view.state.selection.main.to}`);
+    }
+    view.destroy();
+
+    // This module's replaceInSelection, stepped the same number of times,
+    // each step's result fed back in as the next call's docText/ranges
+    // (mirrors the "repeated calls step through matches" test above).
+    const coreLog: string[] = [];
+    let coreDocText = docText;
+    let ranges: readonly ReplaceRange[] = [{ from: 0, to: 2 }];
+    for (let i = 0; i < 4; i++) {
+      const step = replaceInSelection(coreDocText, ranges, query);
+      coreDocText = applyEditsViaCodeMirrorState(coreDocText, step.edits);
+      ranges = step.ranges;
+      const main = ranges[0];
+      coreLog.push(`${coreDocText}|${main.from}-${main.from}`);
+    }
+
+    // Both are stuck accumulating "Y" at the very front, never advancing
+    // past offset 0 — the CM6-faithful (if pathological) outcome for this
+    // query, which has no "x" anywhere to give the scan real progress.
+    expect(cm6Log).toEqual(["Yab|0-0", "YYab|0-0", "YYYab|0-0", "YYYYab|0-0"]);
+    expect(coreDocText).toBe("YYYYab");
+    expect(ranges[0].from).toBe(0);
   });
 });
 
