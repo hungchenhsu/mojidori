@@ -19,6 +19,10 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { replaceAll, replaceNext, search, setSearchQuery, SearchQuery } from "@codemirror/search";
 import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   replaceAllInSelection,
   replaceInSelection,
@@ -72,6 +76,110 @@ function cm6ReplaceAllWholeDoc(
   const result = view.state.doc.toString();
   view.destroy();
   return result;
+}
+
+/**
+ * Runs `replaceAllInSelection(docText, ranges, query)` in a *separate* Node
+ * child process — the formalized version of the manual esbuild-plus-
+ * subprocess reproduction used to confirm issue #320 both hung before the
+ * fix and terminated after it (PR #327's own review): an in-process
+ * regression test here, even wrapped in Vitest's own per-test `timeout`
+ * option, is not actually bounded — a genuine infinite loop in this
+ * module's scanning loop is fully synchronous and never yields to the
+ * event loop, so Vitest's timeout (which relies on the event loop to fire)
+ * never gets a turn either (confirmed empirically while fixing this issue:
+ * reverting the fix made the whole Vitest *worker* hang past 20 seconds,
+ * not just one test). `execFileSync`'s own `timeout` option has Node itself
+ * send `killSignal` to the child if it runs too long, which works the same
+ * way on macOS and Windows CI alike (unlike shell `timeout`/`gtimeout`,
+ * which aren't both available there), turning a real regression into an
+ * explicit, fast test failure instead of a hung worker.
+ *
+ * Bundling `replacescope.ts` with esbuild also happens *inside* the child
+ * process, not here, and deliberately so: esbuild's own internal
+ * environment sanity check (`new TextEncoder().encode("") instanceof
+ * Uint8Array`) fails outright under this file's jsdom environment (needed
+ * here for the "consistency with CM6" tests' `EditorView`) — merely
+ * importing the `esbuild` package throws at its own module-load time under
+ * jsdom, before any of its functions are even called. Spawning one plain
+ * `node` child that does both the bundling and the run keeps every bit of
+ * esbuild usage confined to a process with no jsdom in it at all, and
+ * means the deadline this function enforces covers the *entire*
+ * hang-risking sequence (bundle once, then run), not just the run half.
+ */
+function runReplaceAllInSelectionInChildProcess(
+  docText: string,
+  ranges: readonly ReplaceRange[],
+  query: ReplaceScopeQuery,
+  timeoutMs: number,
+): ReplaceScopeResult {
+  const dir = mkdtempSync(join(tmpdir(), "replacescope-child-"));
+  try {
+    // `import.meta.url` isn't a plain `file://` URL under Vitest (Vite
+    // serves test files through its own module graph), so it can't be
+    // turned back into a real filesystem path here. `process.cwd()` is
+    // reliable instead: `npm test`/`vitest run` (both locally and in CI —
+    // see .github/workflows/ci.yml) are always invoked from the project
+    // root, which is what makes "<root>/src/replacescope.ts" and
+    // "<root>/node_modules/esbuild" below correct on every platform this
+    // runs on.
+    const projectRoot = process.cwd();
+    const modulePath = join(projectRoot, "src", "replacescope.ts");
+    const driverPath = join(dir, "driver.mjs");
+    const bundlePath = join(dir, "bundle.cjs");
+    const buildAndRunPath = join(dir, "build-and-run.cjs");
+    writeFileSync(
+      driverPath,
+      [
+        `import { replaceAllInSelection } from ${JSON.stringify(modulePath)};`,
+        `const result = replaceAllInSelection(${JSON.stringify(docText)}, ${JSON.stringify(ranges)}, ${JSON.stringify(query)});`,
+        `process.stdout.write(JSON.stringify(result));`,
+      ].join("\n"),
+    );
+    writeFileSync(
+      buildAndRunPath,
+      [
+        // Absolute path, not a bare "esbuild" specifier: this script's own
+        // location (a temp directory) has no node_modules of its own to
+        // resolve a bare specifier against.
+        `const esbuild = require(${JSON.stringify(join(projectRoot, "node_modules", "esbuild"))});`,
+        // replacescope.ts has zero imports of its own (see its module
+        // header — "zero CodeMirror dependency"), so this bundle is just
+        // that one file's TS stripped to plain JS; no external resolution
+        // to worry about.
+        `esbuild.buildSync({`,
+        `  entryPoints: [${JSON.stringify(driverPath)}],`,
+        `  bundle: true,`,
+        `  platform: "node",`,
+        `  format: "cjs",`,
+        `  outfile: ${JSON.stringify(bundlePath)},`,
+        `  logLevel: "silent",`,
+        `});`,
+        `require(${JSON.stringify(bundlePath)});`,
+      ].join("\n"),
+    );
+    let stdout: string;
+    try {
+      stdout = execFileSync(process.execPath, [buildAndRunPath], {
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+        encoding: "utf8",
+      });
+    } catch (error) {
+      const failure = error as NodeJS.ErrnoException & { signal?: string | null; killed?: boolean };
+      if (failure.killed || failure.signal) {
+        throw new Error(
+          `replaceAllInSelection did not return within ${timeoutMs}ms in a child process ` +
+            `(killed by ${failure.signal ?? "timeout"}) — this looks like an infinite-loop ` +
+            `regression of issue #320, not a normal test failure.`,
+        );
+      }
+      throw error;
+    }
+    return JSON.parse(stdout) as ReplaceScopeResult;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe("replaceAllInSelection", () => {
@@ -935,11 +1043,18 @@ describe("issue #320: zero-length regexp match must not infinite-loop on an astr
   // (verified against a real `RegExp.prototype.exec` call below), so
   // `re.exec` returns the *same* zero-length match again, forever: this
   // loop's `re.lastIndex = from + 1` line and V8's own correction fight
-  // each other, and the position never moves. A bounded per-test timeout
-  // (short — this must return well within it) is the regression guard: if
-  // this class of bug ever comes back, the test fails on a timeout instead
-  // of hanging the whole suite (or, in production, the UI thread — see the
-  // issue's severity note).
+  // each other, and the position never moves. The first test below checks
+  // that premise directly against `RegExp` (no hang risk at all — it's a
+  // single `exec` call, not this module's scanning loop, so an ordinary
+  // in-process `it` with a short timeout is fine). The second test is the
+  // actual regression guard for the infinite loop itself, and — per PR
+  // #327's own review — genuinely needs to run out-of-process: a real
+  // regression here is a synchronous loop that never yields to the event
+  // loop, so Vitest's own per-test `timeout` cannot enforce anything
+  // against it (confirmed while fixing this issue: reverting the fix made
+  // the whole Vitest *worker* hang past 20 seconds, not just one test).
+  // See `runReplaceAllInSelectionInChildProcess`'s own doc comment above
+  // for how that test actually gets a bound this bug class can't defeat.
   it(
     "V8 corrects a mid-surrogate lastIndex back to the code point start (sanity-checks the bug's premise directly against RegExp, no module code involved)",
     () => {
@@ -961,14 +1076,22 @@ describe("issue #320: zero-length regexp match must not infinite-loop on an astr
       const docText = "\u{1F600}"; // "😀", one code point, two UTF-16 units
       const query: ReplaceScopeQuery = { search: "x*", replace: "Y", regexp: true, caseSensitive: true };
       const expected = cm6ReplaceAllWholeDoc(docText, query);
-      const result = replaceAllInSelection(docText, [{ from: 0, to: 2 }], query);
+      // Deliberately out-of-process (see runReplaceAllInSelectionInChildProcess's
+      // doc comment): a real regression here is a synchronous infinite
+      // loop, which an in-process call could not be bounded against.
+      const result = runReplaceAllInSelectionInChildProcess(docText, [{ from: 0, to: 2 }], query, 5000);
       expect(result.edits).toEqual([
         { from: 0, to: 0, insert: "Y" },
         { from: 2, to: 2, insert: "Y" },
       ]);
       expect(applyEditsViaCodeMirrorState(docText, result.edits)).toBe(expected);
     },
-    2000,
+    // Generous outer Vitest timeout: covers esbuild bundling plus Node
+    // process startup, on top of the 5000ms deadline `execFileSync` itself
+    // enforces on the child — that inner deadline is the real regression
+    // guard; this outer one is just slack for slower CI runners (Windows
+    // in particular), not a substitute for it.
+    15000,
   );
 });
 
