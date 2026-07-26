@@ -351,12 +351,35 @@ function stringMatchesInRange(
  * touching ranges behave exactly like one continuous scan for this guard's
  * purposes, without actually merging their scans (each still resets
  * `lastIndex` independently — see the module header).
+ *
+ * `wholeWordTest`, when given (regexp mode's `wholeWord` — see
+ * `matchesInRange`), must be checked *before* a candidate updates
+ * `lastAcceptedTo`, not filtered out of the results afterwards: mirrors
+ * `RegExpCursor.next`'s own combined accept condition verbatim,
+ * `(from < to || from > this.value.to) && (!this.test || this.test(from,
+ * to, match))` — `this.value` (this function's `lastAcceptedTo`) only ever
+ * updates when *both* halves pass, so a candidate the word-boundary test
+ * rejects can never poison the guard against a later, genuinely-accepted
+ * zero-length match. Filtering `wholeWord` as a separate pass over
+ * already-accepted raw matches (an earlier version of this function did
+ * exactly that) gets this wrong: e.g. pattern `a|(?=b)` with `wholeWord` on doc
+ * `"ab"` — the `"a"` branch matches `[0, 1)` first and, filtered
+ * afterwards, would already have set `lastAcceptedTo = 1` by the time the
+ * word-boundary test later rejects it (both of `"a"`'s neighbors, `a` and
+ * `b`, are word characters, so it fails `isWordBoundaryOk`) — which then
+ * wrongly suppresses the very next candidate, the `(?=b)` lookahead's
+ * legitimate zero-length match at position 1, as a "spurious repeat" of a
+ * match that was never actually kept. Weaving the test into the same
+ * accept condition that updates `lastAcceptedTo` (as here) keeps this
+ * function's internal state exactly in sync with which matches it actually
+ * returns, the same invariant `wholeWord`-free scanning already relies on.
  */
 function regexMatchesInRange(
   docText: string,
   range: ReplaceRange,
   re: RegExp,
   seedLastAcceptedTo = -1,
+  wholeWordTest?: (from: number, to: number) => boolean,
 ): FoundMatch[] {
   const matches: FoundMatch[] = [];
   re.lastIndex = range.from;
@@ -368,7 +391,8 @@ function regexMatchesInRange(
     const to = from + m[0].length;
     if (from > range.to) break; // scanned past the range: nothing more here
     const isSpuriousZeroLengthRepeat = from === to && from <= lastAcceptedTo;
-    if (to <= range.to && !isSpuriousZeroLengthRepeat) {
+    const passesWholeWord = !wholeWordTest || wholeWordTest(from, to);
+    if (to <= range.to && !isSpuriousZeroLengthRepeat && passesWholeWord) {
       matches.push({ from, to, matched: m[0], groups: Array.from(m) });
       lastAcceptedTo = to;
     }
@@ -409,14 +433,18 @@ function matchesInRange(
 ): FoundMatch[] {
   if (query.regexp) {
     if (!compiledRegExp) return [];
-    const raw = regexMatchesInRange(docText, range, compiledRegExp, seedLastAcceptedTo);
-    // Regexp mode's wholeWord filter is a pure post-hoc filter (not woven
-    // into the scan the way string mode's is): @codemirror/search's own
-    // regexp cursor already advances lastIndex past a raw match
-    // unconditionally (see regexMatchesInRange's doc comment), so which raw
-    // matches are found never depends on whether wholeWord will later
-    // accept or reject any of them.
-    return query.wholeWord ? raw.filter((m) => isWordBoundaryOk(docText, m.from, m.to)) : raw;
+    // wholeWord must be woven into the scan itself, not filtered out of its
+    // results afterwards — see regexMatchesInRange's doc comment on
+    // `wholeWordTest` for why a post-hoc filter here can wrongly suppress a
+    // later, legitimate zero-length match (PR #318's third round of
+    // review). `re.lastIndex` still advances past a raw match
+    // unconditionally either way (see regexMatchesInRange's own doc
+    // comment on that point) — only the accept/`lastAcceptedTo` decision
+    // depends on this test, never the scan's continuation.
+    const wholeWordTest = query.wholeWord
+      ? (from: number, to: number) => isWordBoundaryOk(docText, from, to)
+      : undefined;
+    return regexMatchesInRange(docText, range, compiledRegExp, seedLastAcceptedTo, wholeWordTest);
   }
   // Plain-string mode searches with the *unquoted* text (see `unquote` and
   // the `ReplaceScopeQuery` doc comment): @codemirror/search's own

@@ -791,42 +791,107 @@ describe("PR #318 property sweep: zero-length-boundary family locked down exhaus
     expect(selection.ranges.length).toBe(result.ranges.length);
   }
 
-  it("always-zero-length patterns: no duplicate edits, non-overlapping ranges, and CM6 whole-doc agreement across every contiguous partition", () => {
+  // wholeWord on/off, run alongside the CM6 whole-doc comparison group:
+  // zero-length matches always pass wholeWord trivially (see
+  // isWordBoundaryOk's own doc comment), so this dimension should never
+  // change anything for `alwaysZeroLengthPatterns` — locking that in too.
+  const wholeWordOptions = [false, true];
+
+  it("always-zero-length patterns: no duplicate edits, non-overlapping ranges, and CM6 whole-doc agreement across every contiguous partition and wholeWord setting", () => {
     let casesChecked = 0;
     for (const docText of docTexts) {
       for (const search of alwaysZeroLengthPatterns) {
-        const query: ReplaceScopeQuery = { search, replace: "Y", regexp: true, caseSensitive: true };
-        const expectedWholeDocText = cm6ReplaceAllWholeDoc(docText, query);
-        for (const ranges of allContiguousPartitions(docText.length)) {
-          casesChecked++;
-          const result = replaceAllInSelection(docText, ranges, query);
-          expectNoDuplicateEditsAndNonOverlappingRanges(result);
-          // (c) these partitions always cover the whole document with no
-          // gaps, and this pattern can never produce a real match a range
-          // split could legitimately break up, so applying `edits` via a
-          // real @codemirror/state transaction must reproduce CM6's own
-          // whole-document replaceAll exactly, no matter how the document
-          // was cut into ranges.
-          expect(applyEditsViaCodeMirrorState(docText, result.edits)).toBe(expectedWholeDocText);
+        for (const wholeWord of wholeWordOptions) {
+          const query: ReplaceScopeQuery = { search, replace: "Y", regexp: true, caseSensitive: true, wholeWord };
+          const expectedWholeDocText = cm6ReplaceAllWholeDoc(docText, query);
+          for (const ranges of allContiguousPartitions(docText.length)) {
+            casesChecked++;
+            const result = replaceAllInSelection(docText, ranges, query);
+            expectNoDuplicateEditsAndNonOverlappingRanges(result);
+            // (c) these partitions always cover the whole document with no
+            // gaps, and this pattern can never produce a real match a range
+            // split could legitimately break up, so applying `edits` via a
+            // real @codemirror/state transaction must reproduce CM6's own
+            // whole-document replaceAll exactly, no matter how the document
+            // was cut into ranges or whether wholeWord is on.
+            expect(applyEditsViaCodeMirrorState(docText, result.edits)).toBe(expectedWholeDocText);
+          }
         }
       }
     }
     // Guards against the generators silently producing zero useful cases.
-    expect(casesChecked).toBeGreaterThan(40);
+    expect(casesChecked).toBeGreaterThan(80);
   });
 
-  it("mixed zero/non-zero-length patterns: no duplicate edits and non-overlapping ranges across every contiguous partition (CM6 whole-doc agreement not required — see this module's own boundary-crossing rule)", () => {
+  it("mixed zero/non-zero-length patterns: no duplicate edits and non-overlapping ranges across every contiguous partition and wholeWord setting (CM6 whole-doc agreement not required — see this module's own boundary-crossing rule)", () => {
     let casesChecked = 0;
     for (const docText of docTexts) {
       for (const search of mixedLengthPatterns) {
-        const query: ReplaceScopeQuery = { search, replace: "Y", regexp: true, caseSensitive: true };
-        for (const ranges of allContiguousPartitions(docText.length)) {
-          casesChecked++;
-          expectNoDuplicateEditsAndNonOverlappingRanges(replaceAllInSelection(docText, ranges, query));
+        for (const wholeWord of wholeWordOptions) {
+          const query: ReplaceScopeQuery = { search, replace: "Y", regexp: true, caseSensitive: true, wholeWord };
+          for (const ranges of allContiguousPartitions(docText.length)) {
+            casesChecked++;
+            expectNoDuplicateEditsAndNonOverlappingRanges(replaceAllInSelection(docText, ranges, query));
+          }
         }
       }
     }
-    expect(casesChecked).toBeGreaterThan(60);
+    expect(casesChecked).toBeGreaterThan(120);
+  });
+
+  it("mixed zero/non-zero-length patterns with wholeWord on a single whole-document range: must still agree with CM6 exactly (PR #318 round 3 — wholeWord/lastAcceptedTo interaction)", () => {
+    // Unlike the partition sweep above, a *single* range spanning the whole
+    // document has no "range split crosses a real match" divergence source
+    // at all (see this file's header on why `wholeDoc(docText)` is directly
+    // comparable to CM6's own whole-document replaceAll) — so for this
+    // narrower case, wholeWord + a pattern with a real, wholeWord-rejectable
+    // branch must still match CM6 exactly. This is what actually exercises
+    // PR #318's third-round finding: `regexMatchesInRange`'s zero-length
+    // guard must not be poisoned by a candidate wholeWord is about to
+    // reject.
+    let casesChecked = 0;
+    for (const docText of docTexts) {
+      for (const search of mixedLengthPatterns) {
+        for (const wholeWord of wholeWordOptions) {
+          casesChecked++;
+          const query: ReplaceScopeQuery = { search, replace: "Y", regexp: true, caseSensitive: true, wholeWord };
+          const expectedWholeDocText = cm6ReplaceAllWholeDoc(docText, query);
+          const result = replaceAllInSelection(docText, wholeDoc(docText), query);
+          expect(applyEditsViaCodeMirrorState(docText, result.edits)).toBe(expectedWholeDocText);
+        }
+      }
+    }
+    expect(casesChecked).toBeGreaterThan(20);
+  });
+});
+
+describe("PR #318 round 3: wholeWord must not poison the zero-length-repeat guard for a match it rejects", () => {
+  it("exact repro: pattern 'a|(?=b)' with wholeWord on doc \"ab\" still finds the lookahead's legitimate zero-length match", () => {
+    // Codex's exact reproduction: doc "ab", pattern "a|(?=b)", wholeWord on,
+    // whole document selected. The "a" branch matches [0, 1) first, but
+    // wholeWord rejects it (both neighbors, "a" itself and "b", are word
+    // characters). An earlier version of this module filtered wholeWord
+    // *after* scanning, so the (already-rejected) "a" candidate had already
+    // set the zero-length-repeat guard's `lastAcceptedTo = 1`, wrongly
+    // suppressing the very next candidate — the "(?=b)" lookahead's
+    // legitimate empty match at position 1 — and turning the whole call
+    // into a no-op. CM6 itself weaves the wholeWord test into the same
+    // accept condition that updates its own guard, so it never has this
+    // problem; this pins that this module now matches.
+    const docText = "ab";
+    const query: ReplaceScopeQuery = {
+      search: "a|(?=b)",
+      replace: "Y",
+      regexp: true,
+      caseSensitive: true,
+      wholeWord: true,
+    };
+    const expected = cm6ReplaceAllWholeDoc(docText, query);
+    expect(expected).toBe("aYb"); // only the lookahead at position 1 survives wholeWord; "a" is rejected
+
+    const result = replaceAllInSelection(docText, wholeDoc(docText), query);
+    expect(result.edits).toEqual([{ from: 1, to: 1, insert: "Y" }]);
+    expect(applyEditsViaCodeMirrorState(docText, result.edits)).toBe(expected);
   });
 });
 
