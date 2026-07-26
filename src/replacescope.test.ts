@@ -15,7 +15,7 @@
 //    range spanning the whole document makes `replaceAllInSelection`
 //    directly comparable to CM6's own whole-document `replaceAll`, since a
 //    match can never cross a "boundary" that is the entire document.
-import { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { replaceAll, replaceNext, search, setSearchQuery, SearchQuery } from "@codemirror/search";
 import { describe, expect, it } from "vitest";
@@ -25,6 +25,7 @@ import {
   type ReplaceEdit,
   type ReplaceRange,
   type ReplaceScopeQuery,
+  type ReplaceScopeResult,
 } from "./replacescope";
 
 /** Reconstruct the post-edit text from `edits` (ascending, non-overlapping,
@@ -551,6 +552,67 @@ describe("issue #300: zero-length regexp match boundary ownership and range mapp
     expect(applyEditsViaCodeMirrorState(docText, result.edits)).toBe("aYb");
   });
 
+  /** True when `ranges` are ascending and non-overlapping — the invariant
+   *  `ReplaceScopeResult.ranges` must hold for `EditorSelection.create` to
+   *  preserve every range as a distinct multi-cursor selection rather than
+   *  merging touching-or-overlapping ones together (see
+   *  `EditorSelection.normalized` in node_modules/@codemirror/state). */
+  function rangesAreNonOverlapping(ranges: readonly ReplaceRange[]): boolean {
+    for (let i = 1; i < ranges.length; i++) {
+      if (ranges[i].from < ranges[i - 1].to) return false;
+    }
+    return true;
+  }
+
+  it("Codex PR #318 round 2: mapped ranges for adjacent ranges sharing a claimed boundary must not overlap", () => {
+    // Second-round finding: the round-1 fix correctly gives the shared
+    // boundary match's *edit* to the earlier range ([0,1] owns the match at
+    // position 1, not [1,2]), but the *range mapping* still used the same
+    // generic "start"/"end" association for every range regardless of who
+    // actually owns which boundary match — so both [0,1]'s mapped `to` and
+    // [1,2]'s mapped `from` independently grew/shrank around the *same*
+    // shared insertion, producing overlapping ranges ([0,3] and [2,5]).
+    // Feeding those through `EditorSelection.create` (as `editor.ts`'s
+    // `dispatchScopedReplace` does) silently merges them back into a single
+    // selection, losing the multi-range scope the caller asked for.
+    const docText = "ab";
+    const query: ReplaceScopeQuery = { search: "x*", replace: "Y", regexp: true, caseSensitive: true };
+    const ranges: ReplaceRange[] = [
+      { from: 0, to: 1 },
+      { from: 1, to: 2 },
+    ];
+    const result = replaceAllInSelection(docText, ranges, query);
+    expect(rangesAreNonOverlapping(result.ranges)).toBe(true);
+    const selection = EditorSelection.create(
+      result.ranges.map((r) => EditorSelection.range(r.from, r.to)),
+      0,
+    );
+    // Two distinct ranges must survive; a merge (the bug) collapses this to 1.
+    expect(selection.ranges.length).toBe(result.ranges.length);
+    expect(result.ranges.length).toBe(2);
+  });
+
+  it("Codex PR #318 round 2: same non-overlap requirement for the ab|(?=b) counterexample above (an owning range that finds nothing at all)", () => {
+    // The "boundary de-dup only suppresses..." test above already checks
+    // `result.edits`; this checks that its `result.ranges` also stay
+    // non-overlapping. Range [0,1] finds *no* match at all (its only raw
+    // candidate crosses the boundary and is rejected), so it must not
+    // inherit any part of [1,2]'s legitimately-owned replacement either.
+    const docText = "ab";
+    const query: ReplaceScopeQuery = { search: "ab|(?=b)", replace: "Y", regexp: true, caseSensitive: true };
+    const ranges: ReplaceRange[] = [
+      { from: 0, to: 1 },
+      { from: 1, to: 2 },
+    ];
+    const result = replaceAllInSelection(docText, ranges, query);
+    expect(rangesAreNonOverlapping(result.ranges)).toBe(true);
+    const selection = EditorSelection.create(
+      result.ranges.map((r) => EditorSelection.range(r.from, r.to)),
+      0,
+    );
+    expect(selection.ranges.length).toBe(2);
+  });
+
   it("problem two: a single range spanning the whole match set maps its start/end to include every boundary match", () => {
     // Exact repro from the issue: doc "ab", one range [0, 2] (the whole
     // document as a single selection), same "x* -> Y" query. The core finds
@@ -645,6 +707,126 @@ describe("issue #300: zero-length regexp match boundary ownership and range mapp
     expect(cm6Log).toEqual(["Yab|0-0", "YYab|0-0", "YYYab|0-0", "YYYYab|0-0"]);
     expect(coreDocText).toBe("YYYYab");
     expect(ranges[0].from).toBe(0);
+  });
+});
+
+describe("PR #318 property sweep: zero-length-boundary family locked down exhaustively", () => {
+  // This exact family of bugs (zero-length regexp matches at range
+  // boundaries) has now been caught multiple times in review on the same
+  // PR: duplicate edits at a shared boundary, a mapped range excluding its
+  // own leading match, mapped ranges overlapping because ownership of a
+  // boundary match wasn't threaded through to the range mapping, and (found
+  // by an earlier, broader version of *this* sweep) a spurious extra
+  // zero-length match immediately after a real one, both within one range
+  // and straddling two touching ones. Per the "same class of hole caught
+  // twice -> switch to exhaustive defense" lesson, this sweeps every way a
+  // handful of short documents can be cut into contiguous, touching ranges
+  // (exactly the family all of those findings came from), for several
+  // patterns chosen to produce zero-length matches under different
+  // conditions, and checks the invariants the whole ownership contract
+  // exists to guarantee.
+  const docTexts = ["a", "ab", "aab", "aba", "abab", "baa"];
+
+  // Patterns that can *only* ever produce a zero-length match, for every
+  // document here (no "x" in any doc's alphabet; "(?=a)" is a pure
+  // zero-width lookahead assertion). These are the patterns invariant (c)
+  // below applies to: cutting the document anywhere can never split a
+  // *real*, multi-character match the whole-document scan would have kept,
+  // so every contiguous partition is guaranteed to agree with CM6's own
+  // whole-document `replaceAll` exactly.
+  const alwaysZeroLengthPatterns = ["x*", "(?=a)"];
+  // Patterns that mix zero-length matches with a real, multi-character
+  // alternative ("a*" can match more than one "a"; "ab|(?=b)" and
+  // "a*|(?=b)" both have a non-zero-length branch). Cutting the document
+  // exactly where such a real match would otherwise span *legitimately*
+  // makes a per-range scan diverge from the whole-document result — that
+  // is this module's own pre-existing, documented, and separately-tested
+  // "a match that crosses a range's boundary is never replaced" rule (see
+  // the "does not replace a match that crosses a range's boundary..." test
+  // above), not a bug invariant (c) should police. These patterns are only
+  // checked against invariants (a) and (b), which hold unconditionally
+  // regardless of how a document is cut.
+  const mixedLengthPatterns = ["a*", "ab|(?=b)", "a*|(?=b)"];
+
+  /** Every way to cut `[0, length]` (`length >= 1`) into one or more
+   *  contiguous, touching sub-ranges: every subset of the `length - 1`
+   *  interior integer points is a valid set of cut points (the empty
+   *  subset is "the whole range as one piece") — `2 ** (length - 1)`
+   *  partitions total. All resulting ranges are non-empty since `length >=
+   *  1` and cut points are distinct integers, so this never needs to touch
+   *  the (already covered elsewhere) empty-range no-op rule. */
+  function allContiguousPartitions(length: number): ReplaceRange[][] {
+    const interior = Array.from({ length: length - 1 }, (_, i) => i + 1);
+    const partitions: ReplaceRange[][] = [];
+    for (let mask = 0; mask < 2 ** interior.length; mask++) {
+      const cuts = interior.filter((_, i) => (mask & (1 << i)) !== 0);
+      const bounds = [0, ...cuts, length];
+      const ranges: ReplaceRange[] = [];
+      for (let i = 0; i < bounds.length - 1; i++) ranges.push({ from: bounds[i], to: bounds[i + 1] });
+      partitions.push(ranges);
+    }
+    return partitions;
+  }
+
+  /** (a) no two edits at the same `[from, to)` — a shared boundary match is
+   *  never double-counted; (b) mapped ranges come back ascending and
+   *  non-overlapping, so `EditorSelection.create` never silently merges two
+   *  of them. Checked for every pattern, regardless of whether it can
+   *  produce a non-zero-length match. */
+  function expectNoDuplicateEditsAndNonOverlappingRanges(result: ReplaceScopeResult): void {
+    const seen = new Set<string>();
+    for (const edit of result.edits) {
+      const key = `${edit.from}-${edit.to}`;
+      expect(seen.has(key)).toBe(false);
+      seen.add(key);
+    }
+    for (let i = 0; i < result.ranges.length; i++) {
+      expect(result.ranges[i].from).toBeLessThanOrEqual(result.ranges[i].to);
+      if (i > 0) expect(result.ranges[i].from).toBeGreaterThanOrEqual(result.ranges[i - 1].to);
+    }
+    const selection = EditorSelection.create(
+      result.ranges.map((r) => EditorSelection.range(r.from, r.to)),
+      0,
+    );
+    expect(selection.ranges.length).toBe(result.ranges.length);
+  }
+
+  it("always-zero-length patterns: no duplicate edits, non-overlapping ranges, and CM6 whole-doc agreement across every contiguous partition", () => {
+    let casesChecked = 0;
+    for (const docText of docTexts) {
+      for (const search of alwaysZeroLengthPatterns) {
+        const query: ReplaceScopeQuery = { search, replace: "Y", regexp: true, caseSensitive: true };
+        const expectedWholeDocText = cm6ReplaceAllWholeDoc(docText, query);
+        for (const ranges of allContiguousPartitions(docText.length)) {
+          casesChecked++;
+          const result = replaceAllInSelection(docText, ranges, query);
+          expectNoDuplicateEditsAndNonOverlappingRanges(result);
+          // (c) these partitions always cover the whole document with no
+          // gaps, and this pattern can never produce a real match a range
+          // split could legitimately break up, so applying `edits` via a
+          // real @codemirror/state transaction must reproduce CM6's own
+          // whole-document replaceAll exactly, no matter how the document
+          // was cut into ranges.
+          expect(applyEditsViaCodeMirrorState(docText, result.edits)).toBe(expectedWholeDocText);
+        }
+      }
+    }
+    // Guards against the generators silently producing zero useful cases.
+    expect(casesChecked).toBeGreaterThan(40);
+  });
+
+  it("mixed zero/non-zero-length patterns: no duplicate edits and non-overlapping ranges across every contiguous partition (CM6 whole-doc agreement not required — see this module's own boundary-crossing rule)", () => {
+    let casesChecked = 0;
+    for (const docText of docTexts) {
+      for (const search of mixedLengthPatterns) {
+        const query: ReplaceScopeQuery = { search, replace: "Y", regexp: true, caseSensitive: true };
+        for (const ranges of allContiguousPartitions(docText.length)) {
+          casesChecked++;
+          expectNoDuplicateEditsAndNonOverlappingRanges(replaceAllInSelection(docText, ranges, query));
+        }
+      }
+    }
+    expect(casesChecked).toBeGreaterThan(60);
   });
 });
 
