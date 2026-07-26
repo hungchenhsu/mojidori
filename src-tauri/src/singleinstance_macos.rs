@@ -37,15 +37,50 @@
 //!   no per-user separation), silently forwarding a file-open request
 //!   across a session boundary.
 //!
-//! This module fixes that by keying the socket off `std::env::temp_dir()`
-//! (the per-user directory) instead, and otherwise reimplements only the
-//! minimal subset of the plugin's behavior this app actually needs: bind
-//! vs. forward-and-exit, one round of argv+cwd forwarding, bounded-retry
-//! recovery from a stale socket (see [`acquire_or_forward`]'s doc comment
-//! for why a single attempt isn't enough), and fail-open only once that's
-//! genuinely exhausted or the failure is unrelated to the race. No new
-//! dependency — this is all `std`-only (`std::os::unix::net`,
-//! `std::thread`).
+//! This module fixes that by keying coordination off `std::env::temp_dir()`
+//! (the per-user directory) instead of a hardcoded `/tmp`. No new
+//! dependency — this is all `std`-only (`std::fs`'s `File::try_lock`,
+//! stable since Rust 1.89; `std::os::unix::net`; `std::thread`).
+//!
+//! ## Design: a lock file decides primary/secondary, a socket only carries messages
+//!
+//! An earlier version of this module (PR #315's third and fourth review
+//! rounds) used the coordination *socket itself* — `bind()` succeeding vs.
+//! failing with `AddrInUse` — to decide who's primary, the same technique
+//! `tauri-plugin-single-instance` uses. That has a structural problem no
+//! amount of extra bookkeeping fixes: recovering a *stale* socket (left
+//! behind by a process that crashed without unlinking it) requires
+//! `unlink()` then `bind()` as two separate syscalls, and two launches
+//! racing to do that recovery at the same time can both `unlink()` before
+//! either `bind()`s — whoever's `bind()` loses gets `AddrInUse` right back,
+//! with no way to tell "a live peer already won" apart from "I'm still
+//! racing" from that error alone. PR #315's fourth round fixed the first
+//! occurrence of this (bounded retry), and the fifth round found a second,
+//! narrower recurrence in the same retry logic (a losing process could
+//! still unlink a winner's already-live socket out from under it). Rather
+//! than keep patching timing windows in hand-rolled socket-based mutual
+//! exclusion, this version uses the OS's own advisory file lock
+//! (`File::try_lock`, i.e. `flock(2)` under the hood on macOS) as the
+//! single source of truth for who's primary:
+//!
+//! - `try_lock()` succeeding is unambiguous and atomic — there is no
+//!   two-step "check, then act" for two processes to race inside.
+//! - A lock is held per *open file description*: if the process that held
+//!   it dies (crash or otherwise) without explicitly unlocking, the OS
+//!   releases the lock the moment its file descriptors are closed at
+//!   process exit. There is no such thing as a "stale" advisory lock the
+//!   way there's a stale socket file — the next `try_lock()` on that path
+//!   just succeeds, no unlink-and-retry dance needed at all.
+//!
+//! The socket is demoted to a pure message-passing channel: only the
+//! *current lock holder* ever touches it (clearing any leftover file and
+//! rebinding fresh, synchronously, in the same moment it wins the lock),
+//! so the unlink/bind race is gone by construction rather than bounded
+//! away. A process that loses the lock race connects to that socket to
+//! forward its argv/cwd; since winning the lock and finishing the rebind
+//! aren't quite the same instant, connecting retries a bounded number of
+//! times with a short delay (see [`acquire_or_forward`]'s doc comment) to
+//! ride out that brief window, rather than needing to be instantaneous.
 //!
 //! ## Known limitation shared with the plugin-based approach
 //!
@@ -65,6 +100,7 @@
 //! Events ahead of Tauri's own event loop setup — well beyond this fix's
 //! scope, not attempted here.
 
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -78,12 +114,17 @@ use std::time::Duration;
 /// truncated/dropped, not that legitimate use is constrained.
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
-/// Bound on how many times [`acquire_or_forward`] will retry after losing
-/// a stale-socket recovery race (see that function's doc comment) before
-/// giving up and failing open. Three is enough to absorb an ordinary race
-/// between a couple of launches without risking a real, unbounded retry
-/// loop if something is persistently wrong with the socket path.
-const MAX_ACQUIRE_ATTEMPTS: u32 = 3;
+/// How many times [`connect_and_forward`] retries connecting to the
+/// current lock holder's socket before giving up. Covers the brief window
+/// between a process winning the lock and finishing its own bind — see
+/// [`acquire_or_forward`]'s doc comment.
+const SECONDARY_CONNECT_ATTEMPTS: u32 = 10;
+/// Delay between [`connect_and_forward`] retries. Ten attempts at this
+/// delay bound the total wait to half a second — long enough to ride out
+/// scheduling jitter between winning the lock and finishing the bind,
+/// short enough that a genuinely wedged primary doesn't visibly hang a
+/// second launch.
+const SECONDARY_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// Set once this process becomes the primary instance, so
 /// [`cleanup_if_primary`] only ever unlinks a socket this process itself
@@ -91,11 +132,21 @@ const MAX_ACQUIRE_ATTEMPTS: u32 = 3;
 static IS_PRIMARY: AtomicBool = AtomicBool::new(false);
 
 /// The result of trying to become (or find) the single instance.
+#[derive(Debug)]
 pub(crate) enum SingleInstanceOutcome {
-    /// This process is the primary instance. The listener is bound and
-    /// ready; pass it to [`spawn_accept_loop`] once an `AppHandle` is
-    /// available to actually service incoming connections.
-    Primary(UnixListener),
+    /// This process holds the single-instance lock and is the primary
+    /// instance. Both fields must be kept alive for the lifetime of the
+    /// process (`lib.rs` does this via `app.manage(lock)`): dropping
+    /// `lock` releases the OS advisory lock immediately, which would let
+    /// a later launch become primary too, defeating the whole point.
+    Primary {
+        /// The open, locked lock file. Never read from again after this
+        /// point — its only remaining job is to stay open.
+        lock: File,
+        /// Bound and ready; pass it to [`spawn_accept_loop`] once an
+        /// `AppHandle` is available to actually service connections.
+        listener: UnixListener,
+    },
     /// Another instance was already running and has been sent this
     /// process's argv/cwd; this process should exit immediately, exactly
     /// as it would have on the second-instance path through
@@ -103,10 +154,11 @@ pub(crate) enum SingleInstanceOutcome {
     ForwardedToRunning,
     /// Single-instance coordination could not be established, for a
     /// reason other than "another instance is genuinely running" (e.g. a
-    /// stale socket that couldn't be cleared, or a permission error).
-    /// Fail-open: the caller should continue starting up normally, simply
-    /// without single-instance protection for this run, rather than
-    /// block the user out of the app entirely over a coordination hiccup.
+    /// permission error opening the lock file, or the socket couldn't be
+    /// reached after retrying). Fail-open: the caller should continue
+    /// starting up normally, simply without single-instance protection
+    /// for this run, rather than block the user out of the app entirely
+    /// over a coordination hiccup.
     Unavailable,
 }
 
@@ -128,60 +180,13 @@ fn socket_path(identifier: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{sanitized}_si.sock"))
 }
 
-/// One bind-or-connect attempt against `path`. Factored out of
-/// [`acquire_or_forward`] so that function can retry it in a bounded loop
-/// (see that function's doc comment for why a single attempt isn't
-/// enough), and so a test can drive it directly to reconstruct a specific
-/// race deterministically instead of relying on real thread timing.
-enum AttemptOutcome {
-    /// Bound and ready to become the primary instance.
-    Primary(UnixListener),
-    /// Connected to a live peer and forwarded this process's argv/cwd to
-    /// it.
-    Forwarded,
-    /// The socket file existed but nothing was listening (a stale
-    /// leftover). It's been unlinked; the caller should try again — the
-    /// next attempt's `bind()` either wins outright, or (if another
-    /// launch is racing the exact same recovery) sees `AddrInUse` again,
-    /// in which case *that* attempt's `connect()` finds the winner
-    /// actually listening by then and forwards to it instead.
-    RetryAfterClearingStaleSocket,
-    /// A failure unrelated to the stale-socket race (e.g. a permission
-    /// error) — retrying won't help, the caller should fail open.
-    Unavailable(String),
-}
-
-fn attempt(path: &std::path::Path) -> AttemptOutcome {
-    match UnixListener::bind(path) {
-        Ok(listener) => AttemptOutcome::Primary(listener),
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            // Either a live instance is listening, or a stale socket file
-            // was left behind (e.g. by a process that crashed instead of
-            // running its `RunEvent::Exit` cleanup) — connecting is what
-            // tells these two apart.
-            match UnixStream::connect(path) {
-                Ok(mut stream) => {
-                    forward_this_process(&mut stream);
-                    AttemptOutcome::Forwarded
-                }
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-                    ) =>
-                {
-                    let _ = std::fs::remove_file(path);
-                    AttemptOutcome::RetryAfterClearingStaleSocket
-                }
-                Err(e) => AttemptOutcome::Unavailable(format!(
-                    "could not connect to or safely replace an existing socket: {e}"
-                )),
-            }
-        }
-        Err(e) => {
-            AttemptOutcome::Unavailable(format!("could not bind the single-instance socket: {e}"))
-        }
-    }
+/// Companion to [`socket_path`], same per-user directory and naming
+/// convention, `.lock` instead of `.sock`. See this module's doc comment
+/// for why *this* file, not the socket, is what actually decides
+/// primary-vs-secondary.
+fn lock_path(identifier: &str) -> PathBuf {
+    let sanitized = identifier.replace(['.', '-'], "_");
+    std::env::temp_dir().join(format!("{sanitized}_si.lock"))
 }
 
 /// Try to become the primary instance; if one already exists, forward
@@ -189,43 +194,93 @@ fn attempt(path: &std::path::Path) -> AttemptOutcome {
 /// itself — that's the caller's job (`lib.rs`'s `run()`), which keeps
 /// this function a plain, testable value-returning one.
 ///
-/// Retries up to [`MAX_ACQUIRE_ATTEMPTS`] times when recovering a stale
-/// socket, to cover a race between two launches doing that recovery at
-/// the same time: both can observe the same stale socket, both unlink it,
-/// but only one wins the immediate rebind — the loser's rebind sees
-/// `AddrInUse` again. Failing open at that point (the original
-/// implementation's bug, caught in PR #315's fourth review round) would
-/// let the "loser" carry on starting up as a second fully-writing
-/// instance — exactly the concurrent-write problem issue #305 exists to
-/// prevent. Retrying instead lets the loser's very next attempt connect
-/// to the winner (who is, by then, actually listening) and forward to it
-/// like any ordinary second launch.
+/// Winning `try_lock()` on the lock file is unambiguous and atomic (see
+/// this module's doc comment for why that's the whole design here): at
+/// most one process can ever observe success for a given path, with no
+/// two-step "check, then act" for two processes to race inside the way
+/// the previous, socket-only design did. Having won it, this process is
+/// free to unconditionally clear and rebind the socket — no other process
+/// can be doing that at the same time, because any other process trying
+/// right now is, by definition, still blocked on (or has already failed)
+/// `try_lock()` instead.
+///
+/// A process that loses the lock race connects to the socket to forward
+/// its argv/cwd instead. Winning the lock and finishing the socket rebind
+/// aren't quite the same instant, so [`connect_and_forward`] retries a
+/// bounded number of times with a short delay rather than needing the
+/// winner to already be listening on the very first attempt.
 pub(crate) fn acquire_or_forward(identifier: &str) -> SingleInstanceOutcome {
-    let path = socket_path(identifier);
+    let lock_file = match OpenOptions::new()
+        .create(true)
+        // The lock file's *contents* are never read or written — only its
+        // existence and lock state matter — so explicitly not truncating
+        // makes that intent clear rather than leaving it implicit.
+        .truncate(false)
+        .write(true)
+        .open(lock_path(identifier))
+    {
+        Ok(f) => f,
+        Err(e) => {
+            return unavailable(&format!(
+                "could not open the single-instance lock file: {e}"
+            ))
+        }
+    };
 
-    for remaining_attempts in (0..MAX_ACQUIRE_ATTEMPTS).rev() {
-        match attempt(&path) {
-            AttemptOutcome::Primary(listener) => return become_primary(listener),
-            AttemptOutcome::Forwarded => return SingleInstanceOutcome::ForwardedToRunning,
-            AttemptOutcome::RetryAfterClearingStaleSocket => {
-                if remaining_attempts == 0 {
-                    return unavailable(&format!(
-                        "gave up after {MAX_ACQUIRE_ATTEMPTS} attempts racing other launches \
-                         to recover the same stale socket"
-                    ));
+    match lock_file.try_lock() {
+        Ok(()) => {
+            let socket = socket_path(identifier);
+            // Safe to unconditionally clear: only the lock holder is ever
+            // allowed to touch the socket, and we just established that's
+            // us. `remove_file` failing (e.g. the path didn't exist) is
+            // expected and fine — there was simply nothing to clear.
+            let _ = std::fs::remove_file(&socket);
+            match UnixListener::bind(&socket) {
+                Ok(listener) => {
+                    IS_PRIMARY.store(true, Ordering::SeqCst);
+                    SingleInstanceOutcome::Primary {
+                        lock: lock_file,
+                        listener,
+                    }
                 }
-                // Loop back and try again — see this function's doc
-                // comment for what the next attempt resolves to.
+                Err(e) => unavailable(&format!(
+                    "won the single-instance lock but could not bind its socket: {e}"
+                )),
             }
-            AttemptOutcome::Unavailable(reason) => return unavailable(&reason),
+        }
+        Err(TryLockError::WouldBlock) => match connect_and_forward(&socket_path(identifier)) {
+            Ok(()) => SingleInstanceOutcome::ForwardedToRunning,
+            Err(e) => unavailable(&format!(
+                "lost the single-instance lock to another process but could not reach its \
+                 socket after {SECONDARY_CONNECT_ATTEMPTS} attempts: {e}"
+            )),
+        },
+        Err(TryLockError::Error(e)) => {
+            unavailable(&format!("could not acquire the single-instance lock: {e}"))
         }
     }
-    unreachable!("the loop above always returns on or before its last iteration")
 }
 
-fn become_primary(listener: UnixListener) -> SingleInstanceOutcome {
-    IS_PRIMARY.store(true, Ordering::SeqCst);
-    SingleInstanceOutcome::Primary(listener)
+/// Connect to the current lock holder's socket and forward this
+/// process's argv/cwd, retrying with a short delay if the holder hasn't
+/// finished its bind yet (see [`acquire_or_forward`]'s doc comment).
+fn connect_and_forward(path: &std::path::Path) -> std::io::Result<()> {
+    let mut last_err = None;
+    for attempt in 0..SECONDARY_CONNECT_ATTEMPTS {
+        match UnixStream::connect(path) {
+            Ok(mut stream) => {
+                forward_this_process(&mut stream);
+                return Ok(());
+            }
+            Err(e) => {
+                last_err = Some(e);
+                if attempt + 1 < SECONDARY_CONNECT_ATTEMPTS {
+                    std::thread::sleep(SECONDARY_CONNECT_RETRY_DELAY);
+                }
+            }
+        }
+    }
+    Err(last_err.expect("the loop above runs at least once since SECONDARY_CONNECT_ATTEMPTS > 0"))
 }
 
 /// Fail-open: log and continue starting up normally rather than block the
@@ -314,20 +369,69 @@ pub(crate) fn cleanup_if_primary(identifier: &str) {
 mod tests {
     use super::*;
 
-    /// Round-trips a real primary/secondary pair over an actual Unix
-    /// socket: the "secondary" (a second `acquire_or_forward` call
-    /// against the same identifier) must report `ForwardedToRunning` and
-    /// have sent this test process's own argv/cwd, which the "primary"
-    /// side (simulating one connection of `spawn_accept_loop`'s body,
-    /// without needing a real `AppHandle`) must parse back out correctly.
+    /// Validates the semantic assumption the whole design in this module's
+    /// doc comment rests on: `File::try_lock` is held per *open file
+    /// description*, so two genuinely independent `open()`s of the same
+    /// path (standing in for two separate processes, since real processes
+    /// can't share a `File` value) are mutually exclusive — one succeeds,
+    /// the other observes `TryLockError::WouldBlock` — and releasing the
+    /// first (dropping its `File`, standing in for that process exiting or
+    /// crashing) lets the second immediately succeed where it previously
+    /// couldn't. If this ever stopped holding on some future toolchain,
+    /// every other test in this module would be building on sand.
+    #[test]
+    fn two_independent_opens_of_the_same_lock_file_are_mutually_exclusive() {
+        let path = lock_path("com.mojidori.test.lock-semantics");
+        let _ = std::fs::remove_file(&path);
+
+        let open = || {
+            OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+                .unwrap()
+        };
+
+        let first = open();
+        first
+            .try_lock()
+            .expect("the first open should lock cleanly");
+
+        let second = open();
+        assert!(
+            matches!(second.try_lock(), Err(TryLockError::WouldBlock)),
+            "a second, independent open of the same path must not also succeed while the \
+             first is still held"
+        );
+
+        drop(first);
+        assert!(
+            second.try_lock().is_ok(),
+            "releasing the first open (e.g. its process exiting) must free the lock for \
+             the next contender immediately, with no stale-lock recovery needed"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Round-trips a real primary/secondary pair: the "secondary" (a
+    /// second `acquire_or_forward` call against the same identifier,
+    /// while the first's `Primary { lock, .. }` is still held) must
+    /// observe `TryLockError::WouldBlock` on the lock and report
+    /// `ForwardedToRunning`, having sent this test process's own argv/cwd,
+    /// which the "primary" side (simulating one connection of
+    /// `spawn_accept_loop`'s body, without needing a real `AppHandle`)
+    /// must parse back out correctly.
     #[test]
     fn primary_secondary_round_trip_forwards_argv_and_cwd() {
         let identifier = "com.mojidori.test.roundtrip";
+        let _ = std::fs::remove_file(lock_path(identifier));
         let _ = std::fs::remove_file(socket_path(identifier));
 
-        let listener = match acquire_or_forward(identifier) {
-            SingleInstanceOutcome::Primary(listener) => listener,
-            _ => panic!("expected to become primary against a clean socket path"),
+        let (lock, listener) = match acquire_or_forward(identifier) {
+            SingleInstanceOutcome::Primary { lock, listener } => (lock, listener),
+            _ => panic!("expected to become primary against a clean lock/socket path"),
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -339,7 +443,8 @@ mod tests {
         let outcome = acquire_or_forward(identifier);
         assert!(
             matches!(outcome, SingleInstanceOutcome::ForwardedToRunning),
-            "a second acquire against a bound primary must forward and exit, not rebind"
+            "a second acquire while the first still holds the lock must forward and exit, \
+             not also become primary"
         );
 
         let received = rx
@@ -351,103 +456,60 @@ mod tests {
         assert_eq!(cwd, std::env::current_dir().unwrap().to_string_lossy());
         assert_eq!(args, std::env::args().collect::<Vec<String>>());
 
+        drop(lock); // release before cleanup, mirroring a normal process exit
+        let _ = std::fs::remove_file(lock_path(identifier));
         let _ = std::fs::remove_file(socket_path(identifier));
     }
 
-    /// A socket file left behind by a process that never reached
-    /// `cleanup_if_primary` (e.g. it crashed) must be recovered from —
-    /// not mistaken for a live instance, and not given up on as
-    /// `Unavailable`.
+    /// A crashed primary's socket file (left behind because a crash skips
+    /// `cleanup_if_primary`) must not stop the *lock's* next winner from
+    /// getting a fresh, working listener — the lock's own release on
+    /// process exit is what makes recovery possible at all here (unlike
+    /// the previous, socket-only design, there's no unlink/rebind race to
+    /// even consider: only the lock winner ever touches the socket, and
+    /// this test's later `acquire_or_forward` call is that winner).
     #[test]
-    fn recovers_from_a_stale_socket_left_by_a_crashed_process() {
-        let identifier = "com.mojidori.test.stale";
-        let path = socket_path(identifier);
-        let _ = std::fs::remove_file(&path);
+    fn recovers_a_stale_socket_left_by_a_crashed_primary_once_its_lock_is_free() {
+        let identifier = "com.mojidori.test.stale-socket";
+        let lock = lock_path(identifier);
+        let socket = socket_path(identifier);
+        let _ = std::fs::remove_file(&lock);
+        let _ = std::fs::remove_file(&socket);
 
-        // Simulate a crash: bind, then drop without unlinking. The
-        // socket *file* stays on disk even though nothing is listening.
-        drop(UnixListener::bind(&path).unwrap());
+        // Simulate a crashed primary: hold the lock and bind the socket,
+        // then drop both without running any cleanup — exactly what a
+        // crash does. Dropping the lock file releases the OS advisory
+        // lock immediately (this module's whole reason for existing);
+        // dropping the listener does NOT remove the socket file, which is
+        // the "stale leftover" this test is about.
+        {
+            let crashed_lock = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&lock)
+                .unwrap();
+            crashed_lock.try_lock().unwrap();
+            let _crashed_listener = UnixListener::bind(&socket).unwrap();
+            // both drop here, simulating the crash
+        }
         assert!(
-            path.exists(),
-            "dropping a UnixListener must not remove its socket file, \
-             or this test isn't exercising the stale-socket path at all"
+            socket.exists(),
+            "dropping a UnixListener must not remove its socket file, or this test isn't \
+             exercising the stale-socket path at all"
         );
 
-        let outcome = acquire_or_forward(identifier);
-        assert!(
-            matches!(outcome, SingleInstanceOutcome::Primary(_)),
-            "a stale socket (file exists, nothing listening) must be recovered from"
-        );
-
-        let _ = std::fs::remove_file(socket_path(identifier));
-    }
-
-    /// Regression test for PR #315's fourth review round: two launches
-    /// racing to recover the *same* stale socket, where this process
-    /// loses the rebind, must retry and connect to the winner — not fail
-    /// open as a second, fully-writing "Unavailable" instance (exactly
-    /// the concurrent-write problem issue #305 exists to prevent).
-    ///
-    /// Reconstructs the race deterministically via `attempt()` (the
-    /// per-iteration helper `acquire_or_forward` retries) instead of
-    /// relying on real thread-timing luck to land two `acquire_or_forward`
-    /// calls in the narrow unlink-then-rebind window:
-    ///
-    /// 1. A stale socket exists (crash leftover), as in the test above.
-    /// 2. This process's first `attempt()` observes it, confirms nothing
-    ///    is listening, unlinks it, and reports
-    ///    `RetryAfterClearingStaleSocket` — exactly like the plain
-    ///    stale-socket case so far.
-    /// 3. Before this process's *retry*, another launch wins: bind the
-    ///    now-clear path directly, standing in for a racing process that
-    ///    completed its own recovery first.
-    /// 4. This process's retry attempt must now see `AddrInUse` again
-    ///    (the winner from step 3) and connect to it, reporting
-    ///    `Forwarded` — not `Unavailable`.
-    #[test]
-    fn retries_after_losing_a_stale_socket_recovery_race_instead_of_failing_open() {
-        let identifier = "com.mojidori.test.stale-race";
-        let path = socket_path(identifier);
-        let _ = std::fs::remove_file(&path);
-
-        // Step 1: crash leftover, same as the plain stale-socket test.
-        drop(UnixListener::bind(&path).unwrap());
-
-        // Step 2: this process's first attempt clears the stale socket
-        // and asks to be retried.
-        assert!(
-            matches!(
-                attempt(&path),
-                AttemptOutcome::RetryAfterClearingStaleSocket
+        let (lock, _listener) = match acquire_or_forward(identifier) {
+            SingleInstanceOutcome::Primary { lock, listener } => (lock, listener),
+            other => panic!(
+                "a free lock (crashed holder already exited) must let this process become \
+                 primary with a fresh listener, got {other:?} instead"
             ),
-            "the first attempt against a stale socket must clear it and ask to retry"
-        );
-        assert!(
-            !path.exists(),
-            "the stale socket must actually be unlinked before the race window below"
-        );
+        };
 
-        // Step 3: another launch wins the race in the window between this
-        // process's unlink and its retry — it binds the now-clear path
-        // and becomes the (simulated) live primary.
-        let winner = UnixListener::bind(&path).expect("the racing winner should bind cleanly");
-        let accept_thread = std::thread::spawn(move || winner.accept());
-
-        // Step 4: this process's retry must see AddrInUse (the winner)
-        // and connect to it instead of giving up.
-        let outcome = attempt(&path);
-        assert!(
-            matches!(outcome, AttemptOutcome::Forwarded),
-            "losing the rebind race must fall through to connecting to the winner \
-             and forwarding, not report Unavailable"
-        );
-
-        accept_thread
-            .join()
-            .unwrap()
-            .expect("the winner should have accepted this process's forwarded connection");
-
-        let _ = std::fs::remove_file(socket_path(identifier));
+        drop(lock);
+        let _ = std::fs::remove_file(lock_path(identifier));
+        let _ = std::fs::remove_file(&socket);
     }
 
     /// A peer sending far more than `MAX_MESSAGE_BYTES` must not make the

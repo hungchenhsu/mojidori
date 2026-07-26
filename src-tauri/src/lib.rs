@@ -802,14 +802,17 @@ pub fn run() {
     // version: that plugin hardcodes its coordination socket at a
     // machine-wide `/tmp` path on macOS (not per-user), which is a real
     // local denial-of-service / cross-session leak on any multi-account
-    // Mac, so this app uses a hand-rolled per-user-socket module instead
-    // (see `src-tauri/Cargo.toml`'s single-instance dependency comment
-    // too). This runs as early as possible — before migration or any
-    // Tauri setup — so a second launch that finds an existing instance
-    // forwards its argv/cwd and exits immediately, mirroring how the
-    // Windows/Linux plugin (registered below) exits a second process
-    // during its own plugin `setup()`, before this app's window ever
-    // exists.
+    // Mac, so this app uses a hand-rolled module instead (see
+    // `src-tauri/Cargo.toml`'s single-instance dependency comment too). A
+    // lock file, not the socket, is what actually decides primary vs.
+    // secondary here — see that module's doc comment for why (in short:
+    // an OS advisory lock has no "stale" state to race over the way a
+    // socket file does). This runs as early as possible — before
+    // migration or any Tauri setup — so a second launch that finds an
+    // existing instance forwards its argv/cwd and exits immediately,
+    // mirroring how the Windows/Linux plugin (registered below) exits a
+    // second process during its own plugin `setup()`, before this app's
+    // window ever exists.
     //
     // Known limitation, shared with the plugin-based approach on
     // Windows/Linux and with how this module's macOS predecessor would
@@ -822,12 +825,14 @@ pub fn run() {
     // for the exact scope (ordinary Finder double-click / plain `open`,
     // and `open -n --args /path`, are both unaffected). Not fixed here.
     #[cfg(target_os = "macos")]
-    let macos_single_instance_listener =
+    let macos_single_instance =
         match singleinstance_macos::acquire_or_forward(&context.config().identifier) {
             singleinstance_macos::SingleInstanceOutcome::ForwardedToRunning => {
                 std::process::exit(0);
             }
-            singleinstance_macos::SingleInstanceOutcome::Primary(listener) => Some(listener),
+            singleinstance_macos::SingleInstanceOutcome::Primary { lock, listener } => {
+                Some((lock, listener))
+            }
             singleinstance_macos::SingleInstanceOutcome::Unavailable => None,
         };
 
@@ -948,15 +953,23 @@ pub fn run() {
             // preferences via app.path(), which is unavailable until the
             // path resolver state is managed.
             app.set_menu(menu::build(app.handle())?)?;
-            // The listener was bound as early as possible, before
-            // migration/build (see `run()`'s macOS single-instance setup
-            // above) — servicing it is deferred to here because that's
-            // the first point an `AppHandle` (needed to focus the window
-            // and reach `PendingFiles` state) exists. Nothing is lost in
-            // between: a bound-but-not-yet-accepted `UnixListener` queues
-            // incoming connections in the kernel, it doesn't drop them.
+            // The lock was won and the listener bound as early as
+            // possible, before migration/build (see `run()`'s macOS
+            // single-instance setup above) — servicing the listener is
+            // deferred to here because that's the first point an
+            // `AppHandle` (needed to focus the window and reach
+            // `PendingFiles` state) exists. Nothing is lost in between: a
+            // bound-but-not-yet-accepted `UnixListener` queues incoming
+            // connections in the kernel, it doesn't drop them. The lock
+            // file is handed to Tauri's managed state purely to keep it
+            // open (and therefore the OS advisory lock held) for the
+            // rest of this process's lifetime — see
+            // `SingleInstanceOutcome::Primary`'s doc comment for why
+            // dropping it early would be a correctness bug, not just a
+            // resource leak.
             #[cfg(target_os = "macos")]
-            if let Some(listener) = macos_single_instance_listener {
+            if let Some((lock, listener)) = macos_single_instance {
+                app.manage(lock);
                 singleinstance_macos::spawn_accept_loop(app.handle().clone(), listener);
             }
             startup_probe::checkpoint("setup() completed");
