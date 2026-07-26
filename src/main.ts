@@ -124,9 +124,9 @@ import { showQuickOpen } from "./quickopen";
 import { showFilterableMenu, showMenu, type MenuItem } from "./popup";
 import { decideSaveCompletion, shouldRollbackForceDirty } from "./savecompletion";
 import {
+  isFetchAttemptTrustworthy,
   isLikelySaveEcho,
   MAX_FINGERPRINT_RESAMPLE_ATTEMPTS,
-  sameSaveRecord,
   SAVE_ECHO_WINDOW_MS,
   type SaveEchoRecord,
 } from "./saveecho";
@@ -1902,26 +1902,39 @@ interface StableFingerprintFetch {
 }
 
 /**
- * documentFingerprint(path) paired with a recentSaves record proven stable
- * for that fetch's entire duration (issue #302 review, fifth round — see
- * saveecho.ts's sameSaveRecord doc comment for why neither reading the
- * record only before nor only after the fetch is sound on its own: this is
- * the third await-race caught in this exact spot, and the first two
- * "point fixes" each just moved the race to the other side of the gap).
- * Retries up to MAX_FINGERPRINT_RESAMPLE_ATTEMPTS times if a concurrent
- * save to `path` replaces the record mid-fetch — the common case (no such
- * save) always resolves on the first attempt. Returns `null` if it never
- * stabilizes within that bound, so the caller can fall back to treating
- * the event conservatively as a real external change (a missed suppression
- * costs one extra reload prompt; guessing from an unstable pair risks
- * wrongly suppressing a real change instead).
+ * documentFingerprint(path) paired with a recentSaves record proven
+ * trustworthy for that fetch's entire duration (issue #302 review — see
+ * saveecho.ts's sameSaveRecord/isFetchAttemptTrustworthy doc comments for
+ * the full invariant and the three prior point-patch attempts this
+ * converged design replaces). Checks both signals isFetchAttemptTrustworthy
+ * needs: `doc.saveReloadInFlight` (read right after the fetch resolves —
+ * catches a save still landing, recorded or not) and record stability
+ * (read before and after — catches a save that started *and* finished
+ * entirely within the fetch). Retries up to MAX_FINGERPRINT_RESAMPLE_ATTEMPTS
+ * times; the common case (nothing else touching this path) always resolves
+ * on the first attempt. Returns `null` if it never stabilizes within that
+ * bound — the caller must not guess from an unstable pair; it defers to
+ * savemutex.ts's own pendingReload/drainLock machinery instead (see
+ * isFetchAttemptTrustworthy's doc comment for why that's sound where a
+ * guess wouldn't be).
  */
-async function fetchStableFingerprint(path: string): Promise<StableFingerprintFetch | null> {
+async function fetchStableFingerprint(
+  doc: Doc,
+  path: string,
+): Promise<StableFingerprintFetch | null> {
   for (let attempt = 0; attempt < MAX_FINGERPRINT_RESAMPLE_ATTEMPTS; attempt++) {
-    const before = recentSaves.get(path);
+    const recordBefore = recentSaves.get(path);
     const current = await documentFingerprint(path).catch(() => null);
-    const after = recentSaves.get(path);
-    if (sameSaveRecord(before, after)) return { record: after, current };
+    const recordAfter = recentSaves.get(path);
+    if (
+      isFetchAttemptTrustworthy({
+        recordBefore,
+        recordAfter,
+        saveOrReloadInFlight: doc.saveReloadInFlight !== null,
+      })
+    ) {
+      return { record: recordAfter, current };
+    }
   }
   return null;
 }
@@ -1929,6 +1942,21 @@ async function fetchStableFingerprint(path: string): Promise<StableFingerprintFe
 async function handleExternalChange(path: string): Promise<void> {
   const doc = tabs.docs.find((d) => d.path === path);
   if (!doc) return;
+  // Issue #302 review, sixth round: a save or reload already in flight for
+  // this doc means recentSaves and disk can't be treated as describing a
+  // single consistent instant right now, full stop — no comparison this
+  // function could run is trustworthy while that holds (saveecho.ts's
+  // isFetchAttemptTrustworthy doc comment has the full reasoning). Rather
+  // than special-case that here, defer through the exact same mechanism
+  // reloadFromDisk itself already uses for "something else holds the
+  // lock" (savemutex.ts's mustDefer + doc.pendingReload + drainLock): once
+  // whatever's in flight actually finishes, reevaluateReload's own guarded
+  // fetch decides for real against doc.fingerprint fully settled by then
+  // — never against a mid-flight snapshot, so it can't repeat this race.
+  if (mustDefer({ inFlight: doc.saveReloadInFlight })) {
+    doc.pendingReload = true;
+    return;
+  }
   const now = Date.now();
   const record = recentSaves.get(path);
   // Issue #302: a blind elapsed-time check here used to swallow a genuine
@@ -1949,12 +1977,19 @@ async function handleExternalChange(path: string): Promise<void> {
     // left for *this* path's watcher event to do to `doc`: no tab to
     // reload, no tab to show a reload prompt for.
     const guard = captureIdentity(doc);
-    const stable = await fetchStableFingerprint(path);
+    const stable = await fetchStableFingerprint(doc, path);
     if (validateIdentity(guard, doc, tabs.docs.includes(doc)) === "closed") return;
     if (doc.path !== path) return;
-    if (stable && isLikelySaveEcho({ now, record: stable.record, current: stable.current })) {
+    if (!stable) {
+      // Never stabilized within the bound — most plausibly a save started
+      // (and is still running, or ran to completion) somewhere across
+      // these attempts. Defer rather than guess, same as the entry-level
+      // check above: reevaluateReload will settle it correctly once
+      // whatever's in flight actually finishes.
+      doc.pendingReload = true;
       return;
     }
+    if (isLikelySaveEcho({ now, record: stable.record, current: stable.current })) return;
   }
   if (!doc.dirty) {
     await reloadFromDisk(doc);

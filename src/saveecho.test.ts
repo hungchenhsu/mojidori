@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isFetchAttemptTrustworthy,
   isLikelySaveEcho,
   sameSaveRecord,
   SAVE_ECHO_WINDOW_MS,
@@ -217,5 +218,64 @@ describe("sameSaveRecord", () => {
   it("undefined on one side only: not stable", () => {
     expect(sameSaveRecord(record, undefined)).toBe(false);
     expect(sameSaveRecord(undefined, record)).toBe(false);
+  });
+});
+
+// PR #319 sixth-round Codex review (P2): the case sameSaveRecord alone
+// cannot see. Rust can finish writing a second save's bytes to disk before
+// that save's own recordOwnSave call has run at all — recentSaves hasn't
+// changed yet, so a before/after comparison across the fetch reports
+// "stable" even though disk has already moved past what `record`
+// describes. isFetchAttemptTrustworthy adds the second signal
+// (doc.saveReloadInFlight, read right after the fetch resolves) needed to
+// catch this: the save is still in flight (or just finished) at that
+// point, so `saveOrReloadInFlight: true` correctly overrides an otherwise-
+// "stable" record comparison. Full 2x2 matrix (in-flight x record-stable)
+// below — this is the fourth interleaving in the same family (see
+// saveecho.ts's sameSaveRecord doc comment for rounds four and five, and
+// the isLikelySaveEcho matrix above for their pure-comparison shape),
+// closed here by converging on a second, independent signal rather than a
+// fifth point patch on the same one.
+describe("isFetchAttemptTrustworthy — in-flight x record-stable matrix (PR #319 sixth-round review)", () => {
+  it("no save in flight, record stable: trustworthy (the common case)", () => {
+    expect(
+      isFetchAttemptTrustworthy({
+        recordBefore: record,
+        recordAfter: record,
+        saveOrReloadInFlight: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("no save in flight, record changed (a save started and fully finished within the fetch, rounds four/five's shape): not trustworthy", () => {
+    const newer: SaveEchoRecord = { time: record.time + 50, fingerprint: { len: 99 } };
+    expect(
+      isFetchAttemptTrustworthy({
+        recordBefore: record,
+        recordAfter: newer,
+        saveOrReloadInFlight: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("save in flight, record still (coincidentally) stable — round six's exact shape, bytes already written but recordOwnSave hasn't run yet: not trustworthy", () => {
+    expect(
+      isFetchAttemptTrustworthy({
+        recordBefore: record,
+        recordAfter: record,
+        saveOrReloadInFlight: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("save in flight and record also changed: not trustworthy (both signals agree — the doubly-unsafe case)", () => {
+    const newer: SaveEchoRecord = { time: record.time + 50, fingerprint: { len: 99 } };
+    expect(
+      isFetchAttemptTrustworthy({
+        recordBefore: record,
+        recordAfter: newer,
+        saveOrReloadInFlight: true,
+      }),
+    ).toBe(false);
   });
 });
