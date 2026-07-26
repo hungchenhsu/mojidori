@@ -48,6 +48,26 @@ cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 All five checks above must pass before a PR — see the Definition of Done
 in [CLAUDE.md](../CLAUDE.md) / [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## Content Security Policy (dev mode)
+
+`src-tauri/tauri.conf.json`'s `devCsp` pins `connect-src` to
+`ws://localhost:1420` for Vite HMR — the fixed origin `vite.config.ts`
+uses when `TAURI_DEV_HOST` is unset (`server.port: 1420`, `hmr:
+undefined` falls back to Vite's default same-origin HMR client). This
+project only develops desktop-locally on macOS/Windows; the
+`TAURI_DEV_HOST` path (LAN/mobile dev, which moves HMR to
+`ws://${TAURI_DEV_HOST}:1421`) is not used and is intentionally **not**
+pre-allowed in the CSP, since a wildcard `ws:` scheme source would let
+the dev window open a WebSocket to any host — an exfiltration path not
+worth accepting for a workflow this repo doesn't exercise.
+
+If you ever need `TAURI_DEV_HOST` locally: add
+`ws://<host>:1421` (or, narrower still, the specific host you're using)
+to `devCsp.connect-src` for that session. Without it, HMR fails
+loudly — a CSP violation in the WebView console, not a silent hang —
+so the failure mode is easy to diagnose and the temporary change is
+easy to spot in a diff and back out.
+
 ## Windows notes
 
 - **Line endings:** configure git before cloning so the working tree keeps
