@@ -40,9 +40,12 @@
 //! This module fixes that by keying the socket off `std::env::temp_dir()`
 //! (the per-user directory) instead, and otherwise reimplements only the
 //! minimal subset of the plugin's behavior this app actually needs: bind
-//! vs. forward-and-exit, one round of argv+cwd forwarding, and fail-open
-//! recovery from a stale socket. No new dependency — this is all
-//! `std`-only (`std::os::unix::net`, `std::thread`).
+//! vs. forward-and-exit, one round of argv+cwd forwarding, bounded-retry
+//! recovery from a stale socket (see [`acquire_or_forward`]'s doc comment
+//! for why a single attempt isn't enough), and fail-open only once that's
+//! genuinely exhausted or the failure is unrelated to the race. No new
+//! dependency — this is all `std`-only (`std::os::unix::net`,
+//! `std::thread`).
 //!
 //! ## Known limitation shared with the plugin-based approach
 //!
@@ -74,6 +77,13 @@ use std::time::Duration;
 /// ever approach this, so hitting the cap just means the message is
 /// truncated/dropped, not that legitimate use is constrained.
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+
+/// Bound on how many times [`acquire_or_forward`] will retry after losing
+/// a stale-socket recovery race (see that function's doc comment) before
+/// giving up and failing open. Three is enough to absorb an ordinary race
+/// between a couple of launches without risking a real, unbounded retry
+/// loop if something is persistently wrong with the socket path.
+const MAX_ACQUIRE_ATTEMPTS: u32 = 3;
 
 /// Set once this process becomes the primary instance, so
 /// [`cleanup_if_primary`] only ever unlinks a socket this process itself
@@ -118,24 +128,41 @@ fn socket_path(identifier: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{sanitized}_si.sock"))
 }
 
-/// Try to become the primary instance; if one already exists, forward
-/// this process's argv/cwd to it instead. Never calls `process::exit`
-/// itself — that's the caller's job (`lib.rs`'s `run()`), which keeps
-/// this function a plain, testable value-returning one.
-pub(crate) fn acquire_or_forward(identifier: &str) -> SingleInstanceOutcome {
-    let path = socket_path(identifier);
+/// One bind-or-connect attempt against `path`. Factored out of
+/// [`acquire_or_forward`] so that function can retry it in a bounded loop
+/// (see that function's doc comment for why a single attempt isn't
+/// enough), and so a test can drive it directly to reconstruct a specific
+/// race deterministically instead of relying on real thread timing.
+enum AttemptOutcome {
+    /// Bound and ready to become the primary instance.
+    Primary(UnixListener),
+    /// Connected to a live peer and forwarded this process's argv/cwd to
+    /// it.
+    Forwarded,
+    /// The socket file existed but nothing was listening (a stale
+    /// leftover). It's been unlinked; the caller should try again — the
+    /// next attempt's `bind()` either wins outright, or (if another
+    /// launch is racing the exact same recovery) sees `AddrInUse` again,
+    /// in which case *that* attempt's `connect()` finds the winner
+    /// actually listening by then and forwards to it instead.
+    RetryAfterClearingStaleSocket,
+    /// A failure unrelated to the stale-socket race (e.g. a permission
+    /// error) — retrying won't help, the caller should fail open.
+    Unavailable(String),
+}
 
-    match UnixListener::bind(&path) {
-        Ok(listener) => become_primary(listener),
+fn attempt(path: &std::path::Path) -> AttemptOutcome {
+    match UnixListener::bind(path) {
+        Ok(listener) => AttemptOutcome::Primary(listener),
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             // Either a live instance is listening, or a stale socket file
             // was left behind (e.g. by a process that crashed instead of
             // running its `RunEvent::Exit` cleanup) — connecting is what
             // tells these two apart.
-            match UnixStream::connect(&path) {
+            match UnixStream::connect(path) {
                 Ok(mut stream) => {
                     forward_this_process(&mut stream);
-                    SingleInstanceOutcome::ForwardedToRunning
+                    AttemptOutcome::Forwarded
                 }
                 Err(e)
                     if matches!(
@@ -143,23 +170,57 @@ pub(crate) fn acquire_or_forward(identifier: &str) -> SingleInstanceOutcome {
                         std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
                     ) =>
                 {
-                    // Stale: the path exists but nobody's listening.
-                    // Reclaim it and try once more.
-                    let _ = std::fs::remove_file(&path);
-                    match UnixListener::bind(&path) {
-                        Ok(listener) => become_primary(listener),
-                        Err(e) => unavailable(&format!(
-                            "could not rebind after clearing a stale socket: {e}"
-                        )),
-                    }
+                    let _ = std::fs::remove_file(path);
+                    AttemptOutcome::RetryAfterClearingStaleSocket
                 }
-                Err(e) => unavailable(&format!(
+                Err(e) => AttemptOutcome::Unavailable(format!(
                     "could not connect to or safely replace an existing socket: {e}"
                 )),
             }
         }
-        Err(e) => unavailable(&format!("could not bind the single-instance socket: {e}")),
+        Err(e) => {
+            AttemptOutcome::Unavailable(format!("could not bind the single-instance socket: {e}"))
+        }
     }
+}
+
+/// Try to become the primary instance; if one already exists, forward
+/// this process's argv/cwd to it instead. Never calls `process::exit`
+/// itself — that's the caller's job (`lib.rs`'s `run()`), which keeps
+/// this function a plain, testable value-returning one.
+///
+/// Retries up to [`MAX_ACQUIRE_ATTEMPTS`] times when recovering a stale
+/// socket, to cover a race between two launches doing that recovery at
+/// the same time: both can observe the same stale socket, both unlink it,
+/// but only one wins the immediate rebind — the loser's rebind sees
+/// `AddrInUse` again. Failing open at that point (the original
+/// implementation's bug, caught in PR #315's fourth review round) would
+/// let the "loser" carry on starting up as a second fully-writing
+/// instance — exactly the concurrent-write problem issue #305 exists to
+/// prevent. Retrying instead lets the loser's very next attempt connect
+/// to the winner (who is, by then, actually listening) and forward to it
+/// like any ordinary second launch.
+pub(crate) fn acquire_or_forward(identifier: &str) -> SingleInstanceOutcome {
+    let path = socket_path(identifier);
+
+    for remaining_attempts in (0..MAX_ACQUIRE_ATTEMPTS).rev() {
+        match attempt(&path) {
+            AttemptOutcome::Primary(listener) => return become_primary(listener),
+            AttemptOutcome::Forwarded => return SingleInstanceOutcome::ForwardedToRunning,
+            AttemptOutcome::RetryAfterClearingStaleSocket => {
+                if remaining_attempts == 0 {
+                    return unavailable(&format!(
+                        "gave up after {MAX_ACQUIRE_ATTEMPTS} attempts racing other launches \
+                         to recover the same stale socket"
+                    ));
+                }
+                // Loop back and try again — see this function's doc
+                // comment for what the next attempt resolves to.
+            }
+            AttemptOutcome::Unavailable(reason) => return unavailable(&reason),
+        }
+    }
+    unreachable!("the loop above always returns on or before its last iteration")
 }
 
 fn become_primary(listener: UnixListener) -> SingleInstanceOutcome {
@@ -317,6 +378,74 @@ mod tests {
             matches!(outcome, SingleInstanceOutcome::Primary(_)),
             "a stale socket (file exists, nothing listening) must be recovered from"
         );
+
+        let _ = std::fs::remove_file(socket_path(identifier));
+    }
+
+    /// Regression test for PR #315's fourth review round: two launches
+    /// racing to recover the *same* stale socket, where this process
+    /// loses the rebind, must retry and connect to the winner — not fail
+    /// open as a second, fully-writing "Unavailable" instance (exactly
+    /// the concurrent-write problem issue #305 exists to prevent).
+    ///
+    /// Reconstructs the race deterministically via `attempt()` (the
+    /// per-iteration helper `acquire_or_forward` retries) instead of
+    /// relying on real thread-timing luck to land two `acquire_or_forward`
+    /// calls in the narrow unlink-then-rebind window:
+    ///
+    /// 1. A stale socket exists (crash leftover), as in the test above.
+    /// 2. This process's first `attempt()` observes it, confirms nothing
+    ///    is listening, unlinks it, and reports
+    ///    `RetryAfterClearingStaleSocket` — exactly like the plain
+    ///    stale-socket case so far.
+    /// 3. Before this process's *retry*, another launch wins: bind the
+    ///    now-clear path directly, standing in for a racing process that
+    ///    completed its own recovery first.
+    /// 4. This process's retry attempt must now see `AddrInUse` again
+    ///    (the winner from step 3) and connect to it, reporting
+    ///    `Forwarded` — not `Unavailable`.
+    #[test]
+    fn retries_after_losing_a_stale_socket_recovery_race_instead_of_failing_open() {
+        let identifier = "com.mojidori.test.stale-race";
+        let path = socket_path(identifier);
+        let _ = std::fs::remove_file(&path);
+
+        // Step 1: crash leftover, same as the plain stale-socket test.
+        drop(UnixListener::bind(&path).unwrap());
+
+        // Step 2: this process's first attempt clears the stale socket
+        // and asks to be retried.
+        assert!(
+            matches!(
+                attempt(&path),
+                AttemptOutcome::RetryAfterClearingStaleSocket
+            ),
+            "the first attempt against a stale socket must clear it and ask to retry"
+        );
+        assert!(
+            !path.exists(),
+            "the stale socket must actually be unlinked before the race window below"
+        );
+
+        // Step 3: another launch wins the race in the window between this
+        // process's unlink and its retry — it binds the now-clear path
+        // and becomes the (simulated) live primary.
+        let winner = UnixListener::bind(&path).expect("the racing winner should bind cleanly");
+        let accept_thread = std::thread::spawn(move || winner.accept());
+
+        // Step 4: this process's retry must see AddrInUse (the winner)
+        // and connect to it instead of giving up.
+        let outcome = attempt(&path);
+        assert!(
+            matches!(outcome, AttemptOutcome::Forwarded),
+            "losing the rebind race must fall through to connecting to the winner \
+             and forwarding, not report Unavailable"
+        );
+
+        accept_thread
+            .join()
+            .unwrap()
+            .expect("the winner should have accepted this process's forwarded connection");
 
         let _ = std::fs::remove_file(socket_path(identifier));
     }
