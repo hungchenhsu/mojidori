@@ -29,16 +29,23 @@ pub fn read_json<T: DeserializeOwned, R: Runtime>(app: &AppHandle<R>, file: &str
 }
 
 /// Serialize `value` as pretty JSON and write it to `path` atomically
-/// (temp file in the same directory, fsync, then rename — see
-/// `crate::atomic_write`). A crash or power loss mid-write can therefore
-/// never leave a half-written/corrupt file at `path`: the rename either
-/// hasn't happened yet (old content, or no file, survives) or has already
-/// completed (new content is fully on disk). This replaces the previous
-/// direct `std::fs::write`, which truncated the destination in place and
-/// could leave exactly that half-written file behind on a mid-write crash
-/// (issue #62 — this mattered most for `session.json`, since a corrupt
-/// index made every hot-exit backup unreachable even though the backup
-/// files themselves were intact).
+/// (temp file in the same directory, `fsync`, rename, then `fsync` the
+/// parent directory too — see `crate::atomic_write`). A crash or power
+/// loss mid-write can therefore never leave a half-written/corrupt file at
+/// `path`: the rename either hasn't happened yet (old content, or no
+/// file, survives) or has already completed (new content is fully on
+/// disk) — and, since `atomic_write` also `fsync`s the parent directory
+/// after renaming (issue #322), a crash immediately after a successful
+/// write can no longer make that rename itself disappear either, which
+/// mattered concretely for `session.json`: without it, a crash right
+/// after a rename that update it could roll the index back to a stale
+/// version, orphaning hot-exit backups the newer index would have
+/// referenced. This replaces the previous direct `std::fs::write`, which
+/// truncated the destination in place and could leave exactly that
+/// half-written file behind on a mid-write crash (issue #62 — this
+/// mattered most for `session.json`, since a corrupt index made every
+/// hot-exit backup unreachable even though the backup files themselves
+/// were intact).
 pub fn write_json_to_path<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create config dir: {e}"))?;
@@ -50,7 +57,13 @@ pub fn write_json_to_path<T: Serialize>(path: &Path, value: &T) -> Result<(), St
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    crate::atomic_write(path, &json).map_err(|e| format!("Failed to write {name}: {e}"))
+    // `atomic_write` now also returns a provenance-bound `Fingerprint`
+    // (issue #324) that this JSON store has no use for -- no caller here
+    // tracks a staleness baseline for preferences/session/recent-files
+    // the way `save_document` does for documents -- so it's discarded.
+    crate::atomic_write(path, &json)
+        .map(|_fingerprint| ())
+        .map_err(|e| format!("Failed to write {name}: {e}"))
 }
 
 pub fn write_json<T: Serialize, R: Runtime>(

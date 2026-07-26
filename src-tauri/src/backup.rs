@@ -28,7 +28,13 @@ fn write_backup(dir: &Path, name: &str, content: &str) -> Result<(), String> {
         return Err(format!("Invalid backup name: {name}"));
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create backups dir: {e}"))?;
+    // `atomic_write` now also returns a provenance-bound `Fingerprint`
+    // (issue #324) and durably `fsync`s the backups directory after
+    // renaming (issue #322) -- hot-exit backups have no staleness
+    // baseline to track, so the fingerprint is discarded, but the
+    // stronger durability guarantee applies here for free.
     crate::atomic_write(&dir.join(name), content.as_bytes())
+        .map(|_fingerprint| ())
         .map_err(|e| format!("Failed to write backup: {e}"))
 }
 

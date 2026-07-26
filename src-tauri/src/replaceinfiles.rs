@@ -878,7 +878,11 @@ fn execute_one(
     }
 
     match crate::atomic_write(&write_target, &out_bytes) {
-        Ok(()) => ReplaceExecuteEntry {
+        // `atomic_write` now returns a provenance-bound `Fingerprint`
+        // (issue #324) that `ReplaceExecuteEntry` has no field for --
+        // search-and-replace doesn't track a per-file staleness baseline
+        // the way `save_document` does, so it's simply discarded here.
+        Ok(_fingerprint) => ReplaceExecuteEntry {
             path: path_str,
             replaced_count,
             status: STATUS_OK.to_string(),

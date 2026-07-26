@@ -930,7 +930,11 @@ fn commit_conversion(
     }
 
     match crate::atomic_write(&write_target, &out_bytes) {
-        Ok(()) => BatchConvertResult {
+        // `atomic_write` now returns a provenance-bound `Fingerprint`
+        // (issue #324) that `BatchConvertResult` has no field for --
+        // batch conversion doesn't track a per-file staleness baseline
+        // the way `save_document` does, so it's simply discarded here.
+        Ok(_fingerprint) => BatchConvertResult {
             path: path.to_string(),
             ok: true,
             message: String::new(),

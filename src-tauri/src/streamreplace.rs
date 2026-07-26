@@ -650,14 +650,20 @@ fn verify_unchanged(path: &Path, original: &Fingerprint) -> Result<(), String> {
 ///    [`verify_unchanged`].
 /// 7. Zero matches leaves the file completely untouched — no temp file
 ///    persists, no rename, `mtime` unchanged. Only a run with at least one
-///    replacement commits: `sync_all`, the fingerprint check above, carry
-///    over the resolved target's permissions, then `rename` over the
-///    *same* resolved target — the same atomic discipline as
-///    `lib.rs::atomic_write`, just fed by a temp file filled incrementally
-///    instead of from one in-memory buffer. `path` is resolved past any
-///    destination symlink exactly once, before the temp file is even
-///    created (`resolve_write_destination`), and that one resolution is
-///    what both step 6's check and this final rename use — never a fresh
+///    replacement commits, via `lib.rs::finish_atomic_commit` — the exact
+///    same commit tail `atomic_write` itself uses: restore the resolved
+///    target's exact permissions (fail-closed on any failure; issue
+///    #323), `sync_all`, capture a provenance-bound `Fingerprint` from
+///    the still-open temp handle (issue #324, though this command has no
+///    per-file staleness baseline to hand it to), `rename` over the
+///    *same* resolved target, then `fsync` the parent directory so the
+///    rename itself is crash-durable (issue #322) — just fed by a temp
+///    file filled incrementally instead of from one in-memory buffer.
+///    `path` is resolved past any destination symlink exactly once,
+///    before the temp file is even created (`resolve_write_destination`,
+///    which also canonicalizes every *ancestor* directory component, not
+///    just the final one — issue #321), and that one resolution is what
+///    both step 6's check and this final rename use — never a fresh
 ///    re-resolve — so the temp file lands in the resolved target's
 ///    directory and the final rename lands on that same target too —
 ///    never on `path` itself when it names a symlink, so the link
@@ -745,8 +751,14 @@ pub fn stream_replace_in_file(
     // filesystem even when `path` is a symlink pointing elsewhere.
     let (write_target, dir, file_name) = crate::resolve_write_destination(path_ref)
         .map_err(|e| format!("Failed to write {path}: {e}"))?;
-    let (mut tmp_file, tmp_path) = crate::create_tmp_exclusive(&dir, &file_name)
-        .map_err(|e| format!("Failed to create temp file: {e}"))?;
+    // Issue #323: the temp file is created with `write_target`'s existing
+    // permissions (if any) from the very first instant it exists -- see
+    // `create_tmp_for_target`'s doc comment -- rather than the previous
+    // default-create-mode-then-chmod-after window a private target's
+    // content could sit in a wider-than-intended mode during.
+    let (mut tmp_file, tmp_path, existing_permissions) =
+        crate::create_tmp_for_target(&dir, &file_name, &write_target)
+            .map_err(|e| format!("Failed to create temp file: {e}"))?;
 
     if bom_len > 0 {
         if let Err(e) = tmp_file.write_all(&peek[..bom_len]) {
@@ -772,24 +784,33 @@ pub fn stream_replace_in_file(
             bytes_written: loop_bytes,
             unmatched_region_reencoded,
         }) if replacements > 0 => {
-            if let Err(e) = tmp_file.sync_all() {
-                drop(tmp_file);
-                let _ = std::fs::remove_file(&tmp_path);
-                return Err(format!("Failed to write {path}: {e}"));
-            }
-            drop(tmp_file);
+            // The late, pre-commit identity check (step 6 in the doc
+            // comment above): must run *before* `finish_atomic_commit`,
+            // which owns `tmp_file` from here on and does the actual
+            // `sync_all`/rename/directory-`fsync` tail.
             if let Err(e) = verify_unchanged(path_ref, &fingerprint) {
+                drop(tmp_file);
                 let _ = std::fs::remove_file(&tmp_path);
                 return Err(e);
             }
-            if let Ok(meta) = std::fs::metadata(&write_target) {
-                let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
-            }
-            // Renaming onto `write_target` rather than `path_ref` is what
-            // keeps a symlink at `path` intact -- see
-            // `resolve_write_destination`'s doc comment.
-            if let Err(e) = std::fs::rename(&tmp_path, &write_target) {
-                let _ = std::fs::remove_file(&tmp_path);
+            // Issues #322/#323/#324: the same commit tail `atomic_write`
+            // uses -- restore `write_target`'s exact permissions
+            // (fail-closed on any failure), `fsync`, capture a
+            // provenance-bound `Fingerprint` from this still-open handle,
+            // rename onto `write_target` (never `path_ref` itself, so a
+            // symlink at `path` survives -- see
+            // `resolve_write_destination`'s doc comment), then `fsync`
+            // the parent directory so the rename itself is durable. The
+            // resulting fingerprint isn't surfaced in `StreamReplaceReport`
+            // (this command has no per-file staleness baseline to update),
+            // so it's discarded.
+            if let Err(e) = crate::finish_atomic_commit(
+                tmp_file,
+                tmp_path,
+                &write_target,
+                existing_permissions,
+                crate::migrate::fsync_dir,
+            ) {
                 return Err(format!("Failed to write {path}: {e}"));
             }
             Ok(StreamReplaceReport {
