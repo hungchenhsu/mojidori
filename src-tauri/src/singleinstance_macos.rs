@@ -82,6 +82,43 @@
 //! times with a short delay (see [`acquire_or_forward`]'s doc comment) to
 //! ride out that brief window, rather than needing to be instantaneous.
 //!
+//! ## The accept loop can't wait for an `AppHandle` (PR #315's eighth review round)
+//!
+//! [`spawn_accept_loop`] starts the instant the socket is bound — inside
+//! [`acquire_or_forward`] itself, before this process has even begun
+//! `lib.rs`'s migration step, let alone built a `tauri::Builder` or
+//! reached `.setup()` (the only point an `AppHandle` exists). An earlier
+//! version instead deferred starting the accept loop until `.setup()`,
+//! which sounded harmless (`.setup()` "usually" runs almost immediately)
+//! but wasn't: `lib.rs`'s migration step can show a *blocking* dialog on
+//! failure, and nothing bounds how long a user takes to dismiss it. Any
+//! secondary launching in that window would find the socket already
+//! bound (so `connect()` succeeds every time) but nobody ever calling
+//! `accept()` on it — every ACK wait would time out, the secondary would
+//! retry, and with the previous, more generous retry budget this added up
+//! to roughly a minute of hanging before finally failing open. Worse:
+//! once `.setup()` *did* eventually start the accept loop, every one of
+//! those abandoned-but-still-buffered connections would still be sitting
+//! in the kernel's backlog, fully readable — the accept loop would work
+//! through all of them and process the *same* forwarded launch multiple
+//! times.
+//!
+//! Starting the accept loop at bind time removes the dependency on
+//! Tauri's lifecycle entirely, but its thread still can't call
+//! [`handle_single_instance_launch`] directly — that needs an `AppHandle`,
+//! which doesn't exist yet either. Parsed messages are instead recorded
+//! via [`enqueue_or_deliver`] against a per-identifier [`DeliveryState`]:
+//! buffered in an in-memory queue until [`install_app_handle`] (called
+//! once `.setup()` has an `AppHandle`) drains it and switches future
+//! messages to direct, live delivery — see that function's doc comment
+//! for how the switch and the drain happen atomically under one lock, so
+//! a message arriving right at the boundary is still delivered exactly
+//! once. The ACK's meaning shifts accordingly: it now means "this process
+//! has durably recorded the request and will act on it", not "the app has
+//! visibly reacted yet" — a weaker guarantee than before, but the
+//! alternative (waiting for the app to be fully ready) is exactly the bug
+//! this section exists to describe.
+//!
 //! ## Known limitation shared with the plugin-based approach
 //!
 //! LaunchServices can still hand a document-open request to a genuinely
@@ -100,11 +137,13 @@
 //! Events ahead of Tauri's own event loop setup — well beyond this fix's
 //! scope, not attempted here.
 
+use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 /// Hard cap on a single forwarded message (the 8-byte length-prefix
@@ -118,48 +157,51 @@ const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 /// How many times [`connect_and_forward`] retries connecting to the
 /// current lock holder's socket before giving up on *this* round — see
 /// [`acquire_or_forward`]'s doc comment for what "this round" means.
-/// Covers the brief window between a process winning the lock and
-/// finishing its own bind.
-const SECONDARY_CONNECT_ATTEMPTS: u32 = 10;
-/// Delay between [`connect_and_forward`] retries within a round. Ten
-/// attempts at this delay bound one round's connect attempts to half a
-/// second — long enough to ride out scheduling jitter between winning the
-/// lock and finishing the bind, short enough that a genuinely wedged
-/// primary doesn't visibly hang a second launch for long before
-/// [`acquire_or_forward`] tries the lock itself again.
+/// Covers the brief window between a process winning the lock and its
+/// accept loop's thread actually getting scheduled (now essentially
+/// instantaneous — see this module's doc comment on why the accept loop
+/// no longer waits for an `AppHandle` — so a small budget is enough; this
+/// used to also have to cover the bind itself completing, before the
+/// bind and the accept-loop spawn were merged into one atomic step).
+const SECONDARY_CONNECT_ATTEMPTS: u32 = 3;
+/// Delay between [`connect_and_forward`] retries within a round.
 const SECONDARY_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// How many times [`acquire_or_forward`] retries the *lock itself* after a
 /// round's connect attempts are exhausted (see that function's doc
 /// comment for the exit-race this covers) before giving up and failing
-/// open. Four rounds, each preceded (after the first) by a growing delay,
-/// is enough to ride out an ordinary process-exit teardown without
-/// visibly hanging a launch for long if something is genuinely wedged.
-const LOCK_RETRY_ROUNDS: u32 = 4;
+/// open. Each round after the first is preceded by a growing delay.
+const LOCK_RETRY_ROUNDS: u32 = 3;
 /// Delay before the second round; doubles each round after that (so:
-/// 100ms, 200ms, 400ms between the four rounds) — see
-/// [`acquire_or_forward`]'s doc comment.
+/// 100ms, 200ms between the three rounds) — see [`acquire_or_forward`]'s
+/// doc comment. Together with `SECONDARY_CONNECT_ATTEMPTS` and
+/// `ACK_TIMEOUT`, this bounds the worst case (every attempt in every
+/// round genuinely timing out) to roughly ten seconds — down from the
+/// prior design's nearly a minute, now that the accept loop starting
+/// promptly is the normal case rather than something these retries have
+/// to routinely wait out (see this module's doc comment on the
+/// eighth review round).
 const LOCK_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
 
 /// A successful `write_all` only proves the bytes reached the OS socket
-/// buffer, not that the primary ever read, parsed, or acted on them — if
+/// buffer, not that this process ever read, parsed, or acted on them — if
 /// the primary is mid-exit right when it accepts the connection, the
 /// kernel can tear down that accepted-but-unread connection (and whatever
 /// was buffered in it) along with the rest of the dying process's file
 /// descriptors, and the secondary's `write_all` may already have returned
 /// `Ok` before that happens. [`send_and_await_ack`] treats the message as
-/// delivered only once the primary writes this single byte back, which it
-/// only does after [`spawn_accept_loop`] has finished calling
-/// `handle_single_instance_launch` — i.e. after the request has actually
-/// been processed, not merely received into a buffer (caught in PR #315's
-/// seventh review round).
+/// delivered only once this process writes this single byte back, which
+/// it only does after [`enqueue_or_deliver`] has durably recorded the
+/// request — either queued or handed to a live `AppHandle` — not merely
+/// received the bytes off the wire (caught in PR #315's seventh review
+/// round).
 const ACK_BYTE: u8 = 1;
 /// How long [`send_and_await_ack`] waits for that byte before giving up.
-/// Generous relative to how fast `handle_single_instance_launch` actually
-/// runs (focusing a window and pushing onto an in-memory queue — no disk
-/// I/O), so this essentially never fires unless the primary is genuinely
-/// gone or wedged.
-const ACK_TIMEOUT: Duration = Duration::from_secs(2);
+/// Generous relative to how fast [`enqueue_or_deliver`] actually runs
+/// (an in-memory queue push, or at most one window-focus call — no disk
+/// I/O), so this essentially never fires unless this process is
+/// genuinely gone or wedged.
+const ACK_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Set once this process becomes the primary instance, so
 /// [`cleanup_if_primary`] only ever unlinks a socket this process itself
@@ -170,17 +212,19 @@ static IS_PRIMARY: AtomicBool = AtomicBool::new(false);
 #[derive(Debug)]
 pub(crate) enum SingleInstanceOutcome {
     /// This process holds the single-instance lock and is the primary
-    /// instance. Both fields must be kept alive for the lifetime of the
-    /// process (`lib.rs` does this via `app.manage(lock)`): dropping
-    /// `lock` releases the OS advisory lock immediately, which would let
-    /// a later launch become primary too, defeating the whole point.
+    /// instance. `acquire_or_forward` has already bound the socket and
+    /// spawned its accept loop (see this module's doc comment on the
+    /// eighth review round for why that can't wait for `.setup()`); the
+    /// caller's only remaining job is to keep `lock` alive for the
+    /// lifetime of the process (`lib.rs` does this via `app.manage(lock)`)
+    /// and, once an `AppHandle` exists, call
+    /// [`install_app_handle`] — dropping `lock` early would release the
+    /// OS advisory lock immediately, letting a later launch become
+    /// primary too, defeating the whole point.
     Primary {
         /// The open, locked lock file. Never read from again after this
         /// point — its only remaining job is to stay open.
         lock: File,
-        /// Bound and ready; pass it to [`spawn_accept_loop`] once an
-        /// `AppHandle` is available to actually service connections.
-        listener: UnixListener,
     },
     /// Another instance was already running and has been sent this
     /// process's argv/cwd; this process should exit immediately, exactly
@@ -295,10 +339,15 @@ pub(crate) fn acquire_or_forward(identifier: &str) -> SingleInstanceOutcome {
                 return match UnixListener::bind(&socket) {
                     Ok(listener) => {
                         IS_PRIMARY.store(true, Ordering::SeqCst);
-                        SingleInstanceOutcome::Primary {
-                            lock: lock_file,
-                            listener,
-                        }
+                        // Spawned here, synchronously, right after the
+                        // bind succeeds — not deferred until `lib.rs`'s
+                        // `.setup()` gets an `AppHandle`. See this
+                        // module's doc comment on the eighth review round
+                        // for why that gap was itself a bug (a bound but
+                        // not-yet-serviced socket, for as long as
+                        // migration/setup happened to take).
+                        spawn_accept_loop(identifier.to_string(), listener);
+                        SingleInstanceOutcome::Primary { lock: lock_file }
                     }
                     Err(e) => unavailable(&format!(
                         "won the single-instance lock but could not bind its socket: {e}"
@@ -491,24 +540,25 @@ fn read_forwarded_argv_cwd(stream: &mut UnixStream) -> Option<(String, Vec<Strin
 }
 
 /// Spawn the background thread that services connections from later
-/// launches, once an `AppHandle` is available (called from `lib.rs`'s
-/// `.setup()`, after `acquire_or_forward` returned
-/// [`SingleInstanceOutcome::Primary`] back in `run()`). Runs for the
-/// lifetime of the process; not joined anywhere, same as the plugin's own
-/// `tauri::async_runtime::spawn` accept loop never is.
+/// launches. Called synchronously from [`acquire_or_forward`] right after
+/// the socket is bound — *not* deferred until an `AppHandle` exists (see
+/// this module's doc comment on the eighth review round for why that
+/// used to be a bug). Runs for the lifetime of the process; not joined
+/// anywhere, same as the plugin's own `tauri::async_runtime::spawn`
+/// accept loop never was.
 ///
-/// Writes the ACK byte only *after* `handle_single_instance_launch`
-/// returns — i.e. after the window has been focused and the files queued
-/// — not right after parsing. See [`ACK_BYTE`]'s doc comment for why the
+/// Writes the ACK byte only *after* [`enqueue_or_deliver`] returns — i.e.
+/// after the request has been durably recorded (queued or delivered),
+/// not right after parsing. See [`ACK_BYTE`]'s doc comment for why the
 /// secondary waits for this rather than treating its own successful
 /// `write_all` as proof the request was actually handled.
-pub(crate) fn spawn_accept_loop(app: tauri::AppHandle, listener: UnixListener) {
+fn spawn_accept_loop(identifier: String, listener: UnixListener) {
     std::thread::spawn(move || {
         for incoming in listener.incoming() {
             match incoming {
                 Ok(mut stream) => {
                     if let Some((cwd, args)) = read_forwarded_argv_cwd(&mut stream) {
-                        crate::handle_single_instance_launch(&app, args.into_iter(), &cwd);
+                        enqueue_or_deliver(&identifier, cwd, args);
                         let _ = stream.write_all(&[ACK_BYTE]);
                     }
                 }
@@ -518,6 +568,115 @@ pub(crate) fn spawn_accept_loop(app: tauri::AppHandle, listener: UnixListener) {
             }
         }
     });
+}
+
+/// What happens to a launch forwarded to this process, keyed by
+/// identifier (so tests using distinct identifiers never share state —
+/// in real use there is only ever one identifier per process, since a
+/// process only ever calls [`acquire_or_forward`] once, for its own fixed
+/// bundle identifier).
+enum DeliveryState {
+    /// No `AppHandle` yet: [`enqueue_or_deliver`] queues messages here.
+    /// [`install_app_handle`] drains this once one becomes available.
+    Buffering(VecDeque<(String, Vec<String>)>),
+    /// An `AppHandle` is available (wrapped so [`install_app_handle`] can
+    /// build it once, from a real `tauri::AppHandle`, while tests build
+    /// one directly from a plain closure — see [`install_deliver`]).
+    /// New messages are delivered through it immediately.
+    Live(Deliver),
+}
+
+/// A queued message's eventual handler: `(cwd, args)`. In production this
+/// always ends up calling `crate::handle_single_instance_launch`; wrapping
+/// it behind a closure (rather than storing a raw `AppHandle` directly)
+/// lets tests exercise the queue/flush/live-delivery machinery in
+/// [`DeliveryState`] deterministically, without needing a real Tauri
+/// `AppHandle` (which needs a running app to construct at all) just to
+/// prove no message is ever delivered twice or dropped.
+type Deliver = Arc<dyn Fn(String, Vec<String>) + Send + Sync>;
+
+/// Per-identifier delivery state, lazily initialized (`HashMap::new()`
+/// isn't `const`, hence the `OnceLock` wrapper rather than a bare
+/// `static Mutex<HashMap<..>>`).
+static DELIVERY: OnceLock<Mutex<HashMap<String, DeliveryState>>> = OnceLock::new();
+
+fn delivery_map() -> &'static Mutex<HashMap<String, DeliveryState>> {
+    DELIVERY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Records one parsed forwarded message: queues it if no `AppHandle` is
+/// available yet for this identifier, or delivers it immediately if one
+/// already is. Called from the accept loop, which ACKs the sender right
+/// after this returns either way — see [`ACK_BYTE`]'s doc comment for why
+/// "durably recorded" (queued counts) is an acceptable meaning of "acked"
+/// here.
+fn enqueue_or_deliver(identifier: &str, cwd: String, args: Vec<String>) {
+    let mut map = delivery_map().lock().unwrap();
+    match map
+        .entry(identifier.to_string())
+        .or_insert_with(|| DeliveryState::Buffering(VecDeque::new()))
+    {
+        DeliveryState::Buffering(queue) => queue.push_back((cwd, args)),
+        DeliveryState::Live(deliver) => {
+            // Clone the `Arc` out and release the lock before calling
+            // into arbitrary (in production, Tauri) code — this function
+            // must not be held up, or held responsible for a deadlock,
+            // by whatever the delivery callback happens to do.
+            let deliver = Arc::clone(deliver);
+            drop(map);
+            deliver(cwd, args);
+        }
+    }
+}
+
+/// Makes `deliver` the handler for this identifier's future messages, and
+/// runs it (in FIFO order) for whatever was queued before this point —
+/// all while holding the same lock [`enqueue_or_deliver`] does for the
+/// whole "check state, then act" sequence, so a message arriving
+/// concurrently is resolved unambiguously one way or the other:
+///
+/// - If [`enqueue_or_deliver`] gets the lock first, it finds `Buffering`
+///   and queues the message — which this function, running next, then
+///   drains and delivers.
+/// - If this function gets the lock first, it drains whatever was
+///   already queued and switches the state to `Live` before releasing
+///   the lock — so when [`enqueue_or_deliver`] then gets its turn, it
+///   finds `Live` already and delivers the message directly.
+///
+/// Either way, every message is delivered exactly once — never queued
+/// forever, never delivered twice. [`install_app_handle`] is the
+/// production entry point; this lower-level version exists so tests can
+/// drive the same state machine with a plain recording closure instead of
+/// a real `tauri::AppHandle`.
+fn install_deliver(identifier: &str, deliver: Deliver) {
+    let mut map = delivery_map().lock().unwrap();
+    let queued = match map.get_mut(identifier) {
+        Some(DeliveryState::Buffering(queue)) => std::mem::take(queue),
+        // `None`: nothing has arrived for this identifier yet, nothing to
+        // drain. `Live(_)`: this function already ran once (it's only
+        // ever called once, from `.setup()`) — either way, no backlog.
+        Some(DeliveryState::Live(_)) | None => VecDeque::new(),
+    };
+    map.insert(
+        identifier.to_string(),
+        DeliveryState::Live(Arc::clone(&deliver)),
+    );
+    drop(map);
+    for (cwd, args) in queued {
+        deliver(cwd, args);
+    }
+}
+
+/// Production entry point for [`install_deliver`]: wraps a real
+/// `tauri::AppHandle` (available once `lib.rs`'s `.setup()` runs) as the
+/// delivery callback. Called exactly once, right after
+/// `acquire_or_forward` returned [`SingleInstanceOutcome::Primary`] back
+/// in `run()`.
+pub(crate) fn install_app_handle(identifier: &str, app: tauri::AppHandle) {
+    let deliver: Deliver = Arc::new(move |cwd, args| {
+        crate::handle_single_instance_launch(&app, args.into_iter(), &cwd);
+    });
+    install_deliver(identifier, deliver);
 }
 
 /// Best-effort socket cleanup on app exit (called from `lib.rs`'s
@@ -535,6 +694,11 @@ pub(crate) fn cleanup_if_primary(identifier: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A test-only recorder for messages `install_deliver`/`enqueue_or_deliver`
+    /// hand to a delivery closure, shared with the closure via `Arc` so the
+    /// test can inspect it afterward.
+    type Recorded = Arc<Mutex<Vec<(String, Vec<String>)>>>;
 
     /// Validates the semantic assumption the whole design in this module's
     /// doc comment rests on: `File::try_lock` is held per *open file
@@ -582,58 +746,201 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Round-trips a real primary/secondary pair: the "secondary" (a
-    /// second `acquire_or_forward` call against the same identifier,
-    /// while the first's `Primary { lock, .. }` is still held) must
-    /// observe `TryLockError::WouldBlock` on the lock and report
-    /// `ForwardedToRunning`, having sent this test process's own argv/cwd,
-    /// which the "primary" side (simulating one connection of
-    /// `spawn_accept_loop`'s body, without needing a real `AppHandle` —
-    /// including writing the ACK back afterward, or the secondary's
-    /// `acquire_or_forward` call below would time out waiting for one)
-    /// must parse back out correctly.
+    /// Regression test for PR #315's eighth review round: `acquire_or_forward`
+    /// spawns the real accept loop itself, synchronously, the moment it
+    /// wins the lock — no `AppHandle`, no `install_app_handle` call, no
+    /// `.setup()` involved at all yet. A secondary connecting in exactly
+    /// this window (which used to be the bug: nothing was servicing the
+    /// socket until `.setup()` eventually ran) must still get ACKed
+    /// promptly, and the message it sent must be sitting in this
+    /// identifier's `Buffering` queue — not lost, not delivered to
+    /// anything (there's nothing to deliver it *to* yet).
     #[test]
-    fn primary_secondary_round_trip_forwards_argv_and_cwd() {
+    fn primary_accepts_and_buffers_a_forwarded_launch_before_any_app_handle_is_installed() {
         let identifier = "com.mojidori.test.roundtrip";
         let _ = std::fs::remove_file(lock_path(identifier));
         let _ = std::fs::remove_file(socket_path(identifier));
 
-        let (lock, listener) = match acquire_or_forward(identifier) {
-            SingleInstanceOutcome::Primary { lock, listener } => (lock, listener),
+        let lock = match acquire_or_forward(identifier) {
+            SingleInstanceOutcome::Primary { lock } => lock,
             _ => panic!("expected to become primary against a clean lock/socket path"),
         };
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let accept_thread = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept should succeed");
-            let parsed = read_forwarded_argv_cwd(&mut stream);
-            if parsed.is_some() {
-                stream
-                    .write_all(&[ACK_BYTE])
-                    .expect("acking should succeed");
-            }
-            tx.send(parsed).unwrap();
-        });
-
+        // The real accept loop is already running (spawned inside the
+        // `acquire_or_forward` call above) — no manual `listener.accept()`
+        // simulation needed, unlike before this round's fix.
         let outcome = acquire_or_forward(identifier);
         assert!(
             matches!(outcome, SingleInstanceOutcome::ForwardedToRunning),
             "a second acquire while the first still holds the lock must forward and exit, \
-             not also become primary"
+             not also become primary — and must have been ACKed promptly by the already-running \
+             accept loop to get here at all, not time out"
         );
 
-        let received = rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("primary should receive the forwarded message promptly");
-        accept_thread.join().unwrap();
-
-        let (cwd, args) = received.expect("a well-formed forwarded message must parse");
-        assert_eq!(cwd, std::env::current_dir().unwrap().to_string_lossy());
-        assert_eq!(args, std::env::args().collect::<Vec<String>>());
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let args = std::env::args().collect::<Vec<String>>();
+        {
+            let mut map = delivery_map().lock().unwrap();
+            match map.remove(identifier) {
+                Some(DeliveryState::Buffering(queue)) => {
+                    assert_eq!(
+                        queue.into_iter().collect::<Vec<_>>(),
+                        vec![(cwd, args)],
+                        "the forwarded message must be sitting in this identifier's buffer, \
+                         exactly as sent, with no `AppHandle` ever having been installed for it"
+                    );
+                }
+                other => panic!(
+                    "expected a Buffering queue holding exactly the one forwarded message, \
+                     found {}",
+                    match other {
+                        Some(DeliveryState::Live(_)) => "a Live delivery state instead",
+                        None => "no entry at all",
+                        Some(DeliveryState::Buffering(_)) => unreachable!(),
+                    }
+                ),
+            }
+        }
 
         drop(lock); // release before cleanup, mirroring a normal process exit
         let _ = std::fs::remove_file(lock_path(identifier));
         let _ = std::fs::remove_file(socket_path(identifier));
+    }
+
+    /// Regression test for PR #315's eighth review round:
+    /// `install_deliver` (the core of `install_app_handle`, minus needing
+    /// a real `tauri::AppHandle`) must drain everything queued before it
+    /// ran and deliver each exactly once, then continue delivering any
+    /// later message directly, live — not queue it again.
+    #[test]
+    fn install_deliver_drains_the_buffer_once_and_then_delivers_live() {
+        let identifier = "com.mojidori.test.install-deliver";
+        let delivered: Recorded = Arc::new(Mutex::new(Vec::new()));
+
+        enqueue_or_deliver(identifier, "/a".to_string(), vec!["one".to_string()]);
+        enqueue_or_deliver(identifier, "/b".to_string(), vec!["two".to_string()]);
+
+        let recorder = Arc::clone(&delivered);
+        install_deliver(
+            identifier,
+            Arc::new(move |cwd, args| recorder.lock().unwrap().push((cwd, args))),
+        );
+
+        assert_eq!(
+            *delivered.lock().unwrap(),
+            vec![
+                ("/a".to_string(), vec!["one".to_string()]),
+                ("/b".to_string(), vec!["two".to_string()]),
+            ],
+            "both messages queued before install_deliver must be delivered exactly once, in \
+             the order they arrived"
+        );
+
+        enqueue_or_deliver(identifier, "/c".to_string(), vec!["three".to_string()]);
+        assert_eq!(
+            *delivered.lock().unwrap(),
+            vec![
+                ("/a".to_string(), vec!["one".to_string()]),
+                ("/b".to_string(), vec!["two".to_string()]),
+                ("/c".to_string(), vec!["three".to_string()]),
+            ],
+            "a message arriving after install_deliver must be delivered live, immediately — \
+             not silently re-queued where nothing will ever drain it again"
+        );
+
+        delivery_map().lock().unwrap().remove(identifier);
+    }
+
+    /// Regression test for PR #315's eighth review round: a message
+    /// enqueued concurrently with the flush (`install_deliver`) that
+    /// drains and switches the delivery state must still be delivered
+    /// exactly once — never lost (if it raced in just as the buffer was
+    /// taken) and never delivered twice (if it landed in the live path
+    /// right as the switch happened). The two possible lock-acquisition
+    /// orderings are exercised directly rather than relying on real
+    /// thread-timing luck to force one of them:
+    #[test]
+    fn install_deliver_and_a_concurrent_new_message_never_lose_or_duplicate_it() {
+        for order in [ConcurrentOrder::EnqueueFirst, ConcurrentOrder::InstallFirst] {
+            let identifier = format!("com.mojidori.test.concurrent-flush-{order:?}");
+            let delivered: Recorded = Arc::new(Mutex::new(Vec::new()));
+
+            enqueue_or_deliver(&identifier, "/pre".to_string(), vec!["pre".to_string()]);
+
+            // A `Barrier` forces both threads to actually start their real
+            // work at the same moment, rather than one trivially finishing
+            // before the other even begins — the point is to exercise both
+            // branches of `install_deliver`'s doc comment (which thread's
+            // lock acquisition wins), not to prove a specific one always
+            // does.
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+
+            let install_barrier = Arc::clone(&barrier);
+            let recorder = Arc::clone(&delivered);
+            let install_identifier = identifier.clone();
+            let install_thread = std::thread::spawn(move || {
+                install_barrier.wait();
+                install_deliver(
+                    &install_identifier,
+                    Arc::new(move |cwd, args| recorder.lock().unwrap().push((cwd, args))),
+                );
+            });
+
+            let enqueue_barrier = Arc::clone(&barrier);
+            let enqueue_identifier = identifier.clone();
+            let enqueue_thread = std::thread::spawn(move || {
+                enqueue_barrier.wait();
+                if matches!(order, ConcurrentOrder::InstallFirst) {
+                    // Give the installing thread a head start without
+                    // making the outcome deterministic on timing — if it
+                    // already won the lock, this changes nothing further
+                    // (`enqueue_or_deliver` still resolves correctly
+                    // either way); it just biases which branch this
+                    // particular run is likelier to exercise.
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                enqueue_or_deliver(
+                    &enqueue_identifier,
+                    "/concurrent".to_string(),
+                    vec!["concurrent".to_string()],
+                );
+            });
+
+            install_thread.join().unwrap();
+            enqueue_thread.join().unwrap();
+
+            // Whichever branch actually ran, exactly these two messages
+            // must have been delivered — no more, no fewer. The
+            // concurrent message may be delivered either by
+            // `install_deliver`'s own drain (if it arrived in time to be
+            // queued) or directly by `enqueue_or_deliver` (if the switch
+            // to `Live` had already happened) — both are correct; a
+            // `HashSet`-style unordered comparison is used because which
+            // of those two happened isn't itself part of the invariant.
+            let mut got = delivered.lock().unwrap().clone();
+            got.sort();
+            let mut expected = vec![
+                ("/pre".to_string(), vec!["pre".to_string()]),
+                ("/concurrent".to_string(), vec!["concurrent".to_string()]),
+            ];
+            expected.sort();
+            assert_eq!(
+                got, expected,
+                "order {order:?}: every message must be delivered exactly once, regardless \
+                 of which thread won the lock first"
+            );
+
+            delivery_map().lock().unwrap().remove(&identifier);
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ConcurrentOrder {
+        EnqueueFirst,
+        InstallFirst,
     }
 
     /// Regression test for PR #315's seventh review round: a successful
@@ -752,8 +1059,8 @@ mod tests {
              exercising the stale-socket path at all"
         );
 
-        let (lock, _listener) = match acquire_or_forward(identifier) {
-            SingleInstanceOutcome::Primary { lock, listener } => (lock, listener),
+        let lock = match acquire_or_forward(identifier) {
+            SingleInstanceOutcome::Primary { lock } => lock,
             other => panic!(
                 "a free lock (crashed holder already exited) must let this process become \
                  primary with a fresh listener, got {other:?} instead"
@@ -761,6 +1068,7 @@ mod tests {
         };
 
         drop(lock);
+        delivery_map().lock().unwrap().remove(identifier);
         let _ = std::fs::remove_file(lock_path(identifier));
         let _ = std::fs::remove_file(&socket);
     }

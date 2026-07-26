@@ -812,7 +812,12 @@ pub fn run() {
     // existing instance forwards its argv/cwd and exits immediately,
     // mirroring how the Windows/Linux plugin (registered below) exits a
     // second process during its own plugin `setup()`, before this app's
-    // window ever exists.
+    // window ever exists. On success, `acquire_or_forward` has already
+    // bound the socket *and* spawned its accept loop (see that module's
+    // doc comment on the eighth review round for why the accept loop
+    // can't wait for `.setup()`'s `AppHandle` the way it originally did);
+    // all that's left for `.setup()` to do is call `install_app_handle`
+    // once one exists, below.
     //
     // Known limitation, shared with the plugin-based approach on
     // Windows/Linux and with how this module's macOS predecessor would
@@ -825,14 +830,12 @@ pub fn run() {
     // for the exact scope (ordinary Finder double-click / plain `open`,
     // and `open -n --args /path`, are both unaffected). Not fixed here.
     #[cfg(target_os = "macos")]
-    let macos_single_instance =
+    let macos_single_instance_lock =
         match singleinstance_macos::acquire_or_forward(&context.config().identifier) {
             singleinstance_macos::SingleInstanceOutcome::ForwardedToRunning => {
                 std::process::exit(0);
             }
-            singleinstance_macos::SingleInstanceOutcome::Primary { lock, listener } => {
-                Some((lock, listener))
-            }
+            singleinstance_macos::SingleInstanceOutcome::Primary { lock } => Some(lock),
             singleinstance_macos::SingleInstanceOutcome::Unavailable => None,
         };
 
@@ -953,24 +956,30 @@ pub fn run() {
             // preferences via app.path(), which is unavailable until the
             // path resolver state is managed.
             app.set_menu(menu::build(app.handle())?)?;
-            // The lock was won and the listener bound as early as
-            // possible, before migration/build (see `run()`'s macOS
-            // single-instance setup above) — servicing the listener is
-            // deferred to here because that's the first point an
-            // `AppHandle` (needed to focus the window and reach
-            // `PendingFiles` state) exists. Nothing is lost in between: a
-            // bound-but-not-yet-accepted `UnixListener` queues incoming
-            // connections in the kernel, it doesn't drop them. The lock
-            // file is handed to Tauri's managed state purely to keep it
-            // open (and therefore the OS advisory lock held) for the
-            // rest of this process's lifetime — see
-            // `SingleInstanceOutcome::Primary`'s doc comment for why
-            // dropping it early would be a correctness bug, not just a
-            // resource leak.
+            // The lock was won, and the socket bound with its accept loop
+            // already servicing connections, as early as possible —
+            // before migration/build (see `run()`'s macOS single-instance
+            // setup above, and `singleinstance_macos`'s module doc for
+            // why waiting for `.setup()` to start the accept loop was
+            // itself a bug). All that's left here is: (1) handing the
+            // lock file to Tauri's managed state purely to keep it open
+            // (and therefore the OS advisory lock held) for the rest of
+            // this process's lifetime — see `SingleInstanceOutcome::
+            // Primary`'s doc comment for why dropping it early would be a
+            // correctness bug, not just a resource leak; (2) giving the
+            // accept loop's buffered/future messages a real `AppHandle`
+            // to deliver through, via `install_app_handle` — see that
+            // function's doc comment for why this is safe to do exactly
+            // once, here, with no message lost or double-delivered no
+            // matter how it interleaves with messages arriving right
+            // around the same time.
             #[cfg(target_os = "macos")]
-            if let Some((lock, listener)) = macos_single_instance {
+            if let Some(lock) = macos_single_instance_lock {
                 app.manage(lock);
-                singleinstance_macos::spawn_accept_loop(app.handle().clone(), listener);
+                singleinstance_macos::install_app_handle(
+                    &app.config().identifier,
+                    app.handle().clone(),
+                );
             }
             startup_probe::checkpoint("setup() completed");
             Ok(())
