@@ -19,8 +19,7 @@ on:
   release:
     types: [published]
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   publish-updater-json:
@@ -29,8 +28,12 @@ jobs:
     # release, so it fires `published` too) re-triggering this workflow.
     if: github.event.release.tag_name != 'updater'
     runs-on: ubuntu-latest
+    # Scoped to this job, not the workflow: this is the only job here,
+    # and it needs write access to download from and upload to releases.
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Download latest.json from the published release, if present
         id: download
