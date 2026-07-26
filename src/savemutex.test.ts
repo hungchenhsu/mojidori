@@ -2302,3 +2302,90 @@ describe("issue #217 — drainLock must recheck blockedByReadOnly before executi
     expect(doc.pendingSaveAs).toBeNull();
   });
 });
+
+// PR #319 seventh-round Codex review (P2): main.ts's handleExternalChange
+// falls back to `doc.pendingReload = true` whenever fetchStableFingerprint
+// never stabilizes (issue #302 review, sixth round) — normally safe
+// because reloadFromDisk's own identical pattern only ever sets that flag
+// right after synchronously confirming an owner via mustDefer, so that
+// owner's own eventual withLock/finally is guaranteed to still be pending
+// and will drain it. But fetchStableFingerprint's own awaits mean the save
+// that made the last attempt unstable may already have fully finished —
+// and already run its own drain — by the time handleExternalChange reaches
+// this fallback, leaving nobody left to drain the flag it's about to set.
+// deferAfterUnstableFetchSim mirrors main.ts's exact fix: set the flag
+// first, *then* recheck mustDefer, self-draining only if that recheck
+// finds no owner at all.
+describe("issue #302 review, seventh round — a caller deferring via pendingReload after an async gap must self-drain when no owner is left to (failing-test-first)", () => {
+  async function deferAfterUnstableFetchSim(
+    doc: { saveReloadInFlight: LockOwner; pendingReload: boolean },
+    drainLock: () => Promise<void>,
+  ): Promise<void> {
+    doc.pendingReload = true;
+    if (!mustDefer({ inFlight: doc.saveReloadInFlight })) {
+      await drainLock();
+    }
+  }
+
+  it("no owner left at the recheck (the culprit save already finished and already drained): self-drains", async () => {
+    const doc: { saveReloadInFlight: LockOwner; pendingReload: boolean } = {
+      saveReloadInFlight: null,
+      pendingReload: false,
+    };
+    let drainCalls = 0;
+    await deferAfterUnstableFetchSim(doc, async () => {
+      drainCalls += 1;
+    });
+
+    expect(doc.pendingReload).toBe(true);
+    expect(drainCalls).toBe(1);
+  });
+
+  it("an owner still holds the lock at the recheck: does not self-drain — that owner's own withLock/finally will see the flag and drain it", async () => {
+    const doc: { saveReloadInFlight: LockOwner; pendingReload: boolean } = {
+      saveReloadInFlight: "save",
+      pendingReload: false,
+    };
+    let drainCalls = 0;
+    await deferAfterUnstableFetchSim(doc, async () => {
+      drainCalls += 1;
+    });
+
+    expect(doc.pendingReload).toBe(true);
+    expect(drainCalls).toBe(0);
+  });
+
+  it("ordering invariant: set-then-check tolerates a new owner grabbing the lock between the two steps; check-then-set would race it", async () => {
+    // Fixed order (set, then check) — a microtask boundary (awaiting
+    // Promise.resolve()) between the two simulates a new save grabbing
+    // the lock in exactly that gap.
+    const fixed: { saveReloadInFlight: LockOwner; pendingReload: boolean } = {
+      saveReloadInFlight: null,
+      pendingReload: false,
+    };
+    fixed.pendingReload = true;
+    await Promise.resolve().then(() => {
+      fixed.saveReloadInFlight = "save"; // a new save grabs the lock here
+    });
+    const fixedSelfDrains = !mustDefer({ inFlight: fixed.saveReloadInFlight });
+
+    expect(fixed.pendingReload).toBe(true); // already visible to the new owner
+    expect(fixedSelfDrains).toBe(false); // correctly defers to it instead of racing it
+
+    // Buggy order (check, then set) reaches the opposite, wrong
+    // conclusion from the exact same timeline: it reads the lock as free
+    // *before* the new owner grabs it, decides to self-drain, and only
+    // sets the flag afterwards.
+    const buggy: { saveReloadInFlight: LockOwner; pendingReload: boolean } = {
+      saveReloadInFlight: null,
+      pendingReload: false,
+    };
+    const buggySelfDrains = !mustDefer({ inFlight: buggy.saveReloadInFlight });
+    await Promise.resolve().then(() => {
+      buggy.saveReloadInFlight = "save"; // the same new save grabs the lock
+    });
+    buggy.pendingReload = true;
+
+    expect(buggySelfDrains).toBe(true); // wrongly self-drains despite the new owner
+  });
+});

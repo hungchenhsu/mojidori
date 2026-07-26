@@ -1984,9 +1984,36 @@ async function handleExternalChange(path: string): Promise<void> {
       // Never stabilized within the bound — most plausibly a save started
       // (and is still running, or ran to completion) somewhere across
       // these attempts. Defer rather than guess, same as the entry-level
-      // check above: reevaluateReload will settle it correctly once
-      // whatever's in flight actually finishes.
+      // check above — but unlike that check, this point is reached only
+      // after fetchStableFingerprint's own awaits, so whatever save/reload
+      // made the last attempt unstable may already have fully finished
+      // (and already run its own withLock/finally -> drainLock) by the
+      // time we get here (issue #302 review, seventh round): the entry-
+      // level check's mustDefer confirms an owner synchronously, right
+      // before setting the flag, so that owner's own eventual cleanup is
+      // guaranteed to still be pending and will drain it — nothing
+      // guarantees that here. Setting doc.pendingReload with no owner left
+      // to drain it would strand the flag until some unrelated future
+      // save/reload happens to run and notice it, silently delaying this
+      // external-change notification indefinitely.
+      //
+      // Ordering invariant, load-bearing: set the flag *first*,
+      // unconditionally, then recheck mustDefer — never the other order.
+      // If an owner is *still* (or *newly*, having grabbed the lock at any
+      // point from here on, including between these two lines) holding it
+      // once we recheck, its own withLock/finally will see this flag
+      // already set and drain it — covered, no self-drain needed. Only
+      // when the recheck finds no owner at all must this call drain it
+      // itself, immediately, since by construction nothing else is left
+      // to. Checking mustDefer *before* setting the flag would reopen
+      // exactly the gap this is closing: a new save could grab the lock
+      // in the instant between that check and the set, and a decision
+      // made from the stale pre-set read ("no owner, I'll drain it
+      // myself") would then race that new owner's own in-flight write.
       doc.pendingReload = true;
+      if (!mustDefer({ inFlight: doc.saveReloadInFlight })) {
+        await drainLock(doc);
+      }
       return;
     }
     if (isLikelySaveEcho({ now, record: stable.record, current: stable.current })) return;
