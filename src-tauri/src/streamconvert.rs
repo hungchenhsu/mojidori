@@ -257,11 +257,15 @@ fn run_convert_loop(
 ///    command is about to spend a potentially long time streaming.
 /// 3. A target BOM prefix is written up front only when `target_with_bom`
 ///    and `target_encoding` is UTF-8 (see the module doc comment).
-/// 4. The source is streamed, decoded, scanned for target-representability,
-///    and re-encoded to a temp file in the same directory
-///    (`create_tmp_exclusive`) -- see [`run_convert_loop`]. Any malformed
-///    source byte sequence aborts immediately: the temp file is discarded
-///    and the original is never touched.
+/// 4. `path` is resolved past any destination symlink (following the same
+///    chain `lib.rs::atomic_write_follow_symlinks` would -- see
+///    `resolve_write_destination`; issue #301, streaming-path follow-up),
+///    then the source is streamed, decoded, scanned for
+///    target-representability, and re-encoded to a temp file in the
+///    *resolved* target's directory (`create_tmp_exclusive`) -- see
+///    [`run_convert_loop`]. Any malformed source byte sequence aborts
+///    immediately: the temp file is discarded and the original is never
+///    touched.
 /// 5. If the scan found unmappable characters and `allow_lossy` is false,
 ///    the temp file is discarded and this returns `Ok` with `written:
 ///    false` and a populated `lossy_report` -- nothing on disk changes, and
@@ -278,10 +282,12 @@ fn run_convert_loop(
 ///    `expected_fingerprint` check already apply (issues #94/#102/#113,
 ///    shared `fsguard.rs`).
 /// 7. On success: `sync_all`, the fingerprint check above, carry over the
-///    original file's permissions, then `rename` over the target -- the
-///    same atomic discipline as `lib.rs::atomic_write` and
-///    `stream_replace_in_file`, just fed by a temp file filled
-///    incrementally instead of from one in-memory buffer.
+///    resolved target's permissions, then `rename` over the resolved
+///    target -- never over `path` itself when it names a symlink, so the
+///    link survives -- the same atomic discipline as
+///    `lib.rs::atomic_write_follow_symlinks` and `stream_replace_in_file`,
+///    just fed by a temp file filled incrementally instead of from one
+///    in-memory buffer.
 #[tauri::command]
 pub fn stream_convert_file(
     path: String,
@@ -308,12 +314,17 @@ pub fn stream_convert_file(
     let fingerprint =
         Fingerprint::from_file(&source).map_err(|e| format!("Failed to read {path}: {e}"))?;
 
-    let dir = path_ref.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path_ref
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".into());
-    let (mut tmp_file, tmp_path) = crate::create_tmp_exclusive(dir, &file_name)
+    // `path` is always a file the user chose to convert, never an
+    // internal app-state path, so this follows a destination symlink the
+    // same way `atomic_write_follow_symlinks` does -- see
+    // `resolve_write_destination`'s doc comment (issue #301, streaming-path
+    // follow-up). `write_target` (not necessarily `path_ref`'s own
+    // directory) is what `dir`/`file_name` -- and the final rename below --
+    // must use, so the temp file and its destination stay on the same
+    // filesystem even when `path` is a symlink pointing elsewhere.
+    let (write_target, dir, file_name) = crate::resolve_write_destination(path_ref, true)
+        .map_err(|e| format!("Failed to write {path}: {e}"))?;
+    let (mut tmp_file, tmp_path) = crate::create_tmp_exclusive(&dir, &file_name)
         .map_err(|e| format!("Failed to create temp file: {e}"))?;
 
     // Target BOM: a fresh decision independent of whatever the source had
@@ -368,10 +379,13 @@ pub fn stream_convert_file(
                 let _ = std::fs::remove_file(&tmp_path);
                 return Err(e);
             }
-            if let Ok(meta) = std::fs::metadata(path_ref) {
+            if let Ok(meta) = std::fs::metadata(&write_target) {
                 let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
             }
-            if let Err(e) = std::fs::rename(&tmp_path, path_ref) {
+            // Renaming onto `write_target` rather than `path_ref` is what
+            // keeps a symlink at `path` intact -- see
+            // `resolve_write_destination`'s doc comment.
+            if let Err(e) = std::fs::rename(&tmp_path, &write_target) {
                 let _ = std::fs::remove_file(&tmp_path);
                 return Err(format!("Failed to write {path}: {e}"));
             }
@@ -1017,6 +1031,59 @@ mod tests {
         )
         .unwrap();
         assert!(report.written);
+
+        assert_no_leftover_tmp(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #301, streaming-path follow-up (PR #317 third review round):
+    /// `stream_convert_file` used to rename its temp file directly onto
+    /// `path`, so "Convert File to Encoding..." on a file opened through a
+    /// symlink replaced the symlink itself with a regular file, leaving
+    /// the real target untouched -- the large-file counterpart to the
+    /// small-file Save bug issue #301 originally reported. Now that the
+    /// commit path resolves through `resolve_write_destination` the same
+    /// way `atomic_write_follow_symlinks` does, the link must survive and
+    /// the target must receive the converted bytes. `target_with_bom:
+    /// true` on a UTF-8 target adds a 3-byte BOM prefix the original file
+    /// never had, so the assertion on the target's bytes is proof the
+    /// write actually landed there, not just that old bytes happened to
+    /// still be present.
+    #[cfg(unix)]
+    #[test]
+    fn stream_convert_file_through_symlink_updates_target_and_preserves_link() {
+        use std::os::unix::fs::symlink;
+
+        let dir = fixture_dir("through-symlink");
+        let target = dir.join("target.txt");
+        std::fs::write(&target, "hello world").unwrap();
+        let link = dir.join("link.txt");
+        symlink(&target, &link).unwrap();
+
+        let report = stream_convert_file(
+            link.to_string_lossy().into_owned(),
+            "UTF-8".to_string(),
+            "UTF-8".to_string(),
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(report.written);
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link must still be a symlink after conversion, not a regular file"
+        );
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        let on_disk = std::fs::read(&target).unwrap();
+        assert_eq!(
+            on_disk,
+            [&[0xEF, 0xBB, 0xBF][..], b"hello world"].concat(),
+            "the target must hold the newly converted (BOM-prefixed) bytes"
+        );
 
         assert_no_leftover_tmp(&dir);
         std::fs::remove_dir_all(&dir).ok();

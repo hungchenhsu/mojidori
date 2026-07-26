@@ -642,10 +642,17 @@ fn verify_unchanged(path: &Path, original: &Fingerprint) -> Result<(), String> {
 /// 7. Zero matches leaves the file completely untouched — no temp file
 ///    persists, no rename, `mtime` unchanged. Only a run with at least one
 ///    replacement commits: `sync_all`, the fingerprint check above, carry
-///    over the original file's permissions, then `rename` over the
-///    target — the same atomic discipline as `lib.rs::atomic_write`, just
-///    fed by a temp file filled incrementally instead of from one
-///    in-memory buffer.
+///    over the resolved target's permissions, then `rename` over the
+///    resolved target — the same atomic discipline as
+///    `lib.rs::atomic_write_follow_symlinks`, just fed by a temp file
+///    filled incrementally instead of from one in-memory buffer. `path` is
+///    resolved past any destination symlink before the temp file is even
+///    created (`resolve_write_destination`, same resolution
+///    `atomic_write_follow_symlinks` uses), so the temp file lands in the
+///    resolved target's directory and the final rename lands on that
+///    target too — never on `path` itself when it names a symlink, so the
+///    link survives (issue #301, streaming-path follow-up in PR #317's
+///    third review round).
 ///
 /// BOM handling: up to 3 bytes (the longest BOM any encoding here uses —
 /// UTF-8's `EF BB BF`) are peeked from the source first. If they form a
@@ -717,12 +724,17 @@ pub fn stream_replace_in_file(
         .seek(SeekFrom::Start(0))
         .map_err(|e| format!("Failed to read {path}: {e}"))?;
 
-    let dir = path_ref.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path_ref
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".into());
-    let (mut tmp_file, tmp_path) = crate::create_tmp_exclusive(dir, &file_name)
+    // `path` is always a file the user chose to search-and-replace in,
+    // never an internal app-state path, so this follows a destination
+    // symlink the same way `atomic_write_follow_symlinks` does -- see
+    // `resolve_write_destination`'s doc comment (issue #301, streaming-path
+    // follow-up). `write_target` (not necessarily `path_ref`'s own
+    // directory) is what `dir`/`file_name` -- and the final rename below --
+    // must use, so the temp file and its destination stay on the same
+    // filesystem even when `path` is a symlink pointing elsewhere.
+    let (write_target, dir, file_name) = crate::resolve_write_destination(path_ref, true)
+        .map_err(|e| format!("Failed to write {path}: {e}"))?;
+    let (mut tmp_file, tmp_path) = crate::create_tmp_exclusive(&dir, &file_name)
         .map_err(|e| format!("Failed to create temp file: {e}"))?;
 
     if bom_len > 0 {
@@ -759,10 +771,13 @@ pub fn stream_replace_in_file(
                 let _ = std::fs::remove_file(&tmp_path);
                 return Err(e);
             }
-            if let Ok(meta) = std::fs::metadata(path_ref) {
+            if let Ok(meta) = std::fs::metadata(&write_target) {
                 let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
             }
-            if let Err(e) = std::fs::rename(&tmp_path, path_ref) {
+            // Renaming onto `write_target` rather than `path_ref` is what
+            // keeps a symlink at `path` intact -- see
+            // `resolve_write_destination`'s doc comment.
+            if let Err(e) = std::fs::rename(&tmp_path, &write_target) {
                 let _ = std::fs::remove_file(&tmp_path);
                 return Err(format!("Failed to write {path}: {e}"));
             }
@@ -1080,6 +1095,54 @@ mod tests {
             assert_no_leftover_tmp(&dir);
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    /// Issue #301, streaming-path follow-up (PR #317 third review round):
+    /// `stream_replace_in_file` used to rename its temp file directly onto
+    /// `path`, so "Replace in Large File..." on a file opened through a
+    /// symlink replaced the symlink itself with a regular file, leaving
+    /// the real target untouched -- the large-file counterpart to the
+    /// small-file Save bug issue #301 originally reported. Now that the
+    /// commit path resolves through `resolve_write_destination` the same
+    /// way `atomic_write_follow_symlinks` does, the link must survive and
+    /// the target must receive the replaced content.
+    #[cfg(unix)]
+    #[test]
+    fn stream_replace_in_file_through_symlink_updates_target_and_preserves_link() {
+        use std::os::unix::fs::symlink;
+
+        let dir = fixture_dir("through-symlink");
+        let target = dir.join("target.txt");
+        std::fs::write(&target, "hello NEEDLE world").unwrap();
+        let link = dir.join("link.txt");
+        symlink(&target, &link).unwrap();
+
+        let report = stream_replace_in_file(
+            link.to_string_lossy().into_owned(),
+            "NEEDLE".to_string(),
+            "REPLACED".to_string(),
+            "UTF-8".to_string(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(report.replacements, 1);
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link must still be a symlink after the replace, not a regular file"
+        );
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "hello REPLACED world",
+            "the target must hold the newly replaced content"
+        );
+
+        assert_no_leftover_tmp(&dir);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

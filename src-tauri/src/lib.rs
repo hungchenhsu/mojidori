@@ -724,13 +724,27 @@ pub(crate) fn atomic_write_follow_symlinks(
     atomic_write_impl(path, bytes, true)
 }
 
-fn atomic_write_impl(
+/// Resolve `path` to the file a commit-time rename should actually replace,
+/// and split the result into the directory and file name a same-filesystem
+/// temp file for it needs (`create_tmp_exclusive`'s own parameters). When
+/// `follow_symlinks` is true this is [`resolve_symlink_target`]'s result;
+/// otherwise it is `path` unchanged.
+///
+/// Shared by [`atomic_write_impl`] and the two streaming commit paths —
+/// `streamconvert.rs::stream_convert_file` and
+/// `streamreplace.rs::stream_replace_in_file` — so this one place is the
+/// only thing that has to get right the rule those callers all depend on:
+/// the temp file must land next to the *resolved* target, not necessarily
+/// next to `path`'s own directory, or the final rename would cross
+/// filesystems and stop being atomic. Both streaming commit paths always
+/// pass `follow_symlinks: true` — like `atomic_write_follow_symlinks`,
+/// they only ever run against a path the user explicitly chose to convert
+/// or search-and-replace in, never an internal, app-picked path (issue
+/// #301, streaming-path follow-up in PR #317's third review round).
+pub(crate) fn resolve_write_destination(
     path: &std::path::Path,
-    bytes: &[u8],
     follow_symlinks: bool,
-) -> std::io::Result<()> {
-    use std::io::Write;
-
+) -> std::io::Result<(std::path::PathBuf, std::path::PathBuf, String)> {
     let write_target = if follow_symlinks {
         resolve_symlink_target(path)?
     } else {
@@ -738,12 +752,24 @@ fn atomic_write_impl(
     };
     let dir = write_target
         .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
     let file_name = write_target
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".into());
-    let (mut tmp, tmp_path) = create_tmp_exclusive(dir, &file_name)?;
+    Ok((write_target, dir, file_name))
+}
+
+fn atomic_write_impl(
+    path: &std::path::Path,
+    bytes: &[u8],
+    follow_symlinks: bool,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let (write_target, dir, file_name) = resolve_write_destination(path, follow_symlinks)?;
+    let (mut tmp, tmp_path) = create_tmp_exclusive(&dir, &file_name)?;
 
     let result = (|| {
         tmp.write_all(bytes)?;
