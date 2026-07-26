@@ -37,6 +37,7 @@ import {
   checkByteDrift,
   checkRepresentable,
   clearRecentFiles,
+  documentFingerprint,
   listBackups,
   loadBackup,
   loadRecentFiles,
@@ -121,7 +122,14 @@ import { orphanBackups } from "./orphans";
 import { showPalette } from "./palette";
 import { showQuickOpen } from "./quickopen";
 import { showFilterableMenu, showMenu, type MenuItem } from "./popup";
-import { decideSaveCompletion } from "./savecompletion";
+import { decideSaveCompletion, shouldRollbackForceDirty } from "./savecompletion";
+import {
+  isFetchAttemptTrustworthy,
+  isLikelySaveEcho,
+  MAX_FINGERPRINT_RESAMPLE_ATTEMPTS,
+  SAVE_ECHO_WINDOW_MS,
+  type SaveEchoRecord,
+} from "./saveecho";
 import { fingerprintsEqual, mustDefer, nextDrainStep } from "./savemutex";
 import { createSessionPersister } from "./sessionpersist";
 import { runStreamConvert } from "./streamconvert";
@@ -1404,8 +1412,11 @@ function syncClearRecentState(): void {
   });
 }
 
-/** Timestamps of our own saves, to ignore the watcher echo they cause. */
-const recentSaves = new Map<string, number>();
+/** Timestamp and on-disk fingerprint of our own saves, to tell the watcher
+ *  echo they cause apart from a real external change landing in the same
+ *  short window (issue #302) — see saveecho.ts's isLikelySaveEcho and
+ *  recordOwnSave below. */
+const recentSaves = new Map<string, SaveEchoRecord>();
 /** Paths with a reload-confirmation dialog currently open. */
 const reloadPrompts = new Set<string>();
 /** Resolvers for saveFlow calls coalesced into doc.pendingSaveAs while the
@@ -1415,7 +1426,27 @@ const reloadPrompts = new Set<string>();
  *  for a doc settle together, once, with whatever the pending save
  *  actually resolves to once drained (see drainLock below) — never
  *  dropped, so a coalesced caller's promise can never hang. */
-const pendingSaveResolvers = new Map<number, Array<(written: boolean) => void>>();
+const pendingSaveResolvers = new Map<number, Array<(result: SaveFlowResult) => void>>();
+
+/**
+ * Record that `path` was just written by us (issue #302), so the next
+ * watcher event for it can be told apart from a genuine external change.
+ * `fingerprint` must be the exact `SaveResult.fingerprint` this write's own
+ * `saveDocument` call already returned — captured synchronously by the
+ * caller from that response, not re-fetched here via a second, later IPC
+ * call. An earlier version of this fix did the latter (a fire-and-forget
+ * `documentMetadata(path)` after the fact) and a review caught the race it
+ * opens: if a third-party write lands between `saveDocument`'s resolve and
+ * that later stat actually being serviced, the stat reads *that* write's
+ * metadata, and this function would record it as if it were our own —
+ * reproducing the exact bug issue #302 exists to fix (Codex P2 finding
+ * #1). Reading the fingerprint the write's own response already carries
+ * has no such gap: there is nothing to race, because there is no second
+ * fetch at all.
+ */
+function recordOwnSave(path: string, fingerprint: unknown): void {
+  recentSaves.set(path, { time: Date.now(), fingerprint });
+}
 
 /** Acquire `doc`'s save/reload lock for the duration of `body`, then
  *  release it and drain whatever queued up while it was held (issue
@@ -1481,8 +1512,10 @@ async function drainLock(doc: Doc): Promise<void> {
     // would make the *common* coalesce case misreport failure — e.g. the
     // save-with-encoding menu would roll its speculative encoding back
     // even though the save it coalesced into genuinely wrote (see its
-    // .then(written) handler below).
-    for (const resolve of resolvers) resolve(true);
+    // .then(written) handler below). `stale: false` for the same reason —
+    // neither the coalesce nor the consented-discard case is a stale
+    // rejection the caller needs to distinguish.
+    for (const resolve of resolvers) resolve({ written: true, stale: false });
     await drainLock(doc);
     return;
   }
@@ -1505,11 +1538,11 @@ async function drainLock(doc: Doc): Promise<void> {
     // Resolved `false`, not `true` like dropSave above, since nothing was
     // written this time.
     blockedByReadOnly(doc);
-    for (const resolve of resolvers) resolve(false);
+    for (const resolve of resolvers) resolve({ written: false, stale: false });
     await drainLock(doc); // something else may have queued up meanwhile
     return;
   }
-  let result = false;
+  let result: SaveFlowResult = { written: false, stale: false };
   await withLock(doc, "save", async () => {
     result = await runSaveFlow(doc, step.saveAs);
   });
@@ -1860,11 +1893,131 @@ function applyOpenedForReload(doc: Doc, opened: OpenedDocument): void {
   else tabs.render();
 }
 
+/** fetchStableFingerprint's result: a record/current pair verified
+ *  consistent across the whole fetch (saveecho.ts's sameSaveRecord doc
+ *  comment has the full invariant this satisfies). */
+interface StableFingerprintFetch {
+  record: SaveEchoRecord | undefined;
+  current: unknown;
+}
+
+/**
+ * documentFingerprint(path) paired with a recentSaves record proven
+ * trustworthy for that fetch's entire duration (issue #302 review — see
+ * saveecho.ts's sameSaveRecord/isFetchAttemptTrustworthy doc comments for
+ * the full invariant and the three prior point-patch attempts this
+ * converged design replaces). Checks both signals isFetchAttemptTrustworthy
+ * needs: `doc.saveReloadInFlight` (read right after the fetch resolves —
+ * catches a save still landing, recorded or not) and record stability
+ * (read before and after — catches a save that started *and* finished
+ * entirely within the fetch). Retries up to MAX_FINGERPRINT_RESAMPLE_ATTEMPTS
+ * times; the common case (nothing else touching this path) always resolves
+ * on the first attempt. Returns `null` if it never stabilizes within that
+ * bound — the caller must not guess from an unstable pair; it defers to
+ * savemutex.ts's own pendingReload/drainLock machinery instead (see
+ * isFetchAttemptTrustworthy's doc comment for why that's sound where a
+ * guess wouldn't be).
+ */
+async function fetchStableFingerprint(
+  doc: Doc,
+  path: string,
+): Promise<StableFingerprintFetch | null> {
+  for (let attempt = 0; attempt < MAX_FINGERPRINT_RESAMPLE_ATTEMPTS; attempt++) {
+    const recordBefore = recentSaves.get(path);
+    const current = await documentFingerprint(path).catch(() => null);
+    const recordAfter = recentSaves.get(path);
+    if (
+      isFetchAttemptTrustworthy({
+        recordBefore,
+        recordAfter,
+        saveOrReloadInFlight: doc.saveReloadInFlight !== null,
+      })
+    ) {
+      return { record: recordAfter, current };
+    }
+  }
+  return null;
+}
+
 async function handleExternalChange(path: string): Promise<void> {
   const doc = tabs.docs.find((d) => d.path === path);
   if (!doc) return;
-  const savedAt = recentSaves.get(path) ?? 0;
-  if (Date.now() - savedAt < 1500) return;
+  // Issue #302 review, sixth round: a save or reload already in flight for
+  // this doc means recentSaves and disk can't be treated as describing a
+  // single consistent instant right now, full stop — no comparison this
+  // function could run is trustworthy while that holds (saveecho.ts's
+  // isFetchAttemptTrustworthy doc comment has the full reasoning). Rather
+  // than special-case that here, defer through the exact same mechanism
+  // reloadFromDisk itself already uses for "something else holds the
+  // lock" (savemutex.ts's mustDefer + doc.pendingReload + drainLock): once
+  // whatever's in flight actually finishes, reevaluateReload's own guarded
+  // fetch decides for real against doc.fingerprint fully settled by then
+  // — never against a mid-flight snapshot, so it can't repeat this race.
+  if (mustDefer({ inFlight: doc.saveReloadInFlight })) {
+    doc.pendingReload = true;
+    return;
+  }
+  const now = Date.now();
+  const record = recentSaves.get(path);
+  // Issue #302: a blind elapsed-time check here used to swallow a genuine
+  // external change landing in the same short window as our own save's
+  // watcher echo, with nothing left to notice it once the window closed.
+  // fetchStableFingerprint's fetch only runs once `now` is already inside
+  // the window — the common case (no save in the last 1.5s) never pays
+  // for it.
+  if (record && now - record.time < SAVE_ECHO_WINDOW_MS) {
+    // fetchStableFingerprint's fetch(es) are themselves await gaps (Codex
+    // P2 review finding #3): the user can close this doc's tab, or Save As
+    // it to a different path, while any of them are in flight. Guarded the
+    // same way every other post-await mutation in this file is
+    // (asyncguard.ts's captureIdentity/validateIdentity) — "closed" bails
+    // outright, and an explicit doc.path check covers the Save As case
+    // validateIdentity's id/revision fields don't (a plain path/title
+    // reassignment doesn't bump doc.revision). Either way there is nothing
+    // left for *this* path's watcher event to do to `doc`: no tab to
+    // reload, no tab to show a reload prompt for.
+    const guard = captureIdentity(doc);
+    const stable = await fetchStableFingerprint(doc, path);
+    if (validateIdentity(guard, doc, tabs.docs.includes(doc)) === "closed") return;
+    if (doc.path !== path) return;
+    if (!stable) {
+      // Never stabilized within the bound — most plausibly a save started
+      // (and is still running, or ran to completion) somewhere across
+      // these attempts. Defer rather than guess, same as the entry-level
+      // check above — but unlike that check, this point is reached only
+      // after fetchStableFingerprint's own awaits, so whatever save/reload
+      // made the last attempt unstable may already have fully finished
+      // (and already run its own withLock/finally -> drainLock) by the
+      // time we get here (issue #302 review, seventh round): the entry-
+      // level check's mustDefer confirms an owner synchronously, right
+      // before setting the flag, so that owner's own eventual cleanup is
+      // guaranteed to still be pending and will drain it — nothing
+      // guarantees that here. Setting doc.pendingReload with no owner left
+      // to drain it would strand the flag until some unrelated future
+      // save/reload happens to run and notice it, silently delaying this
+      // external-change notification indefinitely.
+      //
+      // Ordering invariant, load-bearing: set the flag *first*,
+      // unconditionally, then recheck mustDefer — never the other order.
+      // If an owner is *still* (or *newly*, having grabbed the lock at any
+      // point from here on, including between these two lines) holding it
+      // once we recheck, its own withLock/finally will see this flag
+      // already set and drain it — covered, no self-drain needed. Only
+      // when the recheck finds no owner at all must this call drain it
+      // itself, immediately, since by construction nothing else is left
+      // to. Checking mustDefer *before* setting the flag would reopen
+      // exactly the gap this is closing: a new save could grab the lock
+      // in the instant between that check and the set, and a decision
+      // made from the stale pre-set read ("no owner, I'll drain it
+      // myself") would then race that new owner's own in-flight write.
+      doc.pendingReload = true;
+      if (!mustDefer({ inFlight: doc.saveReloadInFlight })) {
+        await drainLock(doc);
+      }
+      return;
+    }
+    if (isLikelySaveEcho({ now, record: stable.record, current: stable.current })) return;
+  }
   if (!doc.dirty) {
     await reloadFromDisk(doc);
     return;
@@ -2022,19 +2175,31 @@ function blockedByReadOnly(doc: Doc): boolean {
  * resolves once drainLock actually runs the coalesced request (see
  * pendingSaveResolvers above) and reports that attempt's real outcome.
  */
-async function saveFlow(saveAs: boolean): Promise<boolean> {
+/** saveFlow/runSaveFlow's outcome (issue #276). `written` alone used to be
+ *  the only thing any caller could observe; the Save with Encoding
+ *  rollback below also needs to tell a stale-cancel failure apart from
+ *  every other failure reason (see savecompletion.ts's
+ *  shouldRollbackForceDirty doc comment for why), so both fields now flow
+ *  out to every caller, not just the one that actually branches on
+ *  `stale`. */
+interface SaveFlowResult {
+  written: boolean;
+  stale: boolean;
+}
+
+async function saveFlow(saveAs: boolean): Promise<SaveFlowResult> {
   const doc = tabs.active;
-  if (!doc) return false;
-  if (blockedByReadOnly(doc)) return false;
+  if (!doc) return { written: false, stale: false };
+  if (blockedByReadOnly(doc)) return { written: false, stale: false };
   if (mustDefer({ inFlight: doc.saveReloadInFlight })) {
-    return new Promise<boolean>((resolve) => {
+    return new Promise<SaveFlowResult>((resolve) => {
       doc.pendingSaveAs = saveAs;
       const resolvers = pendingSaveResolvers.get(doc.id) ?? [];
       resolvers.push(resolve);
       pendingSaveResolvers.set(doc.id, resolvers);
     });
   }
-  let result = false;
+  let result: SaveFlowResult = { written: false, stale: false };
   await withLock(doc, "save", async () => {
     result = await runSaveFlow(doc, saveAs);
   });
@@ -2045,13 +2210,29 @@ async function saveFlow(saveAs: boolean): Promise<boolean> {
  *  exactly saveFlow's pre-#124 implementation, taking the already-resolved
  *  active doc as a parameter (rather than re-reading tabs.active) since
  *  drainLock also calls this directly for a coalesced pending save. */
-async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
+async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<SaveFlowResult> {
   const oldPath = doc.path;
   let path = doc.path;
   if (saveAs || path === null) {
     path = await saveDialog({ defaultPath: path ?? doc.title });
-    if (path === null) return false;
+    if (path === null) return { written: false, stale: false };
   }
+  // Issue #319 third-round review: sticky across the rest of this attempt,
+  // including into the catch below, once the stale-file gate has actually
+  // fired for it — set only where that happens, just below. A `let` at
+  // function scope rather than reading `result.stale` at the point of
+  // catching: `result` is declared inside the try block below and isn't
+  // visible from its own catch, and more importantly, once staleness has
+  // been observed for this attempt (disk proven to differ from what the
+  // buffer assumed), that fact doesn't stop being true just because the
+  // user's chosen "overwrite" retry (force: true) then throws instead of
+  // resolving (file went unwritable, its directory disappeared, ...) —
+  // reporting `stale: false` there would let the Save with Encoding
+  // rollback's shouldRollbackForceDirty (savecompletion.ts, issue #276)
+  // wrongly restore dirty:false, exactly the "buffer matches disk" false
+  // signal that fix exists to prevent, just reached via a throw instead of
+  // a resolved `written: false`.
+  let observedStale = false;
   try {
     // ROADMAP.md v0.7 Track C "trim trailing whitespace on save"
     // (adversarial-review addition) [danger]: applied as a real editor edit
@@ -2138,7 +2319,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
             okLabel: t("dialog.byteDriftConfirm"),
           }),
       );
-      if (!proceed) return false;
+      if (!proceed) return { written: false, stale: false };
     }
     let result = await saveDocument({
       ...saveParams,
@@ -2162,7 +2343,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
       // exception: if trim-on-save fired at the top of this flow, that
       // edit stays in the buffer (it is a real, undoable edit, not part
       // of the aborted write) — "as before Save" except already trimmed.
-      if (!proceed) return false;
+      if (!proceed) return { written: false, stale: false };
       result = await saveDocument({
         ...saveParams,
         allowLossy: true,
@@ -2171,16 +2352,27 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
       });
     }
     if (result.stale && !result.written) {
+      observedStale = true;
       const choice = await showStaleFileConfirm(doc.title);
-      if (choice === "cancel") return false;
+      // Issue #276: reported as stale so the Save with Encoding rollback
+      // (savecompletion.ts's shouldRollbackForceDirty) can skip restoring
+      // dirty:false — disk is already proven to differ from the buffer,
+      // so a "clean" doc here would be a false sync signal even though no
+      // real edits are at risk.
+      if (choice === "cancel") return { written: false, stale: true };
       if (choice === "reload") {
         // Replaces the tab's buffer with the newer on-disk version,
         // exactly like the passive watcher-triggered reload — the user's
         // unsaved edits in this tab are discarded along with the save
         // attempt (the dialog message warns about this explicitly), and
-        // nothing is written to disk.
+        // nothing is written to disk. Also reported stale for consistency
+        // with the "cancel" branch above, though it makes no observable
+        // difference to the Save with Encoding rollback: applyOpenedForReload
+        // (run inside reloadFromDisk) already cleared doc.speculativeEncoding,
+        // so that rollback's own reference-equality check already skips it
+        // regardless of this result's stale flag.
         await reloadFromDisk(doc);
-        return false;
+        return { written: false, stale: true };
       }
       // "overwrite": the user explicitly chose to clobber the external
       // change. Keep whatever allowLossy decision was already resolved
@@ -2194,7 +2386,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
     }
     // Only once the bytes are actually on disk do we touch doc state or
     // run any of the success side effects below.
-    if (!result.written) return false;
+    if (!result.written) return { written: false, stale: result.stale };
     // A successful write means the file exists on disk right now,
     // regardless of the revisionMatches gate decideSaveCompletion applies
     // to dirty/fingerprint just below — a save recreates the file even for
@@ -2202,7 +2394,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
     // clearing this is unconditional on `written`, not on
     // completion.clearDirty.
     doc.missingOnDisk = false;
-    recentSaves.set(path, Date.now());
+    recordOwnSave(path, result.fingerprint);
     // Checked before this flow's own Save As (below) reassigns doc.path —
     // true only if some concurrent flow already moved this doc to a
     // different path while this save's IPC round trip was in flight
@@ -2243,13 +2435,17 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
       void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
     }
     persistSession();
-    return true;
+    return { written: true, stale: false };
   } catch (error) {
     await messageDialog(String(error), {
       title: t("dialog.saveFailedTitle"),
       kind: "error",
     });
-    return false;
+    // observedStale, not a hardcoded false: see this function's own
+    // opening doc comment on why an exception during the "overwrite"
+    // retry (or anything else after the stale gate already fired this
+    // attempt) must not erase that already-established fact.
+    return { written: false, stale: observedStale };
   }
 }
 
@@ -2773,7 +2969,7 @@ function showEncodingMenu(anchor: HTMLElement): void {
             backupFlush.schedule();
             updateStatusBar(doc);
             void saveFlow(false)
-              .then((written) => {
+              .then(({ written, stale }) => {
                 if (!written && doc.speculativeEncoding === original) {
                   doc.encoding = original.encoding;
                   doc.withBom = original.withBom;
@@ -2783,21 +2979,28 @@ function showEncodingMenu(anchor: HTMLElement): void {
                   // speculativeEncoding above via applyOpenedForReload,
                   // so this never runs for that case) must also undo the
                   // force-dirty transition above, not just
-                  // encoding/withBom, when it's still safe to — BOTH
-                  // gates below are load-bearing: wasClean means the
-                  // force above actually fired (an already-dirty doc's
-                  // dirty and backup belong to real unsaved edits this
-                  // rollback must never touch — see wasClean's own doc
-                  // comment); "apply" means the doc is still open and
-                  // its revision hasn't moved since forceDirtyGuard was
-                  // captured, i.e. no real edit (or other save/reload)
-                  // landed while this save's IPC round trip was in
-                  // flight. Either failing means dirty must stay —
-                  // genuinely edited content, or nothing left to fix.
+                  // encoding/withBom, when it's still safe to. Delegated to
+                  // savecompletion.ts's shouldRollbackForceDirty (issue
+                  // #276) rather than an inline check: wasClean/identity
+                  // alone say "this doc's dirty/backup state is ours to
+                  // touch", but a stale failure the user cancelled out of
+                  // (`stale: true`) additionally means disk is already
+                  // proven to differ from the buffer — restoring dirty:false
+                  // there would be a false "in sync" signal even though no
+                  // real edits are at risk, so that combination must also
+                  // block the rollback (see shouldRollbackForceDirty's own
+                  // doc comment for the full branch table).
                   if (
-                    wasClean &&
-                    validateIdentity(forceDirtyGuard, doc, tabs.docs.includes(doc)) ===
-                      "apply"
+                    shouldRollbackForceDirty({
+                      written,
+                      stale,
+                      wasClean,
+                      identity: validateIdentity(
+                        forceDirtyGuard,
+                        doc,
+                        tabs.docs.includes(doc),
+                      ),
+                    })
                   ) {
                     doc.dirty = false;
                     tabs.render();
@@ -2820,6 +3023,28 @@ function showEncodingMenu(anchor: HTMLElement): void {
                     backups.drop(doc);
                   }
                   updateStatusBar(doc);
+                  // PR #319 second-round review: encoding is session-
+                  // persisted (applyOpenedForReopen's own persistSession
+                  // call above has the same "encoding is session-persisted"
+                  // reasoning), but the backupFlush.schedule() call above
+                  // fired persistSession() too, on its own 2-second
+                  // debounce, entirely independent of however long the
+                  // stale/lossy/byte-drift dialogs above stayed open. If
+                  // that debounce landed while a dialog was still up, it
+                  // already wrote session.json with the *speculative*
+                  // target encoding/withBom this rollback just reverted —
+                  // and, on the stale-cancel path in particular,
+                  // shouldRollbackForceDirty deliberately leaves dirty/the
+                  // backup in place (issue #276), so that stale session
+                  // entry keeps pointing at a real, still-live backup file.
+                  // A crash before any *other* persistSession() call would
+                  // then restore that backup tagged with the wrong target
+                  // encoding, silently re-encoding its content differently
+                  // than the user ever saw. Re-persisting here — regardless
+                  // of which branch above ran — closes that window
+                  // immediately instead of leaving it open until whatever
+                  // next unrelated action happens to call persistSession().
+                  persistSession();
                 }
               })
               .finally(() => {

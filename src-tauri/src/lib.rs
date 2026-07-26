@@ -1046,6 +1046,7 @@ pub fn run() {
             open_document,
             explain_detection,
             docinfo::document_metadata,
+            docinfo::document_fingerprint,
             docinfo::line_ending_distribution,
             docinfo::document_info_snapshot,
             save_document,

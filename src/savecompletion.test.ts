@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { decideSaveCompletion, type SaveCompletionInput } from "./savecompletion";
+import {
+  decideSaveCompletion,
+  shouldRollbackForceDirty,
+  type EncodingRollbackInput,
+  type SaveCompletionInput,
+} from "./savecompletion";
 
 /** A promise plus its resolve/reject, exposed for manual settlement — lets
  *  a test hold a save IPC call open across a synchronous "user kept
@@ -323,5 +328,263 @@ describe("issue #160 — a line-ending switch during an in-flight save must coun
     // line ending. No save in flight, so this is just an ordinary edit.
     setLineEndingSim(doc, "CRLF");
     expect(doc.dirty).toBe(true);
+  });
+});
+
+// Issue #276: the Save with Encoding write-failure rollback must not
+// restore dirty:false when the failure was specifically a stale rejection
+// the user cancelled out of — disk is proven to differ from the buffer at
+// that point, so a "clean" doc would be lying about being in sync.
+describe("shouldRollbackForceDirty — full branch table", () => {
+  const base: EncodingRollbackInput = {
+    written: false,
+    stale: false,
+    wasClean: true,
+    identity: "apply",
+  };
+
+  it("ordinary (non-stale) write failure, clean doc, identity holds: rolls back", () => {
+    expect(shouldRollbackForceDirty(base)).toBe(true);
+  });
+
+  it("issue #276: stale failure (cancel path) — never rolls back, even with every other gate green", () => {
+    expect(shouldRollbackForceDirty({ ...base, stale: true })).toBe(false);
+  });
+
+  it("doc was already dirty entering the action (wasClean false): never rolls back, stale or not", () => {
+    expect(shouldRollbackForceDirty({ ...base, wasClean: false })).toBe(false);
+    expect(shouldRollbackForceDirty({ ...base, wasClean: false, stale: true })).toBe(
+      false,
+    );
+  });
+
+  it("an edit landed mid-flight (identity 'edited'): never rolls back", () => {
+    expect(shouldRollbackForceDirty({ ...base, identity: "edited" })).toBe(false);
+  });
+
+  it("tab closed mid-flight (identity 'closed'): never rolls back", () => {
+    expect(shouldRollbackForceDirty({ ...base, identity: "closed" })).toBe(false);
+  });
+
+  it("written:true (contract-violating combination): fails closed regardless of other fields", () => {
+    expect(shouldRollbackForceDirty({ ...base, written: true })).toBe(false);
+    expect(
+      shouldRollbackForceDirty({ ...base, written: true, stale: false, identity: "apply" }),
+    ).toBe(false);
+  });
+});
+
+// PR #319 second-round Codex review (P2): main.ts's backupFlush.schedule()
+// debounces on a fixed 2-second timer, entirely independent of how long the
+// stale/lossy/byte-drift confirm dialogs the Save with Encoding action can
+// show stay open. If that debounce fires while one of those dialogs is
+// still up, its flush->persistSession chain (see main.ts's backupFlush
+// wiring) writes session.json with whatever doc.encoding/withBom are *at
+// that moment* — the speculative target this action set before the dialog
+// ever opened, not the original the rollback below is about to restore.
+// On the stale-cancel path in particular, shouldRollbackForceDirty (issue
+// #276, just above) deliberately keeps dirty/the backup alive, so that
+// stale session entry keeps pointing at a real backup file a crash before
+// any *other* persistSession() call would restore tagged with the wrong
+// encoding. sessionEncodingSim below mirrors main.ts's rollback closure by
+// hand (same "kept in sync manually" pattern as setLineEndingSim above) to
+// pin that a persistSession() call after the encoding/withBom revert
+// closes this window, regardless of which shouldRollbackForceDirty branch
+// ran.
+interface SessionEncodingDoc {
+  encoding: string;
+  withBom: boolean;
+  dirty: boolean;
+}
+
+/** Mirrors main.ts's Save with Encoding menu action up through setting the
+ *  speculative encoding/withBom and forcing dirty (issues #221/#231) —
+ *  returns the pre-action snapshot the eventual rollback needs, exactly
+ *  like that action's own local `original` constant. */
+function beginSaveWithEncodingSim(
+  doc: SessionEncodingDoc,
+  target: { encoding: string; withBom: boolean },
+): { encoding: string; withBom: boolean } {
+  const original = { encoding: doc.encoding, withBom: doc.withBom };
+  doc.encoding = target.encoding;
+  doc.withBom = target.withBom;
+  if (!doc.dirty) doc.dirty = true;
+  return original;
+}
+
+/** Mirrors main.ts's saveFlow(false).then(...) rollback handler: reverts
+ *  encoding/withBom on any write failure, applies shouldRollbackForceDirty
+ *  for the dirty/backup decision, then — the fix under test here —
+ *  re-persists the session once those fields have settled, regardless of
+ *  which branch ran. `persistSession` is injected so the test can observe
+ *  every call's snapshot instead of main.ts's own IPC-backed version. */
+function resolveSaveWithEncodingSim(
+  doc: SessionEncodingDoc,
+  original: { encoding: string; withBom: boolean },
+  wasClean: boolean,
+  outcome: { written: boolean; stale: boolean },
+  persistSession: () => void,
+): void {
+  if (outcome.written) return;
+  doc.encoding = original.encoding;
+  doc.withBom = original.withBom;
+  if (
+    shouldRollbackForceDirty({
+      written: outcome.written,
+      stale: outcome.stale,
+      wasClean,
+      identity: "apply",
+    })
+  ) {
+    doc.dirty = false;
+  }
+  persistSession();
+}
+
+describe("Save with Encoding rollback re-persists session once encoding reverts (PR #319 second-round review)", () => {
+  it("stale-cancel: a debounce flush mid-dialog persisted the speculative encoding — rollback re-persists the reverted one, dirty/backup left alone", () => {
+    const doc: SessionEncodingDoc = { encoding: "UTF-8", withBom: false, dirty: false };
+    const snapshots: Array<{ encoding: string; withBom: boolean }> = [];
+    const persistSession = (): void => {
+      snapshots.push({ encoding: doc.encoding, withBom: doc.withBom });
+    };
+
+    const original = beginSaveWithEncodingSim(doc, { encoding: "Big5", withBom: false });
+
+    // The 2-second backup debounce fires while the stale dialog is still
+    // open — session.json is written with the speculative target.
+    persistSession();
+    expect(snapshots[snapshots.length - 1]).toEqual({ encoding: "Big5", withBom: false });
+
+    // User cancels the stale dialog.
+    resolveSaveWithEncodingSim(
+      doc,
+      original,
+      /* wasClean */ true,
+      { written: false, stale: true },
+      persistSession,
+    );
+
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.dirty).toBe(true); // issue #276: stale-cancel keeps dirty
+    expect(snapshots[snapshots.length - 1]).toEqual({ encoding: "UTF-8", withBom: false });
+  });
+
+  it("control — non-stale failure on a doc that started clean: also re-persists after the full rollback (dirty cleared)", () => {
+    const doc: SessionEncodingDoc = { encoding: "UTF-8", withBom: false, dirty: false };
+    const snapshots: Array<{ encoding: string; withBom: boolean }> = [];
+    const persistSession = (): void => {
+      snapshots.push({ encoding: doc.encoding, withBom: doc.withBom });
+    };
+
+    const original = beginSaveWithEncodingSim(doc, { encoding: "Big5", withBom: false });
+    persistSession(); // debounce fires mid-flight here too
+
+    resolveSaveWithEncodingSim(
+      doc,
+      original,
+      /* wasClean */ true,
+      { written: false, stale: false },
+      persistSession,
+    );
+
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.dirty).toBe(false);
+    expect(snapshots[snapshots.length - 1]).toEqual({ encoding: "UTF-8", withBom: false });
+  });
+
+  it("no debounce fired at all: rollback still re-persists once (not a no-op skip)", () => {
+    const doc: SessionEncodingDoc = { encoding: "UTF-8", withBom: false, dirty: false };
+    const snapshots: Array<{ encoding: string; withBom: boolean }> = [];
+    const persistSession = (): void => {
+      snapshots.push({ encoding: doc.encoding, withBom: doc.withBom });
+    };
+
+    const original = beginSaveWithEncodingSim(doc, { encoding: "Big5", withBom: false });
+    resolveSaveWithEncodingSim(
+      doc,
+      original,
+      /* wasClean */ true,
+      { written: false, stale: true },
+      persistSession,
+    );
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toEqual({ encoding: "UTF-8", withBom: false });
+  });
+});
+
+// PR #319 third-round Codex review (P2): main.ts's runSaveFlow wraps its
+// entire body — the initial save attempt, the lossy retry, the stale gate,
+// and the user's "overwrite" (force: true) retry — in one try/catch. Once
+// the stale gate has actually fired for this attempt (result.stale &&
+// !result.written), disk is proven to differ from the buffer; that fact
+// doesn't stop being true just because the user's chosen "overwrite" retry
+// then *throws* instead of resolving with written:false (the target
+// became unwritable, its directory disappeared, ...). Hardcoding
+// `stale: false` in the catch block erases that already-observed fact —
+// exactly the "buffer matches disk" false signal issue #276's
+// shouldRollbackForceDirty exists to prevent, just reached via a throw
+// instead of a resolved failure. runSaveFlowCatchStaleSim mirrors main.ts's
+// own try/catch shape (the "kept in sync by hand" pattern this file
+// already uses for setLineEndingSim/the Save with Encoding rollback sims
+// above) to pin that the catch preserves whatever staleness this attempt
+// already observed, rather than hardcoding false.
+async function runSaveFlowCatchStaleSim(
+  attempt: () => Promise<{ written: boolean; stale: boolean }>,
+  onStale?: () => Promise<void>,
+): Promise<{ written: boolean; stale: boolean }> {
+  let observedStale = false;
+  try {
+    const result = await attempt();
+    if (result.stale && !result.written) {
+      observedStale = true;
+      if (onStale) await onStale();
+    }
+    return result;
+  } catch {
+    // The fix under test: observedStale, not a hardcoded false.
+    return { written: false, stale: observedStale };
+  }
+}
+
+describe("runSaveFlow catch preserves already-observed staleness (PR #319 third-round review)", () => {
+  it("stale gate fired, then the overwrite retry throws: catch still reports stale:true", async () => {
+    const outcome = await runSaveFlowCatchStaleSim(
+      () => Promise.resolve({ written: false, stale: true }),
+      () => Promise.reject(new Error("EACCES: permission denied")),
+    );
+
+    expect(outcome).toEqual({ written: false, stale: true });
+
+    // Fed into the Save with Encoding rollback gate exactly like main.ts's
+    // own .then handler would: a clean doc, identity still "apply" — must
+    // NOT roll back dirty, the same protection issue #276 established for
+    // the ordinary stale-cancel path, now also holding for this
+    // throw-during-overwrite-retry path.
+    expect(
+      shouldRollbackForceDirty({
+        written: outcome.written,
+        stale: outcome.stale,
+        wasClean: true,
+        identity: "apply",
+      }),
+    ).toBe(false);
+  });
+
+  it("control — the initial attempt itself throws, before any staleness was ever observed: catch reports stale:false", async () => {
+    const outcome = await runSaveFlowCatchStaleSim(() =>
+      Promise.reject(new Error("ENOENT: no such file or directory")),
+    );
+
+    expect(outcome).toEqual({ written: false, stale: false });
+  });
+
+  it("control — a non-stale failure, no retry needed: resolves normally, no catch involved", async () => {
+    const outcome = await runSaveFlowCatchStaleSim(() =>
+      Promise.resolve({ written: false, stale: false }),
+    );
+
+    expect(outcome).toEqual({ written: false, stale: false });
   });
 });

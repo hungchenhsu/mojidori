@@ -31,6 +31,7 @@
 
 use serde::Serialize;
 
+use crate::fsguard::Fingerprint;
 use crate::linebreak::{is_utf16_label, reject_utf16, scan_line_breaks, LineBreakKind};
 use crate::streamcodec::{read_chunk, CHUNK_BYTES};
 use crate::{
@@ -83,6 +84,23 @@ pub fn document_metadata(path: String) -> Result<DocumentMetadata, String> {
         size: meta.len(),
         modified_ms: modified_ms_from(modified),
     })
+}
+
+/// Fresh on-disk `Fingerprint` for `path` (issue #302 review, Codex P2
+/// finding #2) — a plain `std::fs::metadata` stat, no content read, the
+/// same cost as [`document_metadata`] just above. `src/saveecho.ts`'s
+/// watcher-echo suppression needs to compare a *live* disk snapshot
+/// against the exact opaque `Fingerprint` `save_document` already returns
+/// right after a write (`fsguard.rs`), not a separately-computed
+/// size/mtime pair: `document_metadata`'s `modified_ms` is
+/// millisecond-truncated (coarser still on some filesystems), so a fast
+/// same-size external rewrite could alias onto an unrelated file version
+/// under that comparison. `Fingerprint` carries full mtime precision plus,
+/// on Unix, inode identity, so it can't.
+#[tauri::command]
+pub fn document_fingerprint(path: String) -> Result<Fingerprint, String> {
+    Fingerprint::from_path(std::path::Path::new(&path))
+        .map_err(|e| format!("Failed to read {path}: {e}"))
 }
 
 #[derive(Serialize, Debug, PartialEq, Eq)]
@@ -443,6 +461,43 @@ mod tests {
     fn document_metadata_errors_on_a_missing_file() {
         let result = document_metadata("/mojidori-docinfo-does-not-exist/nope.txt".into());
         assert!(result.is_err());
+    }
+
+    // --- document_fingerprint --------------------------------------------
+
+    #[test]
+    fn document_fingerprint_errors_on_a_missing_file() {
+        let result = document_fingerprint("/mojidori-docinfo-does-not-exist/nope.txt".into());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn document_fingerprint_matches_for_an_untouched_file() {
+        let path = write_temp("fingerprint-untouched.txt", b"hello");
+        let path_str = path.to_string_lossy().into_owned();
+
+        let first = document_fingerprint(path_str.clone()).unwrap();
+        let second = document_fingerprint(path_str).unwrap();
+
+        assert_eq!(first, second);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Mirrors fsguard.rs's own `matches_path_false_after_size_change`
+    /// test — this is the command wrapper, not a re-test of `Fingerprint`
+    /// itself, but pins that the wrapper actually surfaces a real,
+    /// comparable change rather than e.g. always returning a fixed value.
+    #[test]
+    fn document_fingerprint_changes_after_a_rewrite() {
+        let path = write_temp("fingerprint-rewrite.txt", b"hello");
+        let path_str = path.to_string_lossy().into_owned();
+
+        let before = document_fingerprint(path_str.clone()).unwrap();
+        std::fs::write(&path, b"hello, world - now longer").unwrap();
+        let after = document_fingerprint(path_str).unwrap();
+
+        assert_ne!(before, after);
+        std::fs::remove_file(&path).ok();
     }
 
     // --- line_ending_distribution ---------------------------------------
