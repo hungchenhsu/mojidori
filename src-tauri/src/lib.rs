@@ -672,18 +672,70 @@ fn resolve_symlink_target(path: &std::path::Path) -> std::io::Result<std::path::
 /// either the old file or the new one — never a half-written file.
 /// Existing file permissions are carried over to the replacement.
 ///
-/// When `path` is itself a symlink (or a chain of them), the rename lands
-/// on the resolved target instead — see [`resolve_symlink_target`] — so a
-/// save through a symlink updates the file it points to and leaves the
-/// link itself in place, rather than replacing the link with a regular
-/// file (issue #301). This is layered on top of, and does not change, the
-/// issue #60 hardening above: the temp file is still created next to the
-/// resolved target with an unpredictable, exclusively-created name, so it
-/// can never be redirected through a pre-planted symlink either.
+/// This is the destination-side counterpart to issue #60's hardening: if
+/// `path` itself is a symlink, the rename replaces the *link* with a
+/// regular file, exactly like `std::fs::rename` normally would — it is
+/// never followed. That is deliberate, not an oversight: every caller of
+/// this function (`store.rs`'s preferences/session/recent-files JSON,
+/// `backup.rs`'s hot-exit backups, `migrate.rs`'s durable marker) writes
+/// to a path inside the app's own config/data directory that a user never
+/// chooses and never expects to be a symlink. If another process that can
+/// write there pre-plants a symlink at one of those paths, replacing the
+/// symlink (not following it) is what stops that write from being
+/// redirected to an arbitrary target the attacker chose — the same threat
+/// model issue #60 already defends the temp-file step against, just
+/// applied to the destination too.
+///
+/// A *user*-chosen document path is a different threat model: there, the
+/// symlink is the user's own, deliberately placed (dotfiles, managed
+/// configs, ...), and replacing it out from under them is the actual bug
+/// issue #301 reports. That case needs [`atomic_write_follow_symlinks`]
+/// instead — see its doc comment for which callers use which, and why
+/// getting this backwards in either direction is a correctness bug in
+/// its own right (PR #317 second-round review).
 pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    atomic_write_impl(path, bytes, false)
+}
+
+/// Same atomic write as [`atomic_write`], except when `path` is itself a
+/// symlink (or a chain of them): the rename then lands on the resolved
+/// target instead — see [`resolve_symlink_target`] — so the write updates
+/// the file the link points to and leaves the link itself in place,
+/// rather than replacing the link with a regular file (issue #301).
+///
+/// Use this only for a path the *user* chose to write to — today, that is
+/// `save_document`'s normal Save (`lib.rs`), `batch.rs`'s per-file batch
+/// encoding conversion, and `replaceinfiles.rs`'s search-and-replace
+/// commit — never for a path this program itself picked inside its own
+/// config/data directory (preferences, session, recent files, hot-exit
+/// backups, the migration marker: all still go through plain
+/// [`atomic_write`], which does *not* follow). Following a symlink is the
+/// behavior a user editing a symlinked file expects; following one at an
+/// internal, app-chosen path instead hands a symlink planted there by
+/// another process a write to whatever target it names — the exact
+/// destination-side redirection issue #60 already closed for the
+/// temp-file step (PR #317 second-round review). This split is why
+/// `resolve_symlink_target` is opt-in rather than something plain
+/// `atomic_write` always does.
+pub(crate) fn atomic_write_follow_symlinks(
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    atomic_write_impl(path, bytes, true)
+}
+
+fn atomic_write_impl(
+    path: &std::path::Path,
+    bytes: &[u8],
+    follow_symlinks: bool,
+) -> std::io::Result<()> {
     use std::io::Write;
 
-    let write_target = resolve_symlink_target(path)?;
+    let write_target = if follow_symlinks {
+        resolve_symlink_target(path)?
+    } else {
+        path.to_path_buf()
+    };
     let dir = write_target
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
@@ -701,11 +753,14 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
             let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
         }
         // std::fs::rename replaces the destination on every platform
-        // (MOVEFILE_REPLACE_EXISTING on Windows). Renaming onto
-        // `write_target` rather than `path` is what keeps a symlink at
-        // `path` intact: the rename only ever touches the directory entry
-        // of the file the link (transitively) points to, never the
-        // link's own directory entry.
+        // (MOVEFILE_REPLACE_EXISTING on Windows). When `follow_symlinks`
+        // resolved `write_target` past a symlink at `path`, renaming onto
+        // `write_target` rather than `path` is what keeps that symlink
+        // intact: the rename only ever touches the directory entry of the
+        // file the link (transitively) points to, never the link's own
+        // directory entry. When `follow_symlinks` is false, `write_target`
+        // is just `path` itself, so this is the plain "replace whatever
+        // is at `path`" rename every caller relied on before issue #301.
         std::fs::rename(&tmp_path, &write_target)
     })();
 
@@ -801,7 +856,13 @@ fn save_document(
             }
         }
     }
-    atomic_write(target, &bytes).map_err(|e| format!("Failed to write {path}: {e}"))?;
+    // Follows a destination symlink (issue #301): `path` here is always
+    // the user's own document path, never an internal app-state path, so
+    // this is the correct call — see `atomic_write_follow_symlinks`'s doc
+    // comment for the full follow/no-follow split (PR #317 second-round
+    // review).
+    atomic_write_follow_symlinks(target, &bytes)
+        .map_err(|e| format!("Failed to write {path}: {e}"))?;
     Ok(SaveResult {
         unmappable,
         written: true,
@@ -1038,6 +1099,8 @@ mod tests {
     // Only the unix-gated symlink tests use these; an unconditional import
     // is an unused-import error under -D warnings on Windows.
     #[cfg(unix)]
+    use super::atomic_write_follow_symlinks;
+    #[cfg(unix)]
     use super::open_exclusive;
     #[cfg(unix)]
     use super::resolve_symlink_target;
@@ -1087,7 +1150,7 @@ mod tests {
         let link = dir.join("link.txt");
         symlink(&target, &link).unwrap();
 
-        atomic_write(&link, b"saved through the link").unwrap();
+        atomic_write_follow_symlinks(&link, b"saved through the link").unwrap();
 
         let link_meta = std::fs::symlink_metadata(&link).unwrap();
         assert!(
@@ -1131,7 +1194,7 @@ mod tests {
             "sanity check: the link must actually be dangling before the save"
         );
 
-        atomic_write(&link, b"resurrected content").unwrap();
+        atomic_write_follow_symlinks(&link, b"resurrected content").unwrap();
 
         assert!(
             std::fs::symlink_metadata(&link)
@@ -1170,7 +1233,7 @@ mod tests {
         let link = dir.join("link.txt");
         symlink(&mid, &link).unwrap();
 
-        atomic_write(&link, b"multi-hop save").unwrap();
+        atomic_write_follow_symlinks(&link, b"multi-hop save").unwrap();
 
         assert!(std::fs::symlink_metadata(&link)
             .unwrap()
@@ -1203,7 +1266,7 @@ mod tests {
         symlink(&b, &a).unwrap();
         symlink(&a, &b).unwrap();
 
-        let result = atomic_write(&a, b"never written");
+        let result = atomic_write_follow_symlinks(&a, b"never written");
         assert!(result.is_err(), "a cyclic symlink chain must be rejected");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -1247,7 +1310,8 @@ mod tests {
             symlink(dest, &links[i]).unwrap();
         }
 
-        let result = atomic_write(&links[0], b"resolved through the max-length chain");
+        let result =
+            atomic_write_follow_symlinks(&links[0], b"resolved through the max-length chain");
         assert!(
             result.is_ok(),
             "a chain of exactly MAX_SYMLINK_HOPS symlinks must still resolve, \
@@ -1334,6 +1398,60 @@ mod tests {
         assert_eq!(
             result.unwrap_err().kind(),
             std::io::ErrorKind::PermissionDenied
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// PR #317 second-round review — plain `atomic_write` (as used by
+    /// `store.rs`, `backup.rs`, and `migrate.rs` for internal, app-chosen
+    /// paths) must keep the pre-#301 behavior: a pre-planted symlink at
+    /// `path` gets replaced by a regular file, and the file it pointed to
+    /// is never written through. If plain `atomic_write` followed a
+    /// destination symlink the way `atomic_write_follow_symlinks` does,
+    /// another process able to write inside the app's config/data
+    /// directory could pre-plant a symlink at, say, the preferences or
+    /// session JSON path and redirect this program's own internal writes
+    /// to an arbitrary target it chose -- the same destination-side
+    /// redirection issue #60 already closed for the temp-file step, just
+    /// reopened at the final rename if `atomic_write` followed
+    /// unconditionally.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_replaces_preplanted_symlink_destination_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join("mojidori-atomic-no-follow-internal-path");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Stands in for a file this program would never expect to be a
+        // symlink -- e.g. `store.rs`'s `preferences.json` inside the app
+        // config directory.
+        let internal_path = dir.join("preferences.json");
+        let attacker_target = dir.join("attacker-controlled-elsewhere.txt");
+        std::fs::write(&attacker_target, b"must never be written to").unwrap();
+        symlink(&attacker_target, &internal_path).unwrap();
+
+        atomic_write(&internal_path, b"internal state, newly written").unwrap();
+
+        assert!(
+            !std::fs::symlink_metadata(&internal_path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "plain atomic_write must replace a pre-planted symlink at its \
+             destination with a regular file, not follow it"
+        );
+        assert_eq!(
+            std::fs::read(&internal_path).unwrap(),
+            b"internal state, newly written"
+        );
+        assert_eq!(
+            std::fs::read(&attacker_target).unwrap(),
+            b"must never be written to",
+            "the symlink's original target must never be written through by \
+             an internal, app-chosen write path"
         );
 
         std::fs::remove_dir_all(&dir).ok();

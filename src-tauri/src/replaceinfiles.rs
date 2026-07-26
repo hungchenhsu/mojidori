@@ -121,8 +121,11 @@
 //!   scan-to-execute check above. One file failing either check never
 //!   blocks the rest of the batch; each gets its own
 //!   [`ReplaceExecuteEntry`].
-//! - **Atomic commit**: `crate::atomic_write` (temp file + rename), shared
-//!   with every other write path in this app.
+//! - **Atomic commit**: `crate::atomic_write_follow_symlinks` (temp file +
+//!   rename, following a destination symlink since `path` here is always
+//!   a user-selected file, never internal app state — see its doc comment
+//!   in `lib.rs`), the same atomic-commit machinery every other write path
+//!   in this app shares.
 //! - **Lossy two-phase gate**: since only `replacement`'s own characters
 //!   can newly become unmappable (everything else in a line already
 //!   round-tripped through this file's own encoding once via decode), scan
@@ -848,7 +851,12 @@ fn execute_one(
         );
     }
 
-    match crate::atomic_write(path, &out_bytes) {
+    // Follows a destination symlink (issue #301): `path` is always a
+    // file the user selected for search-and-replace, never an internal
+    // app-state path, so this is the correct call -- see
+    // `atomic_write_follow_symlinks`'s doc comment in `lib.rs` for the
+    // full follow/no-follow split (PR #317 second-round review).
+    match crate::atomic_write_follow_symlinks(path, &out_bytes) {
         Ok(()) => ReplaceExecuteEntry {
             path: path_str,
             replaced_count,

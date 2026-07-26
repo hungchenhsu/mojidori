@@ -899,7 +899,12 @@ fn commit_conversion(
         };
     }
 
-    match crate::atomic_write(Path::new(path), &out_bytes) {
+    // Follows a destination symlink (issue #301): `path` is always a
+    // file the user selected for batch conversion, never an internal
+    // app-state path, so this is the correct call -- see
+    // `atomic_write_follow_symlinks`'s doc comment in `lib.rs` for the
+    // full follow/no-follow split (PR #317 second-round review).
+    match crate::atomic_write_follow_symlinks(Path::new(path), &out_bytes) {
         Ok(()) => BatchConvertResult {
             path: path.to_string(),
             ok: true,
