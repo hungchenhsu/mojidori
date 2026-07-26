@@ -204,6 +204,35 @@ function codePointAt(text: string, pos: number): string {
   return text.slice(pos, pos + 1);
 }
 
+/**
+ * `pos`, nudged forward if it sits on the low surrogate of an astral
+ * character's surrogate pair — mirrors @codemirror/search's own
+ * `toCharEnd` (node_modules/@codemirror/search) exactly, minus its
+ * per-line chunking (irrelevant here: this module always scans the full
+ * `docText` string directly, and a surrogate pair never spans a line
+ * break). This is not optional cosmetic surrogate-awareness: it is the fix
+ * for issue #320, a P1 infinite loop. `new RegExp(pattern, "...u...")`
+ * (this module always sets the `u` flag — see `buildRegExp`) refuses to
+ * begin a match strictly inside a surrogate pair; V8 silently corrects
+ * `lastIndex` back to that code point's own start before matching, so
+ * setting `lastIndex` to a mid-surrogate position and expecting the scan
+ * to have advanced is simply wrong — the *next* `exec` call returns the
+ * *same* match again at the same `index`, and a caller that only ever
+ * advances `lastIndex` by one more UTF-16 code unit each time (as
+ * `regexMatchesInRange`'s zero-length case used to, before this fix) can
+ * never get past it: `lastIndex` keeps landing back on the same
+ * mid-surrogate position it was already corrected away from, forever.
+ * Used everywhere this module sets `re.lastIndex` to a position that
+ * isn't already guaranteed code-point-aligned (a raw regex match's own
+ * `index`/end always is, straight from the engine — only a position *this
+ * module itself computes*, like a zero-length match's "one past here", is
+ * ever at risk).
+ */
+function toCharEnd(text: string, pos: number): number {
+  while (pos < text.length && isLowSurrogate(text.charCodeAt(pos))) pos++;
+  return pos;
+}
+
 type CharCategory = "word" | "space" | "other";
 
 /** Mirrors @codemirror/state's default `charCategorizer` (no custom
@@ -382,7 +411,7 @@ function regexMatchesInRange(
   wholeWordTest?: (from: number, to: number) => boolean,
 ): FoundMatch[] {
   const matches: FoundMatch[] = [];
-  re.lastIndex = range.from;
+  re.lastIndex = toCharEnd(docText, range.from);
   let lastAcceptedTo = seedLastAcceptedTo;
   for (;;) {
     const m = re.exec(docText);
@@ -396,7 +425,12 @@ function regexMatchesInRange(
       matches.push({ from, to, matched: m[0], groups: Array.from(m) });
       lastAcceptedTo = to;
     }
-    re.lastIndex = to > from ? to : from + 1; // always advance, accepted or not
+    // always advance, accepted or not — toCharEnd (issue #320) is what
+    // makes this actually move forward when `from` sits right before an
+    // astral character: `from + 1` alone can land mid-surrogate, which the
+    // `u`-flag RegExp below silently corrects back to `from`, an infinite
+    // loop with no toCharEnd call to push it past the low surrogate.
+    re.lastIndex = to > from ? to : toCharEnd(docText, from + 1);
   }
   return matches;
 }

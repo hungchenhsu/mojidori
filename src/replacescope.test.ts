@@ -725,7 +725,24 @@ describe("PR #318 property sweep: zero-length-boundary family locked down exhaus
   // patterns chosen to produce zero-length matches under different
   // conditions, and checks the invariants the whole ownership contract
   // exists to guarantee.
-  const docTexts = ["a", "ab", "aab", "aba", "abab", "baa"];
+  // Includes astral (surrogate-pair) documents (issue #320): "😀" alone,
+  // one buried in ASCII on each side, and two adjacent astral characters
+  // back to back — so a code-point boundary can fall immediately before,
+  // immediately after, or between two astral characters, exercising every
+  // place `regexMatchesInRange`'s `toCharEnd`-based advance (see its doc
+  // comment) has to get right, not just the single-character minimal repro.
+  const docTexts = [
+    "a",
+    "ab",
+    "aab",
+    "aba",
+    "abab",
+    "baa",
+    "\u{1F600}",
+    "a\u{1F600}b",
+    "\u{1F600}\u{1F600}",
+    "\u{1F600}a",
+  ];
 
   // Patterns that can *only* ever produce a zero-length match, for every
   // document here (no "x" in any doc's alphabet; "(?=a)" is a pure
@@ -748,15 +765,27 @@ describe("PR #318 property sweep: zero-length-boundary family locked down exhaus
   // regardless of how a document is cut.
   const mixedLengthPatterns = ["a*", "ab|(?=b)", "a*|(?=b)"];
 
-  /** Every way to cut `[0, length]` (`length >= 1`) into one or more
-   *  contiguous, touching sub-ranges: every subset of the `length - 1`
-   *  interior integer points is a valid set of cut points (the empty
-   *  subset is "the whole range as one piece") — `2 ** (length - 1)`
-   *  partitions total. All resulting ranges are non-empty since `length >=
-   *  1` and cut points are distinct integers, so this never needs to touch
-   *  the (already covered elsewhere) empty-range no-op rule. */
-  function allContiguousPartitions(length: number): ReplaceRange[][] {
-    const interior = Array.from({ length: length - 1 }, (_, i) => i + 1);
+  /** Every way to cut `text` into one or more contiguous, touching
+   *  sub-ranges, restricted to *code-point-aligned* cut points (issue
+   *  #320): a cut at a position whose own char code is a low surrogate
+   *  would split an astral character's surrogate pair in half, which a
+   *  real CM6 selection can never do either (CodeMirror positions are
+   *  always at least UTF-16-code-point boundaries) — so, same as
+   *  `allContiguousPartitions`'s previous ASCII-only version, every
+   *  subset of the valid interior cut points is one partition (the empty
+   *  subset is "the whole range as one piece"). For a document with no
+   *  astral characters this is identical to treating every interior
+   *  integer position as a valid cut (nothing to skip), so this is a pure
+   *  generalization, not a behavior change for the pre-existing ASCII
+   *  cases. */
+  function allContiguousPartitions(text: string): ReplaceRange[][] {
+    const length = text.length;
+    const interior: number[] = [];
+    for (let i = 1; i < length; i++) {
+      const code = text.charCodeAt(i);
+      if (code >= 0xdc00 && code <= 0xdfff) continue; // low surrogate: mid-astral-character, never a valid cut
+      interior.push(i);
+    }
     const partitions: ReplaceRange[][] = [];
     for (let mask = 0; mask < 2 ** interior.length; mask++) {
       const cuts = interior.filter((_, i) => (mask & (1 << i)) !== 0);
@@ -804,7 +833,7 @@ describe("PR #318 property sweep: zero-length-boundary family locked down exhaus
         for (const wholeWord of wholeWordOptions) {
           const query: ReplaceScopeQuery = { search, replace: "Y", regexp: true, caseSensitive: true, wholeWord };
           const expectedWholeDocText = cm6ReplaceAllWholeDoc(docText, query);
-          for (const ranges of allContiguousPartitions(docText.length)) {
+          for (const ranges of allContiguousPartitions(docText)) {
             casesChecked++;
             const result = replaceAllInSelection(docText, ranges, query);
             expectNoDuplicateEditsAndNonOverlappingRanges(result);
@@ -829,7 +858,7 @@ describe("PR #318 property sweep: zero-length-boundary family locked down exhaus
       for (const search of mixedLengthPatterns) {
         for (const wholeWord of wholeWordOptions) {
           const query: ReplaceScopeQuery = { search, replace: "Y", regexp: true, caseSensitive: true, wholeWord };
-          for (const ranges of allContiguousPartitions(docText.length)) {
+          for (const ranges of allContiguousPartitions(docText)) {
             casesChecked++;
             expectNoDuplicateEditsAndNonOverlappingRanges(replaceAllInSelection(docText, ranges, query));
           }
@@ -893,6 +922,54 @@ describe("PR #318 round 3: wholeWord must not poison the zero-length-repeat guar
     expect(result.edits).toEqual([{ from: 1, to: 1, insert: "Y" }]);
     expect(applyEditsViaCodeMirrorState(docText, result.edits)).toBe(expected);
   });
+});
+
+describe("issue #320: zero-length regexp match must not infinite-loop on an astral character", () => {
+  // Exact minimal repro from the issue: `regexMatchesInRange`'s zero-length
+  // advance was `re.lastIndex = from + 1` — a fixed one-UTF-16-code-unit
+  // step. For an astral character (surrogate pair, two UTF-16 units per
+  // Unicode code point), `from + 1` can land exactly between the high and
+  // low surrogate. V8's Unicode (`u` flag) RegExp — which this module
+  // always uses (see `buildRegExp`) — refuses to start a match there and
+  // silently corrects `lastIndex` back to the code point's own start
+  // (verified against a real `RegExp.prototype.exec` call below), so
+  // `re.exec` returns the *same* zero-length match again, forever: this
+  // loop's `re.lastIndex = from + 1` line and V8's own correction fight
+  // each other, and the position never moves. A bounded per-test timeout
+  // (short — this must return well within it) is the regression guard: if
+  // this class of bug ever comes back, the test fails on a timeout instead
+  // of hanging the whole suite (or, in production, the UI thread — see the
+  // issue's severity note).
+  it(
+    "V8 corrects a mid-surrogate lastIndex back to the code point start (sanity-checks the bug's premise directly against RegExp, no module code involved)",
+    () => {
+      const re = /x*/gmu;
+      re.lastIndex = 1; // between 😀's high and low surrogate (a 2-code-unit pair at [0, 2))
+      const m = re.exec("\u{1F600}");
+      expect(m).not.toBeNull();
+      // V8 refuses to match starting mid-surrogate and silently corrects
+      // back to 0 — the exact mechanism the issue describes, independent of
+      // anything this module does.
+      expect(m?.index).toBe(0);
+    },
+    2000,
+  );
+
+  it(
+    "replaceAllInSelection terminates (and matches CM6) for the issue's exact minimal repro: zero-length pattern over a single astral character",
+    () => {
+      const docText = "\u{1F600}"; // "😀", one code point, two UTF-16 units
+      const query: ReplaceScopeQuery = { search: "x*", replace: "Y", regexp: true, caseSensitive: true };
+      const expected = cm6ReplaceAllWholeDoc(docText, query);
+      const result = replaceAllInSelection(docText, [{ from: 0, to: 2 }], query);
+      expect(result.edits).toEqual([
+        { from: 0, to: 0, insert: "Y" },
+        { from: 2, to: 2, insert: "Y" },
+      ]);
+      expect(applyEditsViaCodeMirrorState(docText, result.edits)).toBe(expected);
+    },
+    2000,
+  );
 });
 
 describe("consistency with @codemirror/search's own whole-document replace", () => {
