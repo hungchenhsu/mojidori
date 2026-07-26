@@ -570,6 +570,77 @@ fn create_tmp_exclusive(
     Err(last_err)
 }
 
+/// Maximum symlink hops [`resolve_symlink_target`] follows before
+/// concluding a chain is cyclic (or simply absurd). Matches the
+/// traditional Unix `MAXSYMLINKS` (Linux, *BSD) so a self-referential
+/// chain fails with a clear error instead of looping forever.
+const MAX_SYMLINK_HOPS: u32 = 40;
+
+/// Resolve `path` to the file an atomic write should actually replace:
+/// `path` itself, unchanged, when it is not a symlink (including when it
+/// does not exist at all — the ordinary new-file save path); otherwise the
+/// final, non-symlink component that the chain of symlinks rooted at
+/// `path` ultimately names, so that writing there and leaving `path` (and
+/// every intermediate link) untouched preserves the whole link topology
+/// (issue #301).
+///
+/// Deliberately not `std::fs::canonicalize`: canonicalize requires every
+/// path component, including the final target, to already exist. That
+/// would turn saving through a *dangling* symlink into a hard error, when
+/// creating a fresh file at the link's target — leaving the dangling link
+/// now pointing at something real — is exactly the well-defined behavior
+/// this function enables (see
+/// `atomic_write_through_dangling_symlink_heals_target`). Instead this
+/// walks the chain one hop at a time with `symlink_metadata`, which
+/// (unlike `metadata`) reports the final path component itself rather
+/// than following it, and stops as soon as a hop is not a symlink —
+/// whether or not that final path exists yet. A `symlink_metadata` error
+/// at any hop (dangling target, permission denied, ...) is treated the
+/// same way: nothing more to resolve, so the current candidate is the
+/// answer. A genuine permission problem still surfaces, just later — at
+/// the real write attempt against that candidate — with an I/O error tied
+/// to the actual destination instead of a synthetic one from here.
+///
+/// Each relative link target is resolved against the directory of the
+/// symlink that named it (`read_link`'s own contract), not against
+/// `path`'s directory or the process's current directory, so a multi-hop
+/// chain of relative links spread across different directories resolves
+/// exactly the way the OS would resolve it.
+///
+/// TOCTOU note: like every other fail-closed check in this file (see
+/// `save_document`'s fingerprint doc comment), this resolves the chain
+/// once and hands the result to the caller, which then creates a temp
+/// file and renames it into place; a link in the chain can still be
+/// repointed, or an intermediate directory swapped, between this
+/// resolution and that rename. No portable API closes that window —
+/// this only narrows it from the whole open-to-save span down to the
+/// resolve-to-rename gap, the same trade-off every other check here
+/// already makes.
+fn resolve_symlink_target(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_SYMLINK_HOPS {
+        let is_symlink = std::fs::symlink_metadata(&current)
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false);
+        if !is_symlink {
+            return Ok(current);
+        }
+        let link_target = std::fs::read_link(&current)?;
+        current = if link_target.is_absolute() {
+            link_target
+        } else {
+            current
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(link_target)
+        };
+    }
+    Err(std::io::Error::other(format!(
+        "too many levels of symbolic links resolving {}",
+        path.display()
+    )))
+}
+
 /// Write bytes atomically: create a temporary file in the same directory
 /// (same filesystem) — with an unpredictable name and exclusive create, so
 /// the temp-file step can never be redirected through a pre-planted
@@ -577,11 +648,23 @@ fn create_tmp_exclusive(
 /// write it, fsync, then rename over the target. A crash mid-save leaves
 /// either the old file or the new one — never a half-written file.
 /// Existing file permissions are carried over to the replacement.
+///
+/// When `path` is itself a symlink (or a chain of them), the rename lands
+/// on the resolved target instead — see [`resolve_symlink_target`] — so a
+/// save through a symlink updates the file it points to and leaves the
+/// link itself in place, rather than replacing the link with a regular
+/// file (issue #301). This is layered on top of, and does not change, the
+/// issue #60 hardening above: the temp file is still created next to the
+/// resolved target with an unpredictable, exclusively-created name, so it
+/// can never be redirected through a pre-planted symlink either.
 pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
-    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let file_name = path
+    let write_target = resolve_symlink_target(path)?;
+    let dir = write_target
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = write_target
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".into());
@@ -591,12 +674,16 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
         tmp.write_all(bytes)?;
         tmp.sync_all()?;
         drop(tmp);
-        if let Ok(meta) = std::fs::metadata(path) {
+        if let Ok(meta) = std::fs::metadata(&write_target) {
             let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
         }
         // std::fs::rename replaces the destination on every platform
-        // (MOVEFILE_REPLACE_EXISTING on Windows).
-        std::fs::rename(&tmp_path, path)
+        // (MOVEFILE_REPLACE_EXISTING on Windows). Renaming onto
+        // `write_target` rather than `path` is what keeps a symlink at
+        // `path` intact: the rename only ever touches the directory entry
+        // of the file the link (transitively) points to, never the
+        // link's own directory entry.
+        std::fs::rename(&tmp_path, &write_target)
     })();
 
     if result.is_err() {
@@ -951,6 +1038,149 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains("mojidori-tmp"))
             .collect();
         assert!(leftovers.is_empty(), "no temp files may remain");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #301 — the core regression: saving through a symlink must
+    /// update the file the link points to and leave the link itself
+    /// exactly as it was, never replace the link with a regular file.
+    /// Windows symlink creation needs an elevated privilege or developer
+    /// mode that CI does not reliably have, so this whole family is
+    /// `#[cfg(unix)]`; the non-symlink path this same function handles is
+    /// still exercised on every platform by the tests around it.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_symlink_updates_target_and_preserves_link() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-basic");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let target = dir.join("target.txt");
+        std::fs::write(&target, b"original target content").unwrap();
+        let link = dir.join("link.txt");
+        symlink(&target, &link).unwrap();
+
+        atomic_write(&link, b"saved through the link").unwrap();
+
+        let link_meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(
+            link_meta.file_type().is_symlink(),
+            "the link path must still be a symlink after save, not a regular file"
+        );
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            target,
+            "the link must still point at the same target"
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"saved through the link",
+            "the target's content must be the newly saved bytes"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #301 — a dangling symlink (target does not exist yet) must
+    /// not be an error: the write lands at the link's target path,
+    /// creating it, and the link ends up pointing at something real
+    /// instead of dangling. `resolve_symlink_target`'s doc comment is the
+    /// reasoning for why this is preferred over `canonicalize`, which
+    /// would simply fail here.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_dangling_symlink_heals_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-dangling");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let target = dir.join("not-yet-created.txt");
+        let link = dir.join("link.txt");
+        symlink(&target, &link).unwrap();
+        assert!(
+            std::fs::metadata(&link).is_err(),
+            "sanity check: the link must actually be dangling before the save"
+        );
+
+        atomic_write(&link, b"resurrected content").unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link must still be a symlink, not a regular file"
+        );
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"resurrected content",
+            "the target must now exist with the saved content"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #301 — a multi-hop chain (`link -> mid -> target`) must
+    /// resolve all the way to the real file: only `target` receives the
+    /// new content, and every link in the chain — including the
+    /// intermediate one — stays a symlink, untouched.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_multi_hop_symlink_chain_resolves_to_final_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-chain");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let target = dir.join("target.txt");
+        std::fs::write(&target, b"original").unwrap();
+        let mid = dir.join("mid.txt");
+        symlink(&target, &mid).unwrap();
+        let link = dir.join("link.txt");
+        symlink(&mid, &link).unwrap();
+
+        atomic_write(&link, b"multi-hop save").unwrap();
+
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(std::fs::symlink_metadata(&mid)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_link(&link).unwrap(), mid);
+        assert_eq!(std::fs::read_link(&mid).unwrap(), target);
+        assert_eq!(std::fs::read(&target).unwrap(), b"multi-hop save");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #301 — a self-referential symlink chain must fail closed with
+    /// a clear error instead of looping forever or overflowing the stack.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_symlink_cycle_fails_cleanly() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-cycle");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        symlink(&b, &a).unwrap();
+        symlink(&a, &b).unwrap();
+
+        let result = atomic_write(&a, b"never written");
+        assert!(result.is_err(), "a cyclic symlink chain must be rejected");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1826,6 +2056,96 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&target).unwrap(),
             "freshly edited content"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #301, full-stack regression: `open_document` and
+    /// `save_document` both operate on the *symlink* path a user actually
+    /// has open (never the resolved target), so this exercises exactly
+    /// the reported bug end to end. `open_document`'s `metadata`/`read`
+    /// and `Fingerprint::from_path`'s `metadata` both already follow the
+    /// link (unchanged by this fix), and `atomic_write` now writes through
+    /// it too — so the fingerprint baseline `open_document` hands back
+    /// stays valid for a second save via the same link path, proving the
+    /// fingerprint/link interaction stays consistent across a save, not
+    /// just that the first save doesn't corrupt the link.
+    #[cfg(unix)]
+    #[test]
+    fn save_document_through_symlink_preserves_link_and_keeps_fingerprint_valid() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join("mojidori-save-through-symlink");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let target = dir.join("target.txt");
+        std::fs::write(&target, b"original target content").unwrap();
+        let link = dir.join("link.txt");
+        symlink(&target, &link).unwrap();
+        let link_path = link.to_string_lossy().into_owned();
+
+        let opened = open_document(link_path.clone(), None, None).unwrap();
+        assert_eq!(
+            opened.content, "original target content",
+            "opening the link must read the target's bytes"
+        );
+
+        let result = save_document(
+            link_path.clone(),
+            "edited through the link".to_string(),
+            "UTF-8".to_string(),
+            false,
+            "LF".to_string(),
+            false,
+            opened.fingerprint,
+            false,
+        )
+        .unwrap();
+
+        assert!(
+            !result.stale,
+            "the link's own fingerprint must not misreport staleness"
+        );
+        assert!(result.written);
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link must survive the save as a symlink"
+        );
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "edited through the link",
+            "the target file must hold the newly saved content"
+        );
+
+        // The fingerprint this save returned must still be a valid
+        // baseline for a second save through the same link path — proof
+        // that the fingerprint/link interaction is consistent across
+        // saves, not just that a single save avoided corruption.
+        let second = save_document(
+            link_path,
+            "edited a second time".to_string(),
+            "UTF-8".to_string(),
+            false,
+            "LF".to_string(),
+            false,
+            result.fingerprint,
+            false,
+        )
+        .unwrap();
+        assert!(
+            !second.stale,
+            "the fresh fingerprint must match on the next save"
+        );
+        assert!(second.written);
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "edited a second time"
         );
 
         std::fs::remove_dir_all(&dir).ok();
