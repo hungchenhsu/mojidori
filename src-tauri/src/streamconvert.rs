@@ -120,6 +120,14 @@ pub struct StreamConvertReport {
     /// can drive the identical confirm dialog (`showLossySaveConfirm`).
     /// `None` on every other result.
     pub lossy_report: Option<normalize::LossySaveReport>,
+    /// Mirrors `lib.rs::SaveResult::durability_warning` exactly: the raw
+    /// I/O error string from a failed parent-directory `fsync`, populated
+    /// only when `written` is true and that follow-up durability
+    /// confirmation failed (PR #328's third review round). `None` on every
+    /// other result, including every ordinary successful conversion. Never
+    /// a failure in its own right -- see `streamconvert.ts`'s result
+    /// message note.
+    pub durability_warning: Option<String>,
 }
 
 /// Fail closed if the file at `path` is no longer the file described by
@@ -296,15 +304,24 @@ fn run_convert_loop(
 ///    independent resolve at write time unnecessary here.
 /// 7. On success: `lib.rs::finish_atomic_commit` -- the exact same commit
 ///    tail `atomic_write` itself uses -- restores the resolved target's
-///    exact permissions (fail-closed on any failure; issue #323),
-///    `sync_all`s, captures a provenance-bound `Fingerprint` from the
-///    still-open temp handle (issue #324, though this command has no
-///    per-file staleness baseline to hand it to), `rename`s over the
-///    *same* resolved target step 4 produced -- never over `path` itself
-///    when it names a symlink, so the link survives, and never a fresh
-///    re-resolve -- then `fsync`s the parent directory so the rename
-///    itself is crash-durable (issue #322). Just fed by a temp file
-///    filled incrementally instead of from one in-memory buffer.
+///    exact, *freshly re-read* permissions (fail-closed on any failure;
+///    issue #323, hardened in PR #328's second review round so a
+///    legitimate external `chmod` landing during this potentially
+///    long-running stream is never silently rolled back to whatever
+///    `create_tmp_for_target` saw when the temp file was created),
+///    `sync_all`s, closes the handle and captures a provenance-bound
+///    `Fingerprint` from a fresh, *post-close* stat of the temp file
+///    (issue #324, hardened in PR #328's third round for Windows'
+///    provisional-until-close last-write-time -- though this command has
+///    no per-file staleness baseline to hand the result to), `rename`s
+///    over the *same* resolved target step 4 produced -- never over
+///    `path` itself when it names a symlink, so the link survives, and
+///    never a fresh re-resolve -- then `fsync`s the parent directory so
+///    the rename itself is crash-durable (issue #322); a failure at just
+///    that last step becomes `StreamConvertReport::durability_warning`
+///    rather than an error (PR #328's third round), since the conversion
+///    itself already landed. Just fed by a temp file filled incrementally
+///    instead of from one in-memory buffer.
 #[tauri::command]
 pub fn stream_convert_file(
     path: String,
@@ -350,9 +367,8 @@ pub fn stream_convert_file(
     // `create_tmp_for_target`'s doc comment -- rather than the previous
     // default-create-mode-then-chmod-after window a private target's
     // content could sit in a wider-than-intended mode during.
-    let (mut tmp_file, tmp_path, existing_permissions) =
-        crate::create_tmp_for_target(&dir, &file_name, &write_target)
-            .map_err(|e| format!("Failed to create temp file: {e}"))?;
+    let (mut tmp_file, tmp_path) = crate::create_tmp_for_target(&dir, &file_name, &write_target)
+        .map_err(|e| format!("Failed to create temp file: {e}"))?;
 
     // Target BOM: a fresh decision independent of whatever the source had
     // (see module doc comment) -- only a UTF-8 target with target_with_bom
@@ -393,6 +409,7 @@ pub fn stream_convert_file(
                     samples,
                     samples_truncated: outcome.samples_truncated,
                 }),
+                durability_warning: None,
             })
         }
         Ok(outcome) => {
@@ -406,29 +423,32 @@ pub fn stream_convert_file(
                 return Err(e);
             }
             // Issues #322/#323/#324: the same commit tail `atomic_write`
-            // uses -- restore `write_target`'s exact permissions
+            // uses -- restore `write_target`'s fresh permissions
             // (fail-closed on any failure), `fsync`, capture a
-            // provenance-bound `Fingerprint` from this still-open handle,
-            // rename onto `write_target` (never `path_ref` itself, so a
-            // symlink at `path` survives -- see
-            // `resolve_write_destination`'s doc comment), then `fsync`
-            // the parent directory so the rename itself is durable. The
-            // resulting fingerprint isn't surfaced in `StreamConvertReport`
-            // (this command has no per-file staleness baseline to update),
-            // so it's discarded.
-            if let Err(e) = crate::finish_atomic_commit(
+            // provenance-bound `Fingerprint` via a post-close stat, rename
+            // onto `write_target` (never `path_ref` itself, so a symlink
+            // at `path` survives -- see `resolve_write_destination`'s doc
+            // comment), then `fsync` the parent directory so the rename
+            // itself is durable -- a failure there becomes
+            // `durability_warning`, not an error (PR #328's third review
+            // round). The fingerprint isn't surfaced in
+            // `StreamConvertReport` (this command has no per-file
+            // staleness baseline to update), so only that part is
+            // discarded.
+            let commit = match crate::finish_atomic_commit(
                 tmp_file,
                 tmp_path,
                 &write_target,
-                existing_permissions,
                 crate::migrate::fsync_dir,
             ) {
-                return Err(format!("Failed to write {path}: {e}"));
-            }
+                Ok(commit) => commit,
+                Err(e) => return Err(format!("Failed to write {path}: {e}")),
+            };
             Ok(StreamConvertReport {
                 written: true,
                 bytes_written: bom_prefix_len + outcome.bytes_written,
                 lossy_report: None,
+                durability_warning: commit.durability_warning,
             })
         }
         Err(e) => {

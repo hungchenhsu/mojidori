@@ -45,6 +45,20 @@ export interface Messages {
    *  Purely informational: the buffer is untouched and dirty-state is
    *  unaffected, see tabs.ts's Doc.missingOnDisk doc comment. */
   "statusbar.missingOnDisk": string;
+  /** Shown when the *last* save/streaming-write for this doc succeeded —
+   *  the bytes really are on disk — but the parent-directory `fsync` that
+   *  would confirm that rename survives an immediate crash could not be
+   *  completed (issue #328's third review round; see
+   *  `lib.rs::finish_atomic_commit`'s doc comment). Purely informational,
+   *  same as `missingOnDisk` above: never blocks anything, never reopens
+   *  the stale-file dialog, just a non-blocking heads-up in case the
+   *  underlying filesystem (network share, FUSE mount, ...) is degraded.
+   *  Cleared the instant a later save/write succeeds without the same
+   *  warning. `detail` is the raw I/O error string from the failed
+   *  `fsync` attempt, shown as-is (not translated) as diagnostic context —
+   *  same treatment `dialog.saveFailedTitle`'s paired error message
+   *  already gives a raw backend error. */
+  "statusbar.durabilityWarning": (detail: string) => string;
   "statusbar.decodeWarning": string;
   "statusbar.buildingIndex": string;
   "statusbar.preparingUpdate": string;
@@ -546,6 +560,8 @@ const en: Messages = {
   "statusbar.readonlyPreview": (size) => `Read-only preview of ${size} file`,
   "statusbar.userReadOnly": "🔒 Read-only",
   "statusbar.missingOnDisk": "⚠ File deleted from disk",
+  "statusbar.durabilityWarning": (detail) =>
+    `⚠ Save landed but durability could not be confirmed (${detail})`,
   "statusbar.decodeWarning": "⚠ decoded with errors",
   "statusbar.buildingIndex": "Building line index…",
   "statusbar.preparingUpdate": "Preparing update…",
@@ -980,6 +996,7 @@ const zhTW: Messages = {
   "statusbar.readonlyPreview": (size) => `唯讀預覽（檔案大小 ${size}）`,
   "statusbar.userReadOnly": "🔒 唯讀",
   "statusbar.missingOnDisk": "⚠ 檔案已從磁碟移除",
+  "statusbar.durabilityWarning": (detail) => `⚠ 已儲存，但無法確認持久性（${detail}）`,
   "statusbar.decodeWarning": "⚠ 解碼時發生錯誤",
   "statusbar.buildingIndex": "正在建立行號索引…",
   "statusbar.preparingUpdate": "正在準備更新…",
@@ -1371,6 +1388,7 @@ const ja: Messages = {
   "statusbar.readonlyPreview": (size) => `読み取り専用プレビュー（ファイルサイズ ${size}）`,
   "statusbar.userReadOnly": "🔒 読み取り専用",
   "statusbar.missingOnDisk": "⚠ ディスクから削除されました",
+  "statusbar.durabilityWarning": (detail) => `⚠ 保存されましたが永続性を確認できません（${detail}）`,
   "statusbar.decodeWarning": "⚠ デコードエラーが発生しました",
   "statusbar.buildingIndex": "行番号インデックスを構築中…",
   "statusbar.preparingUpdate": "アップデートを準備中…",
@@ -1788,6 +1806,7 @@ const zhCN: Messages = {
   "statusbar.readonlyPreview": (size) => `只读预览（文件大小 ${size}）`,
   "statusbar.userReadOnly": "🔒 只读",
   "statusbar.missingOnDisk": "⚠ 文件已从磁盘删除",
+  "statusbar.durabilityWarning": (detail) => `⚠ 已保存，但无法确认持久性（${detail}）`,
   "statusbar.decodeWarning": "⚠ 解码时发生错误",
   "statusbar.buildingIndex": "正在构建行号索引…",
   "statusbar.preparingUpdate": "正在准备更新…",

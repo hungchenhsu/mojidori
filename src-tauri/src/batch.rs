@@ -930,11 +930,19 @@ fn commit_conversion(
     }
 
     match crate::atomic_write(&write_target, &out_bytes) {
-        // `atomic_write` now returns a provenance-bound `Fingerprint`
-        // (issue #324) that `BatchConvertResult` has no field for --
-        // batch conversion doesn't track a per-file staleness baseline
-        // the way `save_document` does, so it's simply discarded here.
-        Ok(_fingerprint) => BatchConvertResult {
+        // `atomic_write` now returns a `CommitOutcome` (issues #324/#328).
+        // Neither `fingerprint` nor `durability_warning` has anywhere
+        // meaningful to land in `BatchConvertResult`: batch conversion
+        // doesn't track a per-file staleness baseline the way
+        // `save_document` does, and `batchconvert.ts`'s own renderResults
+        // never displays `message` for an `ok: true` entry at all (only
+        // the failed-entries list reads it), so putting the warning there
+        // would be exactly as silent as dropping it outright while looking
+        // like it wasn't. Out of this round's explicit scope (only
+        // `save_document` and the two streaming commit paths were asked to
+        // surface this) -- discarded here for the same reason
+        // `store.rs`/`backup.rs`/`migrate.rs::write_marker` already do.
+        Ok(_outcome) => BatchConvertResult {
             path: path.to_string(),
             ok: true,
             message: String::new(),

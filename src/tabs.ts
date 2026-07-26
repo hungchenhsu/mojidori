@@ -187,6 +187,23 @@ export interface Doc {
    *  the untitled-tab factory, backup-restore reconstruction, ...) stays
    *  untouched; absent is exactly as falsy as `false` at every read site. */
   missingOnDisk?: boolean;
+  /** Set from `SaveResult.durabilityWarning` (`lib.rs`'s `save_document`)
+   *  whenever the *last* save's content-rename succeeded but its
+   *  parent-directory `fsync` could not be confirmed — a raw I/O error
+   *  string from that failed `fsync` attempt, or absent when the last save
+   *  had no such warning (issue #328's third review round; see
+   *  `lib.rs::finish_atomic_commit`'s doc comment for why this must never
+   *  be treated as if the save itself had failed). Purely informational,
+   *  surfaced via statusbar.ts's own badge, same non-blocking treatment as
+   *  `missingOnDisk` above — never gates dirty-clearing or the
+   *  stale-fingerprint baseline, both of which already update normally
+   *  because the write really did land. Cleared (set back to `undefined`)
+   *  the moment a later save succeeds without the same warning, so a
+   *  transient filesystem hiccup doesn't leave a permanent badge. Optional
+   *  for the same reason `missingOnDisk` is: every existing Doc-literal
+   *  call site stays untouched; absent is exactly as falsy as `undefined`
+   *  at every read site. */
+  durabilityWarning?: string;
   buffer: EditorBuffer;
 }
 

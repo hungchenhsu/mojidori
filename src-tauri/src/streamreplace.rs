@@ -167,6 +167,15 @@ pub struct StreamReplaceReport {
     /// Exposed for a future informed-consent UI (issue #96 parts 2/3); no
     /// frontend currently reads this field.
     pub unmatched_region_reencoded: bool,
+    /// Mirrors `lib.rs::SaveResult::durability_warning` exactly: the raw
+    /// I/O error string from a failed parent-directory `fsync`, populated
+    /// only when at least one replacement actually landed (`replacements >
+    /// 0`) and that follow-up durability confirmation failed (PR #328's
+    /// third review round). `None` whenever `replacements` is 0 (nothing
+    /// was written) or the write's own durability was confirmed normally.
+    /// Never a failure in its own right -- see `streamreplace.ts`'s result
+    /// message note.
+    pub durability_warning: Option<String>,
 }
 
 /// Result of one [`replace_pass`] over a work buffer.
@@ -652,13 +661,22 @@ fn verify_unchanged(path: &Path, original: &Fingerprint) -> Result<(), String> {
 ///    persists, no rename, `mtime` unchanged. Only a run with at least one
 ///    replacement commits, via `lib.rs::finish_atomic_commit` — the exact
 ///    same commit tail `atomic_write` itself uses: restore the resolved
-///    target's exact permissions (fail-closed on any failure; issue
-///    #323), `sync_all`, capture a provenance-bound `Fingerprint` from
-///    the still-open temp handle (issue #324, though this command has no
-///    per-file staleness baseline to hand it to), `rename` over the
-///    *same* resolved target, then `fsync` the parent directory so the
-///    rename itself is crash-durable (issue #322) — just fed by a temp
-///    file filled incrementally instead of from one in-memory buffer.
+///    target's exact, *freshly re-read* permissions (fail-closed on any
+///    failure; issue #323, hardened in PR #328's second review round so a
+///    legitimate external `chmod` landing during this potentially
+///    long-running stream is never silently rolled back to whatever
+///    `create_tmp_for_target` saw when the temp file was created),
+///    `sync_all`, close the handle and capture a provenance-bound
+///    `Fingerprint` from a fresh, *post-close* stat of the temp file
+///    (issue #324, hardened in PR #328's third round for Windows'
+///    provisional-until-close last-write-time -- though this command has
+///    no per-file staleness baseline to hand the result to), `rename`
+///    over the *same* resolved target, then `fsync` the parent directory
+///    so the rename itself is crash-durable (issue #322) — a failure at
+///    just that last step becomes `StreamReplaceReport::durability_warning`
+///    rather than an error (PR #328's third round), since the replace
+///    itself already landed — just fed by a temp file filled incrementally
+///    instead of from one in-memory buffer.
 ///    `path` is resolved past any destination symlink exactly once,
 ///    before the temp file is even created (`resolve_write_destination`,
 ///    which also canonicalizes every *ancestor* directory component, not
@@ -714,6 +732,7 @@ pub fn stream_replace_in_file(
             replacements: 0,
             bytes_written: 0,
             unmatched_region_reencoded: false,
+            durability_warning: None,
         });
     }
 
@@ -756,9 +775,8 @@ pub fn stream_replace_in_file(
     // `create_tmp_for_target`'s doc comment -- rather than the previous
     // default-create-mode-then-chmod-after window a private target's
     // content could sit in a wider-than-intended mode during.
-    let (mut tmp_file, tmp_path, existing_permissions) =
-        crate::create_tmp_for_target(&dir, &file_name, &write_target)
-            .map_err(|e| format!("Failed to create temp file: {e}"))?;
+    let (mut tmp_file, tmp_path) = crate::create_tmp_for_target(&dir, &file_name, &write_target)
+        .map_err(|e| format!("Failed to create temp file: {e}"))?;
 
     if bom_len > 0 {
         if let Err(e) = tmp_file.write_all(&peek[..bom_len]) {
@@ -794,29 +812,32 @@ pub fn stream_replace_in_file(
                 return Err(e);
             }
             // Issues #322/#323/#324: the same commit tail `atomic_write`
-            // uses -- restore `write_target`'s exact permissions
+            // uses -- restore `write_target`'s fresh permissions
             // (fail-closed on any failure), `fsync`, capture a
-            // provenance-bound `Fingerprint` from this still-open handle,
-            // rename onto `write_target` (never `path_ref` itself, so a
-            // symlink at `path` survives -- see
-            // `resolve_write_destination`'s doc comment), then `fsync`
-            // the parent directory so the rename itself is durable. The
-            // resulting fingerprint isn't surfaced in `StreamReplaceReport`
-            // (this command has no per-file staleness baseline to update),
-            // so it's discarded.
-            if let Err(e) = crate::finish_atomic_commit(
+            // provenance-bound `Fingerprint` via a post-close stat, rename
+            // onto `write_target` (never `path_ref` itself, so a symlink
+            // at `path` survives -- see `resolve_write_destination`'s doc
+            // comment), then `fsync` the parent directory so the rename
+            // itself is durable -- a failure there becomes
+            // `durability_warning`, not an error (PR #328's third review
+            // round). The fingerprint isn't surfaced in
+            // `StreamReplaceReport` (this command has no per-file
+            // staleness baseline to update), so only that part is
+            // discarded.
+            let commit = match crate::finish_atomic_commit(
                 tmp_file,
                 tmp_path,
                 &write_target,
-                existing_permissions,
                 crate::migrate::fsync_dir,
             ) {
-                return Err(format!("Failed to write {path}: {e}"));
-            }
+                Ok(commit) => commit,
+                Err(e) => return Err(format!("Failed to write {path}: {e}")),
+            };
             Ok(StreamReplaceReport {
                 replacements,
                 bytes_written: bom_len as u64 + loop_bytes,
                 unmatched_region_reencoded,
+                durability_warning: commit.durability_warning,
             })
         }
         Ok(_) => {
@@ -826,6 +847,7 @@ pub fn stream_replace_in_file(
                 replacements: 0,
                 bytes_written: 0,
                 unmatched_region_reencoded: false,
+                durability_warning: None,
             })
         }
         Err(e) => {

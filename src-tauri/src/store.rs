@@ -57,12 +57,14 @@ pub fn write_json_to_path<T: Serialize>(path: &Path, value: &T) -> Result<(), St
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    // `atomic_write` now also returns a provenance-bound `Fingerprint`
-    // (issue #324) that this JSON store has no use for -- no caller here
-    // tracks a staleness baseline for preferences/session/recent-files
-    // the way `save_document` does for documents -- so it's discarded.
+    // `atomic_write` now returns a `CommitOutcome` (issues #324/#328) that
+    // this JSON store has no use for -- no caller here tracks a staleness
+    // baseline for preferences/session/recent-files the way
+    // `save_document` does for documents, and a durability warning for
+    // these has no user-facing surface to reach either -- so both are
+    // discarded.
     crate::atomic_write(path, &json)
-        .map(|_fingerprint| ())
+        .map(|_outcome| ())
         .map_err(|e| format!("Failed to write {name}: {e}"))
 }
 
