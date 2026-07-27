@@ -44,8 +44,27 @@ faster for text files, or is it IDE creep?*
 codename used before the rename; do not use it in new outward-facing
 material.
 
-## 2. Current state (2026-07-18)
+## 2. Current state (2026-07-27)
 
+- **v0.8 cycle + issue sweep complete** (2026-07-23 cycle, PRs
+  #307–#312, tag `v0.8.0-alpha.1` — drafted but not published; then a
+  2026-07-26→27 delegated issue sweep, PRs #313–#328): D1 naming
+  resolved and applied — product renamed to **Mojidori** (bundle
+  identifier, window title, IPC namespace, crate name) with a
+  crash-safe one-time config-directory migration; D2 macOS signing +
+  notarization + auto-update pipeline shipped (`tauri-plugin-updater`,
+  update-time edit-freeze, rolling `updater` release feed) — Windows
+  signing remains undecided (§3/D2). The issue sweep closed a CSP gap
+  (`security.csp: null` → explicit policy, #316), added macOS
+  single-instance enforcement (#315), fixed a save-to-symlink
+  regression (#317), two replace-in-selection correctness bugs (#318,
+  #327), two external-change/save races (#319), a stuck-save/save
+  error-boundary escape (#326), and converged the save path onto one
+  durable atomic-commit primitive (#328); CI actions pinned to SHA
+  (#313). New issues filed from the sweep: #329 (unreadable jumped-to
+  search match), #330 (update-check error message needs splitting).
+  Full record: ROADMAP.md's v0.8 completed-cycle entry and
+  [docs/archive/roadmap-completed-cycles.md](docs/archive/roadmap-completed-cycles.md).
 - **v0.7 feature cycle complete** (2026-07-18→19, PRs #273–#297, tag
   `v0.7.0-alpha.1`): planned and executed autonomously under the
   standing delegation, adversarially reviewed before start
@@ -135,10 +154,13 @@ material.
 - Contributor onboarding docs live in `docs/dev-setup.md` (macOS +
   Windows); pre-release tagging is delegated to the agent (final
   releases remain user-gated).
-- Open decision gates: signing/updates (D2), distribution (D4) — see §3.
-  D1 (naming) resolved 2026-07-23 (Mojidori) — see §3/D1. D3 (going
-  public) was entered early by user decision on 2026-07-15; its
-  remaining items are post-publication work, not a gate (§3/D3).
+- Open decision gates: signing/updates (D2) — partially resolved in
+  the v0.8 cycle (macOS signing + notarization + auto-update pipeline
+  shipped; Windows signing still undecided, see §3/D2), distribution
+  (D4) — see §3. D1 (naming) resolved 2026-07-23 (Mojidori) — see
+  §3/D1. D3 (going public) was entered early by user decision on
+  2026-07-15; its remaining items are post-publication work, not a
+  gate (§3/D3).
 - Known operational constraints and dead ends live in
   [.claude/judgment-overlay.md](.claude/judgment-overlay.md); hard
   architectural constraints in [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -221,6 +243,12 @@ Three independent pieces, cheapest first:
 
 **Recommended sequencing:** updater keys → auto-update feature behind them
 → macOS signing → (at public release) Windows signing.
+
+**Status (2026-07-27):** steps 1–2 shipped in the v0.8 cycle (PRs
+#307–#312, tag `v0.8.0-alpha.1`) — updater keys, the signed/notarized
+macOS pipeline, and `tauri-plugin-updater` auto-update are live. Step 3
+(Windows signing) remains undecided; Windows builds ship unsigned for
+now.
 
 ### D3 — Going public
 

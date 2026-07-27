@@ -14,29 +14,92 @@ This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinel
 
 > Open a text file faster than an IDE. Handle legacy encodings more reliably than most modern editors. Feel native on macOS — and on Windows.
 
-## Open items (user-gated)
+## v0.9 — trust deepening + issue closure (in progress)
 
-Carried over from v0.3 Track D — release & community. Both are blocked
-on a user decision, not on engineering work; full context in the
-archived v0.3 record and in DIRECTION §2/§3.
+Planned 2026-07-27 under the user's standing overnight delegation;
+adversarially reviewed before start (AGREE-WITH-CHANGES — all seven
+required changes adopted, notably: #329's root cause relocated to the
+opaque selected-search-match theme rule, #330 rescoped to the error
+split the upstream updater plugin can actually deliver, a third
+aggregate-ranking gate added to the mojibake batch, and a planned docs
+sweep replaced by the #280 rename-event probe after the sweep was
+verified to be a no-op). Theme: no invented scope — every item traces
+to a filed issue or an established recurring program. Cycle
+constraints: no GUI launch, no release publishing, no visibility
+changes; good-first-issue items (#278, #304, #236, #89) are
+deliberately left for community contributors.
 
-- [x] D1 official name — decided 2026-07-23: **Mojidori** (verification
-  evidence in the maintainer's local private storage — see DIRECTION
-  §3/D1). In-app rename + one-time data-dir migration shipped in this
-  cycle; docs/URL sweep and repo rename tracked as follow-up.
-- [x] D2 signing + auto-update — pipeline implemented: `.github/workflows/release.yml`
-  builds/signs/notarizes macOS (arm64 + x64) on tag push, builds Windows
-  unsigned (OS-level Windows signing deferred, no decision yet), uploads
-  updater artifacts, and opens a draft release for the maintainer to
-  publish manually. `tauri-plugin-updater`/`tauri-plugin-process` wired in;
-  the frontend (`src/updater.ts`) checks silently at startup and offers
-  Download & Restart, flushing hot-exit backups before relaunching. Not
-  yet exercised end-to-end — the first real `v*` tag push is this
-  pipeline's actual test. Updater endpoint is a fixed rolling `updater`
-  release (`.github/workflows/updater-json.yml`), not `releases/latest/...`
-  (prerelease alphas would 404 there); known accepted limitation: alphas
-  sharing one version number (e.g. two 0.8.0-alpha.N) never update each
-  other, only an actual version bump does.
+### Track A — bug fixes
+
+- [ ] A1 (#329, P2): the search match the cursor jumps to is
+  unreadable — root cause is the opaque `.cm-searchMatch-selected`
+  background (`var(--accent)`) in `src/editor-theme.ts`, painted over
+  the match (the issue's original two hypotheses — selection-layer
+  stacking and `--bg-selection` opacity — were both falsified in
+  pre-cycle review). Fix must keep the jumped-to match readable in
+  all four themes; vitest asserts the theme-spec structure (a
+  readable foreground set alongside any opaque background), no
+  `getComputedStyle`-based fake greens; visual acceptance on both
+  WebViews stays with the user — the PR must reference, not close,
+  #329.
+- [ ] A2 (#330, P3): update-check error handling splits into
+  network-layer / "no update information available" (the
+  `ReleaseNotFound` bucket — covers 404 and every other non-2xx, and
+  the wording says so) / other errors, in all four locales. A
+  Rust-side test pins the upstream error display string the frontend
+  matches on, so an unpinned `tauri-plugin-updater` bump cannot
+  silently regress the classification.
+
+### Track B — encoding trust
+
+- [ ] B1: mojibake `REPAIR_PAIRS` expansion batch (currently 15
+  pairs; the `(windows-125x, UTF-8)` family among chardetng's 19
+  single-byte candidates is the remaining vein). Three admission
+  gates: (1) chardetng reachability, (2) mutual ambiguity /
+  reversibility, (3) new this cycle — an aggregate ranking-regression
+  assertion over all existing repair fixtures, because
+  `detect_mojibake`'s MAX_CANDIDATES=5 truncation means a new pair
+  can push an existing fixture's true repair off the candidate list
+  without any pairwise test noticing. Adversarial harness
+  independently reconstructed by a different agent than the
+  implementer; batch capped at 2–3 admissions; zero admissions is a
+  valid outcome; `fuzz_roundtrip.rs` pools and match arms synced in
+  the same PR.
+
+### Track C — filed-issue closure
+
+- [ ] C1 (#292): NFKD position-mapping feasibility investigation —
+  findings-only, written up on the issue; implementing the mapping
+  is explicitly out of scope this cycle.
+- [ ] C2 (#292 mitigation): replace-in-selection reports how many
+  normalized-equivalent matches it skipped (the issue's own second
+  option) — the silent part of the bug dies without touching replace
+  semantics; vitest-covered.
+- [ ] C3 (#280): watcher rename-event probe run on macOS + Windows
+  CI to measure notify's `event.paths` behavior (including whether
+  the old-path watch survives at all) — findings recorded on the
+  issue; the probe branch is discarded unless the probe earns its
+  keep as a regression test.
+
+### Track D — research & decision prep (no code)
+
+- [x] D1 (#314): CSP-nonce feasibility research posted to the issue
+  (delivered 2026-07-27: conditionally feasible via a placeholder
+  `<style>` nonce carrier + `EditorView.cspNonce`; deferred until a
+  real-machine verification window).
+- [x] D2 (#303): decision-ready trim-on-save contract proposal
+  posted to the issue for the maintainer's ruling (delivered
+  2026-07-27; ties in PR #288's pending undo-semantics sign-off).
+
+### Track E — close-out
+
+- [ ] E1: version bump to 0.9.0, CHANGELOG release section, this
+  section archived, DIRECTION §2 refreshed, overlay/memory lesson
+  writeback, tag `v0.9.0-alpha.1`. Publishing stays user-held: the
+  new draft release will sit alongside the still-unpublished
+  v0.8.0-alpha.1 draft, and the user chooses what to publish
+  (publishing is also what creates the updater feed whose absence
+  #330's error message currently misreports).
 
 ## Completed cycles
 
@@ -101,9 +164,46 @@ Item counts below are shipped `[x]` items per cycle.
   forward-compat fixtures, IPC error-path audit; CHANGELOG backfill,
   docs/features.md. 20 PRs (#229–#249 range), ended at 522 cargo test /
   955 vitest.
+- **v0.8 — official naming + release pipeline** (PRs #307–#312,
+  2026-07-23, tag `v0.8.0-alpha.1`, draft — not published): D1 official
+  name decided (**Mojidori**) and applied — bundle identifier, window
+  title, IPC event namespace, and crate name renamed across every
+  platform, with a crash-safe one-time config-directory migration
+  (durable completion marker, staged `.partial` directory + atomic
+  rename, merge-recovery for a partial prior attempt, fsync, OS-level
+  lock against concurrent launches, old directory kept as a
+  `.migrated` backup). D2 signing + auto-update pipeline: macOS
+  arm64/x64 builds signed and notarized on tag push,
+  `tauri-plugin-updater` wired in with a silent startup check and a
+  manual File > Check for Updates, the pre-restart flush funneled
+  through one shared mutation guard so no input path can slip a
+  change past it, updater feed served from a rolling `updater` release
+  tag, and every tag push opens a draft release for manual publish.
+  Follow-up migration hardening landed in the same cycle (#311).
+  Then a 2026-07-26→27 issue-clearing sweep (PRs #313–#328, not a
+  checkbox cycle): CI third-party actions pinned to SHA with minimized
+  permissions (#313); macOS single-instance enforcement so a second
+  launch can't clobber session/preferences state (#315); an explicit
+  CSP replacing `security.csp: null` (#316); save-to-symlink no longer
+  replaces the link with a regular file (#317); two
+  replace-in-selection correctness fixes — unquoted plain-string
+  matches and a zero-length regexp match looping forever on astral
+  characters (#318, #327); two external-change/save interaction edge
+  cases, the #302 suppression window and #276 stale→cancel mislabeling
+  a doc clean (#319); a saveDialog-rejection path that escaped the save
+  error boundary and stranded a queued save (#326); and convergence of
+  the save path onto a single durable, provenance-bound atomic-commit
+  primitive (#328). D2's Windows signing decision and the updater's
+  same-version-never-updates limitation remain open — see DIRECTION
+  §3/D2.
 
-127 shipped items total across the seven cycles above; 2 remain open
-(D1/D2, tracked under "Open items" above, not counted here).
+127 items shipped across the v0.1–v0.7 checkbox cycles above, plus the
+v0.8 cycle (PRs #307–#312) and the 2026-07-26 issue sweep (PRs
+#313–#328) — neither of the latter two is a checkbox cycle, so their
+work is not folded into the 127 count. D1 (naming) is fully delivered;
+D2 (signing + auto-update) is delivered for macOS, with the Windows
+signing sub-decision still open — see the v0.8 entry above and
+DIRECTION §3/D2.
 
 ## Explicit non-goals
 

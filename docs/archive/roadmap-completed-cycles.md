@@ -1988,3 +1988,113 @@ the good-first-issue surface.
 - [x] cycle close-out: CHANGELOG.md, version bump across
   tauri.conf.json / package.json / Cargo.toml, tag v0.7.0-alpha.1
   (pre-release authority), handoff memory update
+
+## v0.8 — Mojidori rename + release pipeline (delegated, 2026-07-23)
+
+Closes the two decision-gate items (D1 official naming, D2 signing +
+notarization + auto-update) carried over from v0.3 Track D and left
+open through v0.4–v0.7. Five PRs, all merged 2026-07-23: #307, #308,
+#309, #311, #312.
+
+**D1 — official naming**
+
+- [x] #307: product renamed to **Mojidori** across every platform — the
+  bundle identifier changed from `app.plume.editor` to
+  `app.mojidori.editor`, along with the window title, IPC event
+  namespace, and internal crate name. A one-time, crash-safe migration
+  moves an existing config directory to the new identifier's location
+  on first launch: staged in a `.partial` directory and verified
+  before an atomic rename, guarded by a durable completion marker so a
+  failed or interrupted attempt is retried correctly rather than
+  silently skipped or repeated. If the new directory already has some
+  content (e.g. from a partial prior attempt), recovery merges in only
+  the items still missing, never overwriting anything already there,
+  and rolls back only what it copied on failure. Copies preserve
+  source file permissions and are fsync'd before the directory is
+  renamed; an OS-level lock prevents two launches from migrating
+  concurrently. The old directory is kept alongside as a `.migrated`
+  backup rather than deleted. Known limitation, documented rather than
+  silently accepted: search history does not carry over, because it
+  lives in the WebView's per-origin storage (keyed by the bundle
+  identifier), which is outside the migrated config directory; users
+  must also close the old Plume build before first launching Mojidori,
+  since the two builds are not aware of each other's file locks.
+- [x] #308: docs and URLs swept for the new name (second-phase
+  cleanup after the code-level rename in #307).
+
+**D2 — signing, notarization, and auto-update**
+
+- [x] #309: release pipeline — `.github/workflows/release.yml` builds,
+  signs, and notarizes macOS (arm64 + x64) on tag push, builds Windows
+  unsigned (OS-level Windows signing deferred, no decision yet
+  — remains open, see DIRECTION §3/D2), uploads updater artifacts, and
+  opens a draft release for the maintainer to publish manually.
+  `tauri-plugin-updater`/`tauri-plugin-process` wired in; the frontend
+  (`src/updater.ts`) checks silently at startup and via File > Check
+  for Updates, prompts before downloading, and offers Download &
+  Restart. The editor freezes against further edits while the final
+  pre-restart flush is in progress, funneled through one mutation
+  guard shared by every input path (typing, line-ending and encoding
+  pickers, mojibake/normalize wizards, and more) so none of them can
+  slip a change past the flush; the flush itself is serialized with
+  any other in-flight save so the two can't race. The updater endpoint
+  is a fixed rolling `updater` release
+  (`.github/workflows/updater-json.yml`), not `releases/latest/...`
+  (prerelease alphas would 404 there); known accepted limitation: the
+  updater compares version numbers, so alphas sharing one version
+  (e.g. two re-releases of `0.8.0-alpha.1`) never trigger an update
+  between them — only an actual version bump does. Not yet exercised
+  end-to-end at merge time — the first real `v*` tag push is this
+  pipeline's actual test.
+- [x] #311: migration state-machine hardening follow-up — durable
+  completion marker, merge-recovery for a partial prior attempt,
+  fsync ordering, and window-state timing fixes folded into the
+  migration landed in #307 (found before the cycle's close-out, not a
+  separate later incident).
+
+**Close-out**
+
+- [x] #312: cycle close-out — version bumped to 0.8.0 across
+  `tauri.conf.json` / `package.json` / `Cargo.toml`, CHANGELOG.md's
+  `[v0.8.0-alpha.1]` section written, tag `v0.8.0-alpha.1` created
+  (pre-release authority) but **left as an unpublished draft** — the
+  maintainer had not chosen to publish it as of the v0.9 cycle
+  opening.
+
+## 2026-07-26–27 issue sweep (delegated)
+
+Not a checkbox cycle — a delegated pass clearing a backlog of filed
+bugs and one security hardening item, all fixed under the existing
+Definition of Done rather than planned as a ROADMAP track. Fourteen
+PRs merged 2026-07-26 through 2026-07-27: #313, #315, #316, #317,
+#318, #319, #326, #327, #328 (PR numbers in the #313–#328 range not
+listed here were issues, not PRs).
+
+- [x] #313: third-party GitHub Actions in the release workflow pinned
+  to commit SHA instead of a floating tag, and their permissions
+  minimized.
+- [x] #315: macOS single-instance enforcement — a second launch now
+  focuses the existing window instead of starting a second process
+  that could overwrite session/preferences state from underneath the
+  first.
+- [x] #316: an explicit Content-Security-Policy replacing
+  `security.csp: null` in `tauri.conf.json`, verified with a real-
+  machine A/B check.
+- [x] #317: saving to a path that is a symlink no longer replaces the
+  link itself with a regular file — the atomic-write rename now
+  targets the link's destination.
+- [x] #318: replace-in-selection fixed two correctness bugs — a plain-
+  string query that wasn't unquoted before matching, and a zero-length
+  regexp match at a selection boundary that could duplicate a replacement.
+- [x] #319: two external-change/save interaction edge cases — the #302
+  suppression window and a #276 stale-vs-cancel race that could
+  mislabel a document clean when it wasn't.
+- [x] #326: a `saveDialog` rejection could escape the save error
+  boundary, leaving a queued save permanently stuck and a speculative
+  encoding marker behind; the rejection is now caught and folded back
+  into the normal save-failure path.
+- [x] #327: fixed a zero-length regexp match in replace-in-selection
+  looping forever on astral (surrogate-pair) characters.
+- [x] #328: the save path's several ad hoc atomic-write helpers
+  converged onto a single durable, provenance-bound atomic-commit
+  primitive — one code path now backs every save-family write.
