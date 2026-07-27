@@ -1770,6 +1770,51 @@ describe("issue #292: scoping, replacement text, and termination for the NFKD sc
     expect(docText.slice(edits[0].from, edits[0].to)).not.toBe(query.search);
   });
 
+  it("no Unicode code point normalizes into a strict extension of itself, so a plain-string match can never be zero-length", () => {
+    // This is the assumption `replaceAllInSelection`'s zero-length-boundary
+    // `ownership` bookkeeping rests on: with plain-string matches guaranteed
+    // non-empty, `mapPosition`'s `zeroLengthAtPosPrecedes` decision stays a
+    // regexp-only concern and needs no normalization awareness.
+    //
+    // A zero-length match would require a code point's would-be match start
+    // to advance all the way to that code point's own end, which happens only
+    // while the normalized form still matches the original unit for unit - so
+    // it needs a normalization that is a strict *extension* of the original
+    // (same leading units, more of them). Checked exhaustively rather than
+    // argued, over every code point and both normalizers this module builds,
+    // so a future Unicode revision that introduced such a character would
+    // fail here instead of silently producing empty edits. Costs ~100ms.
+    const offenders: string[] = [];
+    for (let code = 0; code <= 0x10ffff; code++) {
+      if (code >= 0xd800 && code <= 0xdfff) continue; // lone surrogates handled below
+      const original = String.fromCodePoint(code);
+      const decomposed = original.normalize("NFKD");
+      const folded = decomposed.toLowerCase();
+      for (const normalized of [decomposed, folded]) {
+        if (
+          normalized.length > original.length &&
+          normalized.slice(0, original.length) === original
+        ) {
+          offenders.push("U+" + code.toString(16).toUpperCase());
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+    // Lone (unpaired) surrogates are read as single units by the scan, so
+    // they need the same guarantee.
+    const surrogateOffenders: string[] = [];
+    for (let code = 0xd800; code <= 0xdfff; code++) {
+      const original = String.fromCharCode(code);
+      const decomposed = original.normalize("NFKD");
+      for (const normalized of [decomposed, decomposed.toLowerCase()]) {
+        if (normalized.length > 1 && normalized[0] === original) {
+          surrogateOffenders.push("U+" + code.toString(16).toUpperCase());
+        }
+      }
+    }
+    expect(surrogateOffenders).toEqual([]);
+  });
+
   it("an empty search is still a no-op (defense in depth for a query whose normalized form has no length)", () => {
     const docText = LIGATURE_FI + "sh";
     const query: ReplaceScopeQuery = { search: "", replace: "X", regexp: false, caseSensitive: true };

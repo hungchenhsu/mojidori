@@ -471,6 +471,18 @@ function matchNormalizedChar(
  *   original code point boundary: `from` comes from a partial started at or
  *   after `range.from`, and `to` is always the end of a code point the scan
  *   read without crossing `range.to` (see `codePointSizeAt`).
+ * - **No match is ever zero-length** (`from < to` always), which is what
+ *   lets `replaceAllInSelection`'s zero-length-boundary `ownership`
+ *   bookkeeping and `mapPosition`'s `zeroLengthAtPosPrecedes` decision stay
+ *   a regexp-only concern. A zero-length match would need a code point's
+ *   would-be match start (`matchStart` below) to advance all the way to
+ *   that code point's own end, which requires its normalized form to be a
+ *   strict *extension* of the original code point (same leading units, more
+ *   of them). No Unicode code point normalizes that way, under either
+ *   normalizer this module builds — checked exhaustively over all 1,114,112
+ *   code points rather than assumed, and pinned by a test in
+ *   replacescope.test.ts so a future Unicode revision cannot quietly break
+ *   the assumption.
  *
  * Termination: `codePointSizeAt` returns at least 1 every iteration, so the
  * outer loop always advances regardless of what NFKD does to the code point
