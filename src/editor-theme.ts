@@ -90,43 +90,75 @@ export const editorBaseThemeSpec = {
   // real user report (opaque block, text fully hidden) showed that isn't
   // robust in every WebView.
   //
-  // The first fix attempted here added a second translucent layer
-  // (`--bg-search-selected`) on top of `.cm-selectionBackground` instead
-  // of an opaque one. That is *worse*, not better: because both layers
-  // share the accent hue, they compound to an effective opacity of
-  // roughly 0.6-0.7, which pulls contrast for ordinary `--fg` text down to
-  // ~4.2:1 in Dark and ~3.3:1 in Dusk, and syntax colors are far worse
-  // (e.g. `--syn-comment`, already a deliberately muted color, drops to
-  // ~1.0-1.7:1 against the compounded wash in every theme — effectively
-  // invisible). A forced foreground color doesn't rescue this either:
-  // `--accent-fg` was tuned to pair with a fully opaque `--accent`, and
-  // checked against the actual compounded background it lands at
-  // 1.9-3.6:1 across all four themes, still short of AA.
+  // Two fix attempts were superseded within this same PR after adversarial
+  // review before landing on the current one:
+  //   1. A second translucent layer (`--bg-search-selected`) on top of
+  //      `.cm-selectionBackground` instead of an opaque one. Worse, not
+  //      better: because both layers share the accent hue, they compound
+  //      to an effective opacity of roughly 0.6-0.7, which pulls contrast
+  //      for ordinary `--fg` text down to ~4.2:1 in Dark and ~3.3:1 in
+  //      Dusk, and syntax colors are far worse (e.g. `--syn-comment`,
+  //      already a deliberately muted color, drops to ~1.0-1.7:1 against
+  //      the compounded wash — effectively invisible).
+  //   2. No background of its own at all, relying purely on
+  //      `.cm-selectionBackground`'s existing fill — but CM6 renders a
+  //      selected match with *both* classes on the same span
+  //      (`class="cm-searchMatch cm-searchMatch-selected"`), so the plain
+  //      `.cm-searchMatch` rule above still matches this element too, and
+  //      CSS cascades its `backgroundColor: var(--accent-soft)` in: an
+  //      unset property on this (more specific) rule does not cancel a
+  //      value a *different, less specific* rule sets on the same element.
+  //      That silently left a second (smaller, but real) layer on top of
+  //      `.cm-selectionBackground` again.
   //
-  // So this rule adds no background of its own at all. It relies
-  // entirely on `.cm-selectionBackground`'s existing, already-shipped
-  // translucent fill (the exact same one every ordinary text selection
-  // uses) for the highlight — this is what makes the reliance on CM6
-  // always pairing "-selected" with an actual selection range load-bearing
-  // rather than incidental. Only an outline is added, bolder than the
-  // plain match's (2px vs 1px), as an independent "this one is current"
-  // cue that doesn't touch background/foreground contrast at all.
+  // The actual fix has two parts:
+  //   - `backgroundColor: "transparent"` explicitly (not omitted), so this
+  //     rule's higher specificity (two classes vs. `.cm-searchMatch`'s
+  //     one) wins and actually cancels the inherited `--accent-soft` fill.
+  //     The only background left is `.cm-selectionBackground`'s existing,
+  //     already-shipped single translucent layer — the same one every
+  //     ordinary text selection already uses.
+  //   - `color: var(--fg) !important` (below, on a separate, wider rule),
+  //     rather than leaving whatever color the underlying text already
+  //     had. A match can land inside syntax-highlighted text (e.g.
+  //     searching a word that appears in a comment), and this app's syntax
+  //     colors are not all guaranteed to contrast well against
+  //     `--bg-selection` — `--syn-comment` in particular is a deliberately
+  //     muted color already, well under AA against that single layer in
+  //     every theme. Forcing the plain document foreground color sidesteps
+  //     needing every syntax color to individually clear that bar: `--fg`
+  //     itself is verified >=5.6:1 against `--bg-selection`'s composite in
+  //     all four themes (light 10.73, dark 7.01, paper 6.72, dusk 5.65) —
+  //     comfortably above the 4.5 AA threshold. (`--accent-fg` was
+  //     considered and rejected here: it's tuned to pair with a fully
+  //     opaque `--accent`, and lands at only 1.6-2.1:1 against this pale,
+  //     translucent wash — worse than doing nothing.)
   //
-  // `backgroundColor` must be set to `transparent` explicitly here, not
-  // merely left out: CM6 renders a selected match with *both* classes on
-  // the same span (`class="cm-searchMatch cm-searchMatch-selected"`), so
-  // the plain `.cm-searchMatch` rule above still matches this element too
-  // and CSS cascades its `backgroundColor: var(--accent-soft)` in — the
-  // two rules' declared properties merge per-property, an unset property
-  // here does not cancel a value a *different, less specific* rule sets on
-  // the same element. Only an explicit, more specific declaration on this
-  // rule can override that inherited fill, which is exactly why plain
-  // omission was still leaving a (smaller, but real) second layer on top
-  // of `.cm-selectionBackground`.
+  // The outline is bolder than the plain match's (2px vs 1px), as an
+  // independent "this one is current" cue that doesn't touch
+  // background/foreground contrast at all.
   ".cm-searchMatch.cm-searchMatch-selected": {
     backgroundColor: "transparent",
     outline: "2px solid var(--accent)",
   },
+  // Separate, wider rule (not merged into the one above) because it also
+  // needs to reach any syntax-highlighting decoration CM6 nests *inside*
+  // a selected match for a partially-overlapping token (e.g. matching
+  // "TODO" inside a longer highlighted comment): `color` is inherited, but
+  // a descendant's own explicit `color` from a syntax rule always wins
+  // over simple inheritance from an ancestor, no matter how that
+  // ancestor's rule is written — `!important` alone only arbitrates
+  // between rules that target the *same* element, it does not let a
+  // parent's color bleed through past a child's own declared style. Only
+  // a selector that also explicitly targets the descendant (the `*` here)
+  // — combined with `!important` to beat the syntax rule's own specificity
+  // for that descendant — is guaranteed to win regardless of exactly how
+  // @codemirror/search and @codemirror/language happen to nest or flatten
+  // overlapping decorations for a given match.
+  ".cm-searchMatch.cm-searchMatch-selected, .cm-searchMatch.cm-searchMatch-selected *":
+    {
+      color: "var(--fg) !important",
+    },
   ".cm-panels": {
     backgroundColor: "var(--bg-raised)",
     color: "var(--fg)",
