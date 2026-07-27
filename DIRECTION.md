@@ -490,7 +490,10 @@ required, not value.
 
 ### Tier 3 — blocked on decision gates or infrastructure
 
-- **Auto-update** (blocked on D2 step 1; first real feature of P1).
+- **Auto-update** — *implemented in the v0.8 cycle*
+  (`tauri-plugin-updater`, silent startup check + manual "Check for
+  Updates"); no longer blocked on D2 step 1. The update feed itself is
+  not yet active pending the maintainer publishing a release (§3/D2).
 - **Crash reporting / telemetry** — default stance: **none**. "No
   telemetry" is a feature consistent with the trust pillar; revisit only
   if the user explicitly wants opt-in diagnostics.

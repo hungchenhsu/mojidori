@@ -150,7 +150,9 @@ domain: failing-test-first, round-trip tests mandatory)
 - [x] Issue templates, labels, and a good-first-issue starter set
   (unblocked; do first — it is the interface for incoming contributors)
 - [x] i18n dictionaries: ja and zh-CN (builds on the v0.2 i18n module)
-- (D1 / D2 remain open — tracked in ROADMAP.md's "Open items" section)
+- (D1 / D2 remained open at the time — subsequently delivered in the
+  v0.8 cycle, see this file's v0.8 entry below; Windows signing (D2)
+  remains undecided, see DIRECTION.md §3/D2)
 - [x] D3 going-public sweep, archive part: internal decision material
   (naming evidence, updater runbook) relocated out of the repo to the
   maintainer's local private storage (2026-07-15, user-approved; note
