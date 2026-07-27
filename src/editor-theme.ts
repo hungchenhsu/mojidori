@@ -10,7 +10,13 @@ import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import type { Extension } from "@codemirror/state";
 
-const baseTheme = EditorView.theme({
+// Exported separately from `baseTheme` (the wrapped `EditorView.theme()`
+// Extension) so tests can assert on the raw rule values directly — see
+// editor-theme.test.ts. `EditorView.theme()` compiles this object into a
+// CM6 StyleModule/Facet with no supported way to read individual rules back
+// out, so the only non-lying way to unit-test "did we regress to an opaque
+// background" is to check this plain object before it goes in.
+export const editorBaseThemeSpec = {
   "&": {
     color: "var(--fg)",
     backgroundColor: "var(--bg-base)",
@@ -73,9 +79,27 @@ const baseTheme = EditorView.theme({
     backgroundColor: "var(--accent-soft)",
     outline: "1px solid var(--accent)",
   },
+  // Issue #329: pressing Enter in the search panel moves CM6's actual
+  // selection onto this match, so this rule and `.cm-selectionBackground`
+  // above both paint the same range at once. This used to be
+  // `backgroundColor: var(--accent)` (fully opaque) plus an explicit
+  // `color: var(--accent-fg)` to keep the text legible on top of it — a
+  // real user report (opaque block, text fully hidden) plus a headless
+  // Chromium repro of this exact rule showed the opaque+forced-foreground
+  // approach is not robust in every WebView: the underlying text's own
+  // legibility should not depend on this rule getting a specific
+  // foreground color exactly right. Using a translucent background
+  // instead — the same fix already applied to `--bg-selection` for
+  // ordinary text selection, see that token's comment in styles.css — lets
+  // the document's own text color always show through, so it stays
+  // readable regardless. `--bg-search-selected` is deliberately a
+  // stronger/more opaque wash than both `--accent-soft` (plain matches)
+  // and `--bg-selection` (plain selection) so the current match still
+  // reads as more prominent than either; the doubled outline is a second,
+  // independent cue for the same "this one is current" distinction.
   ".cm-searchMatch.cm-searchMatch-selected": {
-    backgroundColor: "var(--accent)",
-    color: "var(--accent-fg)",
+    backgroundColor: "var(--bg-search-selected)",
+    outline: "2px solid var(--accent)",
   },
   ".cm-panels": {
     backgroundColor: "var(--bg-raised)",
@@ -233,7 +257,9 @@ const baseTheme = EditorView.theme({
     padding: "0 1px",
     cursor: "pointer",
   },
-});
+} as const;
+
+const baseTheme = EditorView.theme(editorBaseThemeSpec);
 
 const highlightStyle = HighlightStyle.define([
   { tag: t.keyword, color: "var(--syn-keyword)" },
