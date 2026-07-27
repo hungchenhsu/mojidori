@@ -19,9 +19,20 @@
 // @codemirror/search's own `SearchCursor` scanning automaton, NFKD
 // normalization included — see `stringMatchesInRange` below for the
 // line-by-line correspondence with
-// node_modules/@codemirror/search/dist/index.js. Two consequences of that
-// port are worth stating up front, because both are inherited from
-// upstream *on purpose* and neither is a bug to fix here:
+// node_modules/@codemirror/search/dist/index.js.
+//
+// A note on the `dist/index.js:NNN` citations throughout this file: they
+// refer to @codemirror/search / @codemirror/state 6.7.1, the versions this
+// app currently resolves to. Line numbers in a bundled `dist` file drift
+// between releases, so treat them as a fast way to find the code, not as a
+// contract — the surrounding quotes of the upstream source are what
+// actually identify it, and the differential tests in replacescope.test.ts
+// (which run against whatever version is installed, not against these
+// numbers) are what actually enforce agreement.
+//
+// Two consequences of that port are worth stating up front, because both
+// are inherited from upstream *on purpose* and neither is a bug to fix
+// here:
 //
 // 1. Only `precise` matches are replaceable. A match that would have to
 //    start or end strictly *inside* one original code point's normalized
@@ -29,7 +40,7 @@
 //    document, which NFKD-expands to "fi") comes back `precise: false`,
 //    and CM6's own commands never replace those: `replaceAll` pushes a
 //    change only `if (precise)` (dist/index.js:956-959) and `replaceNext`
-//    skips straight past an imprecise match (dist/index.js:924-926). This
+//    skips straight past an imprecise match (dist/index.js:925-927). This
 //    module does the same, so the find panel's highlight — which marks
 //    *every* match, precise or not (`StringQuery.highlight`,
 //    dist/index.js:672-676) — can still show something that neither this
@@ -218,7 +229,7 @@ function codePointAt(text: string, pos: number): string {
  * occupies, never reading at or past `limit`. Mirrors the
  * `codePointSize(codePointAt(buffer, bufferPos))` pair @codemirror/search's
  * `SearchCursor.peek`/`nextOverlapping` use
- * (node_modules/@codemirror/search/dist/index.js:49-60, :84;
+ * (node_modules/@codemirror/search/dist/index.js:50-60, :85;
  * `codePointAt`/`codePointSize` live in
  * node_modules/@codemirror/state/dist/index.js:583-606): a high surrogate
  * with no low surrogate available *within the region being scanned* counts
@@ -317,10 +328,10 @@ function isWordBoundaryOk(text: string, from: number, to: number): boolean {
  * @codemirror/search's own text normalization for plain-string search:
  * NFKD first, case-fold second, in exactly that order
  * (node_modules/@codemirror/search/dist/index.js:5-6 `basicNormalize = x =>
- * x.normalize("NFKD")`, and :46 `this.normalize = normalize ? x =>
+ * x.normalize("NFKD")`, and :47 `this.normalize = normalize ? x =>
  * normalize(basicNormalize(x)) : basicNormalize`, where the `normalize`
  * argument `stringCursor` passes for a case-insensitive query is
- * `x => x.toLowerCase()`, :610).
+ * `x => x.toLowerCase()`, :615).
  *
  * The order is load-bearing, not incidental. U+1D2C (MODIFIER LETTER
  * CAPITAL A) is a case that tells the two apart, verified rather than
@@ -353,8 +364,8 @@ function nfkdNormalizerFor(caseSensitive: boolean): (text: string) => string {
 
 /** One in-flight partial match inside `stringMatchesInRange`'s automaton,
  *  mirroring the entries of `SearchCursor.matches`
- *  (node_modules/@codemirror/search/dist/index.js:41, pushed at :117,
- *  advanced in place at :112). `index` is how many code units of the
+ *  (node_modules/@codemirror/search/dist/index.js:42, pushed at :126,
+ *  advanced in place at :113). `index` is how many code units of the
  *  normalized query have been consumed so far and is deliberately mutable —
  *  upstream advances it in place rather than replacing the object. */
 interface PartialMatch {
@@ -377,7 +388,7 @@ interface NormalizedMatch {
  * unit `code` of some original code point's normalized expansion to every
  * in-flight partial match, and start a new partial when it could begin one.
  * A verbatim port of `SearchCursor.match`
- * (node_modules/@codemirror/search/dist/index.js:104-121), including the
+ * (node_modules/@codemirror/search/dist/index.js:104-130), including the
  * details that look like accidents and are not:
  *
  * - A partial that fails to advance is dropped (`keep` stays false, the
@@ -393,7 +404,7 @@ interface NormalizedMatch {
  *   normalization awareness at all.
  * - `wholeWordTest` is applied here, at completion, and only nulls out the
  *   *result* — the partial it came from has already been spliced out and is
- *   not restored. Upstream does exactly this (`this.test` at :118-119), so
+ *   not restored. Upstream does exactly this (`this.test` at :128-129), so
  *   a word-boundary rejection does not restart or rewind the scan; the
  *   other still-live partials are what keep overlapping candidates alive.
  *   (This is the same "weave the test into the accept decision rather than
@@ -441,7 +452,8 @@ function matchNormalizedChar(
  * scan (issue #292). A port of `SearchCursor.nextOverlapping` driven the
  * way `StringQuery.matchAll` drives it — `while (!cursor.next().done)`,
  * where `next()` clears the in-flight partial matches before resuming
- * (node_modules/@codemirror/search/dist/index.js:63-96, :663-670) — with
+ * (node_modules/@codemirror/search/dist/index.js:67-71 and :77-103,
+ * :663-670) — with
  * upstream's own `precise` filter from `replaceAll` (:956-959) applied to
  * the result, so what comes back is exactly the set of matches CM6's own
  * whole-document Replace All would replace if `range` were the whole
@@ -503,7 +515,7 @@ function stringMatchesInRange(
   const matches: FoundMatch[] = [];
   const normalize = nfkdNormalizerFor(caseSensitive);
   // The query is normalized as one whole string, the document one code
-  // point at a time — upstream does the same (:47 vs :85), and that
+  // point at a time — upstream does the same (:48 vs :86), and that
   // asymmetry is the origin of the canonical-reordering limitation
   // documented in the module header. Deliberately preserved.
   const query = normalize(search);
@@ -517,11 +529,11 @@ function stringMatchesInRange(
     const start = pos;
     const str = docText.slice(start, start + codePointSizeAt(docText, start, range.to));
     // Advanced past the whole code point *before* its expansion is walked,
-    // exactly as upstream does (:83-84) — which is why `end` below is the
+    // exactly as upstream does (:84-85) — which is why `end` below is the
     // position after the entire code point, never a position inside it.
     pos = start + str.length;
     const norm = normalize(str);
-    // Upstream's `if (norm.length)` guard (:86). Defense in depth, and
+    // Upstream's `if (norm.length)` guard (:87). Defense in depth, and
     // deliberately not claimed as tested: no Unicode code point currently
     // normalizes to nothing, so a mutation of this line survives the test
     // suite. It stays because it is load-bearing if one ever did — without
@@ -545,7 +557,7 @@ function stringMatchesInRange(
         // Upstream's `replaceAll` filter (:956-959): an imprecise match is
         // reported by the cursor but never replaced. It still consumed the
         // scan, so the partial list is cleared either way (upstream's
-        // `next()`, :64-66).
+        // `next()`, :67-70).
         if (found.precise) {
           matches.push({
             from: found.from,
@@ -562,7 +574,7 @@ function stringMatchesInRange(
         break;
       }
       if (i === norm.length - 1) break;
-      // Upstream :92-95 verbatim: a would-be match start may advance
+      // Upstream :97-100 verbatim: a would-be match start may advance
       // *within* this code point only while the expansion is still
       // identical to the original text; the first divergence makes every
       // later start position imprecise.
