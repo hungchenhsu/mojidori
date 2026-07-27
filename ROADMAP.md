@@ -63,21 +63,26 @@ contributors.
 
 ### Track B — encoding trust
 
-- [ ] B1: mojibake `REPAIR_PAIRS` expansion batch (currently 15
-  pairs; the `(windows-125x, UTF-8)` family among chardetng's 21
-  single-byte candidates — per `SINGLE_BYTE_DATA` in the vendored
-  crate, source-verified in `src-tauri/src/mojibake.rs:73–78` — is the
-  remaining vein). Three admission
-  gates: (1) chardetng reachability, (2) mutual ambiguity /
-  reversibility, (3) new this cycle — an aggregate ranking-regression
-  assertion over all existing repair fixtures, because
-  `detect_mojibake`'s MAX_CANDIDATES=5 truncation means a new pair
-  can push an existing fixture's true repair off the candidate list
-  without any pairwise test noticing. Adversarial harness
-  independently reconstructed by a different agent than the
-  implementer; batch capped at 2–3 admissions; zero admissions is a
-  valid outcome; `fuzz_roundtrip.rs` pools and match arms synced in
-  the same PR.
+- [x] B1: mojibake `REPAIR_PAIRS` expansion batch — delivered
+  2026-07-28 (PR #335): 15→18 pairs, admitting `(windows-1256,
+  UTF-8)` Arabic, `(windows-1258, UTF-8)` Vietnamese, `(windows-1253,
+  UTF-8)` Greek (batch capped at 3, as planned). windows-1255 deferred
+  to a future batch purely on the cap; windows-1254 deprioritized as a
+  low-marginal-value duplicate of the existing `(windows-1252,
+  UTF-8)` pair; windows-1257 rejected (chardetng's own README calls
+  its detection inaccurate, and its gap bytes land in the UTF-8
+  continuation-byte range). All three admission gates satisfied,
+  including the new aggregate ranking-regression assertion (proven
+  against the pre-batch 15 pairs first, then re-proven at 18);
+  `fuzz_roundtrip.rs` pools/match arms synced in the same PR.
+  Independently re-verified before merge: adversarial harness
+  re-derivation by a separate agent, plus a critic review
+  (APPROVE-WITH-NOTES — four doc/test precision fixes applied), on
+  top of Codex CI review. Incidentally surfaced a pre-existing,
+  unrelated dead entry, `(windows-1252, gb18030)` — chardetng has no
+  distinct GB18030 detection candidate, so `detect_mojibake` can never
+  confirm it — filed as issue #336, left unfixed as out of scope for
+  this batch.
 
 ### Track C — filed-issue closure
 

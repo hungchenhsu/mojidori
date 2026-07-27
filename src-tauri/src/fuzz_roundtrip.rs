@@ -84,10 +84,11 @@
 //! ## Mojibake wizard reversibility
 //!
 //! `mojibake::REPAIR_PAIRS` (made `pub(crate)` for this file to iterate
-//! without duplicating it) lists the wizard's fifteen supported
+//! without duplicating it) lists the wizard's eighteen supported
 //! `(intermediate, original)` mis-decode hypotheses (ten plus the five
-//! admitted by the ROADMAP v0.7 Track E investigation batch). For each,
-//! this file
+//! admitted by the ROADMAP v0.7 Track E investigation batch, plus the
+//! three admitted by the ROADMAP v0.9 Track B1 investigation batch). For
+//! each, this file
 //! generates representable `original`-text, encodes it (the bytes a real
 //! file would have had), mis-decodes those bytes with `intermediate`
 //! (skipping -- not failing -- the rare random sample that doesn't decode
@@ -1278,10 +1279,23 @@ mod tests {
         pools: &MojibakePools,
     ) {
         let edge = universal_edge_scalars();
-        let mut checked = 0usize;
-        let mut skipped = 0usize;
 
         for &(intermediate, original) in crate::mojibake::REPAIR_PAIRS.iter() {
+            // Per-pair, not global: a pair whose intermediate has enough
+            // gap bytes (or other structural rejection) to skip *every*
+            // draw would otherwise hide behind a single pool's worth of
+            // genuine checks elsewhere in the list and still report
+            // `checked > 0` overall. `(WINDOWS_1253, UTF_8)` is already the
+            // first pair in this list with any real skip rate (its three
+            // gap bytes), and it isn't especially close to skipping every
+            // draw; but nothing stops a future pair (e.g. a windows-1257-
+            // shaped `original` with gap bytes landing more aggressively
+            // in the UTF-8 continuation-byte range) from skipping all
+            // `cases_per_pair` draws and passing silently under a
+            // list-wide `checked > 0` -- so each pair independently proves
+            // it was actually exercised.
+            let mut checked = 0usize;
+            let mut skipped = 0usize;
             let intermediate_label = intermediate.name();
             let original_label = original.name();
             let source = match (intermediate_label, original_label) {
@@ -1305,6 +1319,26 @@ mod tests {
                     TextSource::Pool(&pools.latin1_supplement)
                 }
                 ("KOI8-U", "windows-1251") => TextSource::Pool(&pools.windows1251),
+                // ROADMAP v0.9 Track B1 batch (three more pairs, all
+                // admitted -- see `mojibake::REPAIR_PAIRS`'s doc comment
+                // for each one's evaluation): `(windows-1256, UTF-8)` and
+                // `(windows-1258, UTF-8)` are single-byte total-decoder
+                // intermediates, the same shape as `(windows-1251,
+                // UTF-8)`/`(windows-1250, UTF-8)` above, so both draw from
+                // `TextSource::Universal(&edge)` too. `(windows-1253,
+                // UTF-8)` is *not* a total decoder (three unassigned gap
+                // bytes -- see `GREEK_TEXT`'s doc comment in
+                // `mojibake.rs`), but the existing "an unclean mis-decode
+                // is skipped, not failed" tolerance immediately below
+                // already covers that: a random universal-scalar draw that
+                // happens to re-encode to one of those three gap bytes
+                // just reports `malformed` and gets skipped like any other
+                // pair's rare unclean draw, so it draws from
+                // `TextSource::Universal(&edge)` too -- no new pool field
+                // was needed for this entire batch.
+                ("windows-1256", "UTF-8")
+                | ("windows-1258", "UTF-8")
+                | ("windows-1253", "UTF-8") => TextSource::Universal(&edge),
                 (i, o) => panic!(
                     "unhandled mojibake::REPAIR_PAIRS entry ({i}, {o}) -- add a text generator"
                 ),
@@ -1352,12 +1386,14 @@ mod tests {
                      original: {text:?}\nmojibake: {mojibake:?}\nrepaired: {repaired:?}"
                 );
             }
-        }
 
-        assert!(
-            checked > 0,
-            "fuzz must exercise at least one clean mis-decode case (checked=0, skipped={skipped})"
-        );
+            assert!(
+                checked > 0,
+                "({intermediate_label}, {original_label}) must exercise at least one clean \
+                 mis-decode case (checked=0, skipped={skipped}) -- a pair that skips every \
+                 single draw is exercising nothing, not merely under-covered"
+            );
+        }
     }
 
     /// Seed = ROUNDTRIP_FUZZ_SEED. 40 cases per `mojibake::REPAIR_PAIRS`
