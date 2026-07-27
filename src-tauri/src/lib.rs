@@ -39,6 +39,10 @@ mod store;
 mod streamcodec;
 mod streamconvert;
 mod streamreplace;
+// Test-only pin against tauri_plugin_updater's Error Display strings — see
+// its own module doc comment.
+#[cfg(test)]
+mod updater_errors;
 mod watcher;
 
 use fsguard::Fingerprint;

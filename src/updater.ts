@@ -12,6 +12,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { confirm as confirmDialog, message as messageDialog } from "@tauri-apps/plugin-dialog";
 import { t } from "./i18n";
+import { classifyUpdateCheckError, type UpdateCheckErrorClass } from "./updaterErrors";
 
 /** Mirrors the updater plugin's Rust `Metadata` struct — the raw shape
  *  `invoke("plugin:updater|check")` resolves to (serde
@@ -284,6 +285,29 @@ export async function checkForUpdatesAndPrompt(
   }
 }
 
+/** Which title/message key pair a failed check's dialog shows, keyed by
+ *  `classifyUpdateCheckError`'s result (issue #330 — see that function's
+ *  doc comment for what each class actually covers and why). `network`
+ *  reuses the pre-existing "check your connection" copy verbatim: this
+ *  fix doesn't change that message, only stops it from firing when the
+ *  real cause is `releaseNotFound` or `other`. */
+type CheckErrorDialogKeys =
+  | { titleKey: "updater.checkFailedTitle"; messageKey: "updater.checkFailedMessage" }
+  | {
+      titleKey: "updater.updateInfoUnavailableTitle";
+      messageKey: "updater.updateInfoUnavailableMessage";
+    }
+  | { titleKey: "updater.checkErrorTitle"; messageKey: "updater.checkErrorMessage" };
+
+const CHECK_ERROR_DIALOG: Record<UpdateCheckErrorClass, CheckErrorDialogKeys> = {
+  network: { titleKey: "updater.checkFailedTitle", messageKey: "updater.checkFailedMessage" },
+  releaseNotFound: {
+    titleKey: "updater.updateInfoUnavailableTitle",
+    messageKey: "updater.updateInfoUnavailableMessage",
+  },
+  other: { titleKey: "updater.checkErrorTitle", messageKey: "updater.checkErrorMessage" },
+};
+
 async function runCheckForUpdatesAndPrompt(
   deps: UpdaterDeps,
   options: { silent: boolean },
@@ -294,8 +318,9 @@ async function runCheckForUpdatesAndPrompt(
   } catch (error) {
     console.error("updater: check failed", error);
     if (!options.silent) {
-      await messageDialog(t("updater.checkFailedMessage"), {
-        title: t("updater.checkFailedTitle"),
+      const { titleKey, messageKey } = CHECK_ERROR_DIALOG[classifyUpdateCheckError(error)];
+      await messageDialog(t(messageKey), {
+        title: t(titleKey),
         kind: "error",
       }).catch(() => {});
     }

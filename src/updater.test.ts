@@ -105,6 +105,49 @@ describe("checkForUpdatesAndPrompt — check() fails", () => {
     await checkForUpdatesAndPrompt(deps, { silent: false });
     expect(messageDialog).toHaveBeenCalledTimes(1);
   });
+
+  // Issue #330: the updater feed simply not existing (an unpublished/draft
+  // release — a 404, but indistinguishable at this point from a 403/500,
+  // see updaterErrors.ts) was previously misreported as a network problem.
+  // `plugin:updater|check` rejects with a plain string (see updaterErrors.ts'
+  // module doc comment for why) — these three cases exercise the actual
+  // literal each class produces.
+  it("silent: false shows the neutral 'update info unavailable' dialog for a ReleaseNotFound rejection, not the network one", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // Exact Display string of tauri_plugin_updater::Error::ReleaseNotFound
+    // (tauri-plugin-updater-2.10.1 src/error.rs:24-26), pinned Rust-side by
+    // src-tauri/src/updater_errors.rs.
+    invoke.mockRejectedValueOnce("Could not fetch a valid release JSON from the remote");
+    const { deps } = makeDeps();
+    await checkForUpdatesAndPrompt(deps, { silent: false });
+    expect(messageDialog).toHaveBeenCalledTimes(1);
+    expect(messageDialog).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ title: "Update Info Unavailable" }),
+    );
+  });
+
+  it("silent: false shows the network-failure dialog for a reqwest-shaped rejection", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    invoke.mockRejectedValueOnce("error sending request for url (https://example.com/latest.json)");
+    const { deps } = makeDeps();
+    await checkForUpdatesAndPrompt(deps, { silent: false });
+    expect(messageDialog).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ title: "Update Check Failed" }),
+    );
+  });
+
+  it("silent: false shows a generic check-error dialog for an unrecognized (e.g. parse) rejection", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    invoke.mockRejectedValueOnce("missing field `version` at line 1 column 42");
+    const { deps } = makeDeps();
+    await checkForUpdatesAndPrompt(deps, { silent: false });
+    expect(messageDialog).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ title: "Update Check Error" }),
+    );
+  });
 });
 
 const bytesRid = 42;

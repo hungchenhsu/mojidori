@@ -53,7 +53,7 @@ contributors.
   match readable in all four themes; visual acceptance on both
   WebViews stays with the user — the PR must reference, not close,
   #329.
-- [ ] A2 (#330, P3): update-check error handling splits into
+- [x] A2 (#330, P3): update-check error handling splits into
   network-layer / "no update information available" (the
   `ReleaseNotFound` bucket — covers 404 and every other non-2xx, and
   the wording says so) / other errors, in all four locales. A
