@@ -86,33 +86,88 @@ function cm6ReplaceAllWholeDoc(
 }
 
 /**
+ * Bundles `src/replacescope.ts` to a plain CommonJS file, **once per test
+ * file run**, and returns the path. Memoized deliberately: bundling is by
+ * far the slowest and most variable part of driving this module
+ * out-of-process, and it must not sit inside the per-call deadline that
+ * `runReplaceAllInSelectionInChildProcess` uses to detect an infinite loop
+ * (see that function). It did sit inside it until PR #334, which is why a
+ * 5000ms budget was tight enough to make the issue #320 regression test
+ * flake on Windows CI -- observed failing on an unrelated docs-only PR
+ * (#331), where a SIGKILL got reported as "this looks like an infinite-loop
+ * regression" when the scan had in fact never been reached at all.
+ *
+ * Runs in a child `node` process rather than here, because esbuild's own
+ * environment sanity check (`new TextEncoder().encode("") instanceof
+ * Uint8Array`) fails outright under this file's jsdom environment (needed
+ * for the "consistency with CM6" tests' `EditorView`) -- merely *importing*
+ * the `esbuild` package throws at its own module-load time under jsdom,
+ * before any of its functions are even called.
+ */
+let sharedBundlePath: string | null = null;
+function bundleReplaceScopeOnce(): string {
+  if (sharedBundlePath !== null) return sharedBundlePath;
+  const dir = mkdtempSync(join(tmpdir(), "replacescope-bundle-"));
+  // `import.meta.url` isn't a plain `file://` URL under Vitest (Vite serves
+  // test files through its own module graph), so it can't be turned back
+  // into a real filesystem path here. `process.cwd()` is reliable instead:
+  // `npm test`/`vitest run` (both locally and in CI -- see
+  // .github/workflows/ci.yml) are always invoked from the project root.
+  const projectRoot = process.cwd();
+  const modulePath = join(projectRoot, "src", "replacescope.ts");
+  const entryPath = join(dir, "entry.mjs");
+  const bundlePath = join(dir, "replacescope.cjs");
+  const buildPath = join(dir, "build.cjs");
+  writeFileSync(entryPath, `export { replaceAllInSelection } from ${JSON.stringify(modulePath)};`);
+  writeFileSync(
+    buildPath,
+    [
+      // Absolute path, not a bare "esbuild" specifier: this script lives in
+      // a temp directory with no node_modules of its own to resolve against.
+      `const esbuild = require(${JSON.stringify(join(projectRoot, "node_modules", "esbuild"))});`,
+      // replacescope.ts has zero imports of its own (see its module header --
+      // "zero CodeMirror dependency"), so this bundle is just that one file's
+      // TS stripped to plain JS; no external resolution to worry about.
+      `esbuild.buildSync({`,
+      `  entryPoints: [${JSON.stringify(entryPath)}],`,
+      `  bundle: true,`,
+      `  platform: "node",`,
+      `  format: "cjs",`,
+      `  outfile: ${JSON.stringify(bundlePath)},`,
+      `  logLevel: "silent",`,
+      `});`,
+    ].join("\n"),
+  );
+  // Generous, and deliberately NOT the hang deadline: this step is pure
+  // build work that cannot loop forever, so a slow Windows CI runner here
+  // must never be reported as an infinite-loop regression.
+  execFileSync(process.execPath, [buildPath], { timeout: 120000, encoding: "utf8" });
+  sharedBundlePath = bundlePath;
+  return bundlePath;
+}
+
+/**
  * Runs `replaceAllInSelection(docText, ranges, query)` in a *separate* Node
- * child process — the formalized version of the manual esbuild-plus-
+ * child process -- the formalized version of the manual esbuild-plus-
  * subprocess reproduction used to confirm issue #320 both hung before the
  * fix and terminated after it (PR #327's own review): an in-process
  * regression test here, even wrapped in Vitest's own per-test `timeout`
- * option, is not actually bounded — a genuine infinite loop in this
- * module's scanning loop is fully synchronous and never yields to the
- * event loop, so Vitest's timeout (which relies on the event loop to fire)
- * never gets a turn either (confirmed empirically while fixing this issue:
- * reverting the fix made the whole Vitest *worker* hang past 20 seconds,
- * not just one test). `execFileSync`'s own `timeout` option has Node itself
- * send `killSignal` to the child if it runs too long, which works the same
- * way on macOS and Windows CI alike (unlike shell `timeout`/`gtimeout`,
- * which aren't both available there), turning a real regression into an
- * explicit, fast test failure instead of a hung worker.
+ * option, is not actually bounded -- a genuine infinite loop in this
+ * module's scanning loop is fully synchronous and never yields to the event
+ * loop, so Vitest's timeout (which relies on the event loop to fire) never
+ * gets a turn either (confirmed empirically while fixing that issue:
+ * reverting the fix made the whole Vitest *worker* hang past 20 seconds, not
+ * just one test). `execFileSync`'s own `timeout` option has Node itself send
+ * `killSignal` to the child if it runs too long, which works the same way on
+ * macOS and Windows CI alike (unlike shell `timeout`/`gtimeout`, which
+ * aren't both available there), turning a real regression into an explicit,
+ * fast test failure instead of a hung worker.
  *
- * Bundling `replacescope.ts` with esbuild also happens *inside* the child
- * process, not here, and deliberately so: esbuild's own internal
- * environment sanity check (`new TextEncoder().encode("") instanceof
- * Uint8Array`) fails outright under this file's jsdom environment (needed
- * here for the "consistency with CM6" tests' `EditorView`) — merely
- * importing the `esbuild` package throws at its own module-load time under
- * jsdom, before any of its functions are even called. Spawning one plain
- * `node` child that does both the bundling and the run keeps every bit of
- * esbuild usage confined to a process with no jsdom in it at all, and
- * means the deadline this function enforces covers the *entire*
- * hang-risking sequence (bundle once, then run), not just the run half.
+ * `timeoutMs` bounds **only the scan itself**: the bundle is built once, up
+ * front, by `bundleReplaceScopeOnce` (see there for why that matters). The
+ * child does nothing but `require` the prebuilt bundle and call one
+ * function, so a timeout here really does mean "the scan did not finish" --
+ * which is exactly what the error message below claims.
  */
 function runReplaceAllInSelectionInChildProcess(
   docText: string,
@@ -120,54 +175,21 @@ function runReplaceAllInSelectionInChildProcess(
   query: ReplaceScopeQuery,
   timeoutMs: number,
 ): ReplaceScopeResult {
+  const bundlePath = bundleReplaceScopeOnce();
   const dir = mkdtempSync(join(tmpdir(), "replacescope-child-"));
   try {
-    // `import.meta.url` isn't a plain `file://` URL under Vitest (Vite
-    // serves test files through its own module graph), so it can't be
-    // turned back into a real filesystem path here. `process.cwd()` is
-    // reliable instead: `npm test`/`vitest run` (both locally and in CI —
-    // see .github/workflows/ci.yml) are always invoked from the project
-    // root, which is what makes "<root>/src/replacescope.ts" and
-    // "<root>/node_modules/esbuild" below correct on every platform this
-    // runs on.
-    const projectRoot = process.cwd();
-    const modulePath = join(projectRoot, "src", "replacescope.ts");
-    const driverPath = join(dir, "driver.mjs");
-    const bundlePath = join(dir, "bundle.cjs");
-    const buildAndRunPath = join(dir, "build-and-run.cjs");
+    const runnerPath = join(dir, "runner.cjs");
     writeFileSync(
-      driverPath,
+      runnerPath,
       [
-        `import { replaceAllInSelection } from ${JSON.stringify(modulePath)};`,
+        `const { replaceAllInSelection } = require(${JSON.stringify(bundlePath)});`,
         `const result = replaceAllInSelection(${JSON.stringify(docText)}, ${JSON.stringify(ranges)}, ${JSON.stringify(query)});`,
         `process.stdout.write(JSON.stringify(result));`,
       ].join("\n"),
     );
-    writeFileSync(
-      buildAndRunPath,
-      [
-        // Absolute path, not a bare "esbuild" specifier: this script's own
-        // location (a temp directory) has no node_modules of its own to
-        // resolve a bare specifier against.
-        `const esbuild = require(${JSON.stringify(join(projectRoot, "node_modules", "esbuild"))});`,
-        // replacescope.ts has zero imports of its own (see its module
-        // header — "zero CodeMirror dependency"), so this bundle is just
-        // that one file's TS stripped to plain JS; no external resolution
-        // to worry about.
-        `esbuild.buildSync({`,
-        `  entryPoints: [${JSON.stringify(driverPath)}],`,
-        `  bundle: true,`,
-        `  platform: "node",`,
-        `  format: "cjs",`,
-        `  outfile: ${JSON.stringify(bundlePath)},`,
-        `  logLevel: "silent",`,
-        `});`,
-        `require(${JSON.stringify(bundlePath)});`,
-      ].join("\n"),
-    );
     let stdout: string;
     try {
-      stdout = execFileSync(process.execPath, [buildAndRunPath], {
+      stdout = execFileSync(process.execPath, [runnerPath], {
         timeout: timeoutMs,
         killSignal: "SIGKILL",
         encoding: "utf8",
@@ -177,7 +199,7 @@ function runReplaceAllInSelectionInChildProcess(
       if (failure.killed || failure.signal) {
         throw new Error(
           `replaceAllInSelection did not return within ${timeoutMs}ms in a child process ` +
-            `(killed by ${failure.signal ?? "timeout"}) — this looks like an infinite-loop ` +
+            `(killed by ${failure.signal ?? "timeout"}) -- this looks like an infinite-loop ` +
             `regression of issue #320, not a normal test failure.`,
         );
       }
