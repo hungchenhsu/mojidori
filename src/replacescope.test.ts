@@ -35,6 +35,7 @@ import {
   buildReplaceScopeResultMessage,
   replaceAllInSelection,
   replaceInSelection,
+  shouldShowReplaceScopeResult,
   type ReplaceEdit,
   type ReplaceRange,
   type ReplaceScopeQuery,
@@ -2444,5 +2445,78 @@ describe("ROADMAP.md v0.9 C2: buildReplaceScopeResultMessage", () => {
     // Not the same string as a genuine replacement - guards against a copy
     // that collapses "0 replaced" into the "some replaced" phrasing.
     expect(message).not.toBe(t("dialog.replaceScopeResultMessage", 1, 1));
+  });
+});
+
+// Codex review (PR #340) found that showing the disclosure unconditionally
+// whenever skippedNonPrecise > 0 makes "Replace in Selection" (the
+// single-match command, normally invoked repeatedly to step through a
+// selection) re-show the same dialog after every click while a persisting
+// imprecise match remains in the (shrinking) selection - e.g. replacing "f"
+// one at a time across "f f ﬁ" would interrupt after the first replacement,
+// again after the second, and again once only the ligature is left.
+// shouldShowReplaceScopeResult is the fix: single-mode defers to
+// `replaced === 0` (this invocation made no further progress - the one point
+// where the skipped count actually explains something), while all-mode
+// (a one-shot bulk operation with no later invocation on the same selection)
+// keeps reporting immediately.
+describe("ROADMAP.md v0.9 C2: shouldShowReplaceScopeResult (Codex review, PR #340)", () => {
+  it("never shows when skippedNonPrecise is 0, regardless of mode or replaced count", () => {
+    expect(shouldShowReplaceScopeResult("single", 0, 0)).toBe(false);
+    expect(shouldShowReplaceScopeResult("single", 5, 0)).toBe(false);
+    expect(shouldShowReplaceScopeResult("all", 0, 0)).toBe(false);
+    expect(shouldShowReplaceScopeResult("all", 5, 0)).toBe(false);
+  });
+
+  it("'all' mode shows immediately whenever skippedNonPrecise > 0, whether or not anything was replaced", () => {
+    expect(shouldShowReplaceScopeResult("all", 3, 1)).toBe(true);
+    expect(shouldShowReplaceScopeResult("all", 0, 1)).toBe(true);
+  });
+
+  it("'single' mode only shows when this invocation replaced nothing (replaced === 0)", () => {
+    expect(shouldShowReplaceScopeResult("single", 0, 1)).toBe(true);
+    expect(shouldShowReplaceScopeResult("single", 1, 1)).toBe(false);
+    expect(shouldShowReplaceScopeResult("single", 3, 2)).toBe(false);
+  });
+
+  it("simulates the repeated-single-Replace walk-through across 'f f ﬁ' that Codex's review flagged: silent for every productive click, shown only on the final one", () => {
+    // Chains real replaceInSelection calls through applyEdits/result.ranges,
+    // exactly like main.ts's dispatchMenuCommand feeds one call's mapped
+    // ranges into the next invocation's live selection - not an approximate
+    // hand-simulation.
+    let docText = "f f " + LIGATURE_FI; // "f f ﬁ"
+    let ranges: readonly ReplaceRange[] = wholeDoc(docText);
+    const query: ReplaceScopeQuery = { search: "f", replace: "X", regexp: false, caseSensitive: true };
+
+    // Click 1: replaces the first "f"; the ligature's imprecise match is
+    // still found by this range's full scan, but must stay silent.
+    let result = replaceInSelection(docText, ranges, query);
+    expect(result.edits.length).toBe(1);
+    expect(result.skippedNonPrecise).toBe(1);
+    expect(shouldShowReplaceScopeResult("single", result.edits.length, result.skippedNonPrecise)).toBe(
+      false,
+    );
+    docText = applyEdits(docText, result.edits);
+    ranges = result.ranges;
+
+    // Click 2, against the post-edit document/selection: replaces the
+    // second "f"; still silent.
+    result = replaceInSelection(docText, ranges, query);
+    expect(result.edits.length).toBe(1);
+    expect(result.skippedNonPrecise).toBe(1);
+    expect(shouldShowReplaceScopeResult("single", result.edits.length, result.skippedNonPrecise)).toBe(
+      false,
+    );
+    docText = applyEdits(docText, result.edits);
+    ranges = result.ranges;
+
+    // Click 3: only the ligature's imprecise match is left - nothing more
+    // can be replaced. This is the one click that must show the dialog.
+    result = replaceInSelection(docText, ranges, query);
+    expect(result.edits.length).toBe(0);
+    expect(result.skippedNonPrecise).toBe(1);
+    expect(shouldShowReplaceScopeResult("single", result.edits.length, result.skippedNonPrecise)).toBe(
+      true,
+    );
   });
 });

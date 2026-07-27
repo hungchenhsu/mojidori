@@ -195,11 +195,15 @@ export interface ReplaceScopeResult {
    * only — every range scanned on the way to the one range whose first
    * match was actually replaced (ranges after that one are never scanned,
    * the same way CM6's own `replaceNext` never looks past the match it took).
-   * `main.ts`'s `dispatchMenuCommand` uses this to decide whether to show
-   * `buildReplaceScopeResultMessage`'s disclosure at all (ROADMAP.md v0.9
-   * C2): a value of `0` is the ordinary, fully-silent case; a positive value
-   * means at least one on-screen highlighted match was not touched, which is
-   * the one case worth interrupting the user about.
+   * `main.ts`'s `dispatchMenuCommand` feeds this (alongside `edits.length`)
+   * into `shouldShowReplaceScopeResult` (ROADMAP.md v0.9 C2) to decide
+   * whether to show `buildReplaceScopeResultMessage`'s disclosure at all: a
+   * value of `0` is the ordinary, fully-silent case regardless of mode; a
+   * positive value means at least one on-screen highlighted match was not
+   * touched, which `shouldShowReplaceScopeResult` treats as worth
+   * interrupting the user about — immediately for `replaceAllInSelection`,
+   * or only once `replaceInSelection` can no longer make further progress
+   * (see `shouldShowReplaceScopeResult`'s own doc comment for why).
    */
   readonly skippedNonPrecise: number;
 }
@@ -1249,6 +1253,54 @@ export function replaceInSelection(
   return { edits: [], ranges: [...ranges], skippedNonPrecise };
 }
 
+/** Which scoped-replace command produced a `ReplaceScopeResult` —
+ *  distinguishes `replaceInSelection` ("single") from `replaceAllInSelection`
+ *  ("all") for `shouldShowReplaceScopeResult` below, which needs to know this
+ *  to decide *when* to show the disclosure, not just whether to. */
+export type ScopedReplaceMode = "single" | "all";
+
+/**
+ * Whether main.ts's `dispatchMenuCommand` should show
+ * `buildReplaceScopeResultMessage`'s disclosure dialog for a given scoped
+ * Replace/Replace All outcome (ROADMAP.md v0.9 C2). `false` whenever
+ * `skippedNonPrecise === 0` regardless of mode — an ordinary, fully-precise
+ * run (the overwhelming common case) stays exactly as silent as it was
+ * before this feature existed, matching every other Line-Operations-style
+ * command in this app, none of which confirm an ordinary success with a
+ * dialog.
+ *
+ * The two modes differ once `skippedNonPrecise > 0`, because they are used
+ * differently in practice:
+ *
+ * - `"all"` (`replaceAllInSelection`) shows immediately, every time — it is
+ *   a one-shot bulk operation over the whole scope, so there is no later
+ *   invocation on the *same* selection that would still reach a persisting
+ *   imprecise match; the disclosure is the only chance to mention it.
+ * - `"single"` (`replaceInSelection`) only shows when `replaced === 0` — CM6
+ *   review found that "single" is normally invoked *repeatedly* to step
+ *   through a selection's matches one at a time (mirrors CM6's own Replace
+ *   button; see this file's `replaceInSelection` doc comment), and an
+ *   imprecise match sitting elsewhere in the (shrinking, but still live)
+ *   selection is found by every one of those repeated scans, not just the
+ *   last one. Showing the dialog unconditionally would interrupt *every*
+ *   click while that leftover persists — e.g. replacing "f" one at a time
+ *   across a selection containing "f f ﬁ" would show it after the first
+ *   replacement, again after the second, and again once only the ligature
+ *   is left — instead of only the one time it actually explains something:
+ *   when this invocation could not replace anything further
+ *   (`replaced === 0`), which is exactly the point where "here is why
+ *   nothing happened" is the useful message, not incidental noise about a
+ *   match a later click will still reach and successfully step past.
+ */
+export function shouldShowReplaceScopeResult(
+  mode: ScopedReplaceMode,
+  replaced: number,
+  skippedNonPrecise: number,
+): boolean {
+  if (skippedNonPrecise === 0) return false;
+  return mode === "all" || replaced === 0;
+}
+
 /**
  * The result message for a scoped Replace/Replace All (ROADMAP.md v0.9 C2,
  * issue #292's optional follow-up) — split out from the DOM-driving
@@ -1256,17 +1308,15 @@ export function replaceInSelection(
  * (mirrors streamreplace.ts's `buildStreamReplaceResultMessage` /
  * lossysave.ts's `buildLossySaveDialogContent`).
  *
- * Deliberately called by main.ts only when `skippedNonPrecise > 0` — this
- * function itself has no opinion on that gating and will happily format a
- * "0 skipped" sentence, but the caller never asks it to: an ordinary,
- * fully-precise Replace/Replace All (the overwhelming common case) stays
- * exactly as silent as it was before this feature existed, matching every
- * other Line-Operations-style command in this app, none of which confirm an
- * ordinary success with a dialog. Only the presence of a genuine
- * divergence — an on-screen highlighted match (CM6's find-panel highlight
- * marks every match, precise or not) that this command did not touch — is
- * judged worth interrupting the user about. This is a deliberate departure
- * from a plain "always report both counts" design; see this PR's
+ * Deliberately called by main.ts only when `shouldShowReplaceScopeResult`
+ * (above) says so — this function itself has no opinion on that gating and
+ * will happily format a "0 skipped" sentence, but the caller never asks it
+ * to outside that gate. Only the presence of a genuine divergence — an
+ * on-screen highlighted match (CM6's find-panel highlight marks every match,
+ * precise or not) that this command did not touch — is judged worth
+ * interrupting the user about, and even then only at the point
+ * `shouldShowReplaceScopeResult` picks. This is a deliberate departure from
+ * a plain "always report both counts, every time" design; see this PR's
  * description for the reasoning.
  */
 export function buildReplaceScopeResultMessage(replaced: number, skippedNonPrecise: number): string {

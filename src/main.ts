@@ -123,7 +123,11 @@ import { orphanBackups } from "./orphans";
 import { showPalette } from "./palette";
 import { showQuickOpen } from "./quickopen";
 import { showFilterableMenu, showMenu, type MenuItem } from "./popup";
-import { buildReplaceScopeResultMessage } from "./replacescope";
+import {
+  buildReplaceScopeResultMessage,
+  shouldShowReplaceScopeResult,
+  type ScopedReplaceMode,
+} from "./replacescope";
 import { decideSaveCompletion, shouldRollbackForceDirty } from "./savecompletion";
 import {
   isFetchAttemptTrustworthy,
@@ -3460,15 +3464,17 @@ function runLineOperation<T>(action: () => T): T | undefined {
  * blocked the call or the search query was invalid (see editor.ts's
  * `dispatchScopedReplace`), in which case there is nothing to report.
  *
- * Shown only when `skippedNonPrecise > 0` — a deliberate departure from
- * "always report both counts" (see `buildReplaceScopeResultMessage`'s doc
- * comment for the full reasoning): a purely successful Replace/Replace All
- * (every on-screen highlighted match either replaced or simply absent)
- * stays exactly as silent as this feature was before this PR, matching
- * every other Line-Operations-style command in this app. Only a genuine
- * divergence — at least one match the find panel would highlight that this
- * command did not touch, because it was not NFKD-`precise` — is judged
- * worth interrupting the user with a dialog for.
+ * Gating is delegated entirely to `shouldShowReplaceScopeResult` (see its
+ * doc comment): an ordinary, fully-precise run stays exactly as silent as
+ * this feature was before this PR either way, matching every other
+ * Line-Operations-style command in this app, but a single-vs-all distinction
+ * is load-bearing here — `mode` must be `"single"` for
+ * `replace_in_selection` and `"all"` for `replace_all_in_selection`, or the
+ * repeated-single-Replace annoyance `shouldShowReplaceScopeResult` exists to
+ * avoid comes right back (Codex review, PR #340: stepping through a
+ * selection containing "f f ﬁ" one "Replace" click at a time would
+ * otherwise re-show this dialog after every click while the ligature
+ * persists, not just once).
  *
  * A blocking `message()` dialog, the same plugin/IPC channel and `kind:
  * "info"` styling `toggleBookmarkFlow`'s `dialog.bookmarkNeedsGotoMessage`
@@ -3479,8 +3485,13 @@ function runLineOperation<T>(action: () => T): T | undefined {
  * messages), so this is the closest existing precedent rather than a new
  * pattern.
  */
-function showScopedReplaceResultIfNeeded(result: ScopedReplaceResult | undefined): void {
-  if (!result || result.skippedNonPrecise === 0) return;
+function showScopedReplaceResultIfNeeded(
+  result: ScopedReplaceResult | undefined,
+  mode: ScopedReplaceMode,
+): void {
+  if (!result || !shouldShowReplaceScopeResult(mode, result.replaced, result.skippedNonPrecise)) {
+    return;
+  }
   void messageDialog(buildReplaceScopeResultMessage(result.replaced, result.skippedNonPrecise), {
     title: t("dialog.replaceScopeResultTitle"),
     kind: "info",
@@ -3842,13 +3853,14 @@ function dispatchMenuCommand(id: string): void {
     // ROADMAP.md v0.9 C2: both now return a result (`undefined` when
     // `runLineOperation`'s own guard blocked the call, or when the search
     // query was invalid — see editor.ts's `dispatchScopedReplace`), which
-    // `showScopedReplaceResultIfNeeded` turns into a dialog only when at
-    // least one match was skipped.
+    // `showScopedReplaceResultIfNeeded` turns into a dialog per
+    // `shouldShowReplaceScopeResult`'s mode-aware gating — the "single" vs
+    // "all" argument here is load-bearing (see that function's doc comment).
     case "replace_in_selection":
-      showScopedReplaceResultIfNeeded(runLineOperation(() => editor.replaceInSelection()));
+      showScopedReplaceResultIfNeeded(runLineOperation(() => editor.replaceInSelection()), "single");
       break;
     case "replace_all_in_selection":
-      showScopedReplaceResultIfNeeded(runLineOperation(() => editor.replaceAllInSelection()));
+      showScopedReplaceResultIfNeeded(runLineOperation(() => editor.replaceAllInSelection()), "all");
       break;
     case "toggle_bookmark":
       toggleBookmarkFlow();
