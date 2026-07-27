@@ -1480,14 +1480,19 @@ describe("issue #292 differential property sweep: plain-string matching is @code
     return pick === 4 ? slice : slice.normalize(forms[pick]);
   }
 
-  /** A query built to land *inside* one document code point's normalized
-   *  expansion: take a code point from the document, expand it, and keep a
-   *  proper substring of that expansion. Those are precisely the queries that
-   *  produce `precise: false` matches - the ones CM6 finds and highlights but
-   *  never replaces - so this generator manufactures the single most
-   *  safety-critical state in this PR (replace vs skip) on purpose, instead
-   *  of waiting for two independent random draws to collide into it. Returns
-   *  null when the document has no code point that expands at all. */
+  /** A query built to cover only part of one document code point's
+   *  normalized expansion: take a code point from the document, expand it,
+   *  and keep a proper substring of that expansion. Such queries are the
+   *  main - though not the only - way to reach `precise: false` matches, the
+   *  ones CM6 finds and highlights but never replaces, so this generator
+   *  manufactures the most safety-critical state in this PR (replace vs
+   *  skip) on purpose instead of waiting for two independent random draws to
+   *  collide into it. It is not a characterization of `precise`: a proper
+   *  substring of an expansion can still be matched precisely when its
+   *  endpoints happen to land on real original-text offsets (see the
+   *  low-surrogate test below, and `NormalizedMatch`'s doc comment in
+   *  replacescope.ts for the authoritative definition). Returns null when the
+   *  document has no code point that expands at all. */
   function randomImpreciseQuery(rand: () => number, docText: string): string | null {
     const starts = codePointAlignedPositions(docText).filter((p) => p < docText.length);
     if (starts.length === 0) return null;
@@ -2040,11 +2045,18 @@ describe("issue #292: scoping, replacement text, and termination for the NFKD sc
   });
 
   it("a precise match can begin on a low surrogate, and this module splits the pair exactly where CM6 does (inherited, not diverged)", () => {
-    // `precise` does NOT mean "code-point aligned" - it means "the match did
-    // not start or end part-way through an expansion". U+1D160's NFKD is
-    // longer than itself AND shares its own leading surrogate unit, so a
-    // query beginning with a lone low surrogate can start a `precise` match
-    // one unit into the character. Replacing it leaves an unpaired surrogate.
+    // `precise` means "both endpoints land on real UTF-16 offsets of the
+    // original text" (see `NormalizedMatch` in replacescope.ts). It does NOT
+    // mean "code-point aligned", and it does NOT mean "did not start
+    // part-way through an expansion" - this case is precisely the
+    // counterexample to that second, tempting reading, and to upstream's own
+    // docstring. U+1D160's NFKD is longer than itself AND shares its own
+    // leading surrogate unit, so a query beginning with a lone low surrogate
+    // starts a match at normalized offset 1 of 6 - part-way through the
+    // expansion - which is still reported `precise: true`, because after
+    // consuming that one identical leading unit the start position is the
+    // genuine original-text offset 1. Replacing it leaves an unpaired
+    // surrogate.
     //
     // This is pinned rather than fixed: CM6's own whole-document Replace All
     // produces the identical edit (asserted below against the real cursor and

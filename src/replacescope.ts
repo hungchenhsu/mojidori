@@ -34,10 +34,15 @@
 // are inherited from upstream *on purpose* and neither is a bug to fix
 // here:
 //
-// 1. Only `precise` matches are replaceable. A match that would have to
-//    start or end strictly *inside* one original code point's normalized
-//    expansion (e.g. query "f" against a "ﬁ" U+FB01 ligature in the
-//    document, which NFKD-expands to "fi") comes back `precise: false`,
+// 1. Only `precise` matches are replaceable — a match is `precise` when
+//    both its endpoints land on real UTF-16 offsets of the original text,
+//    so `[from, to)` denotes exactly the matched content and nothing more
+//    (`NormalizedMatch`'s doc comment is the authoritative definition; the
+//    obvious intuitive phrasings, upstream's own docstring included, are
+//    wrong in a corner this module has a test for). The everyday case is a
+//    query covering only part of one character's expansion — query "f"
+//    against a "ﬁ" U+FB01 ligature, which NFKD-expands to "fi" — which
+//    comes back `precise: false`,
 //    and CM6's own commands never replace those: `replaceAll` pushes a
 //    change only `if (precise)` (dist/index.js:956-959) and `replaceNext`
 //    skips straight past an imprecise match (dist/index.js:925-927). This
@@ -374,9 +379,42 @@ interface PartialMatch {
   readonly precise: boolean;
 }
 
-/** A completed match, before `precise` filtering. `precise` is false when
- *  the match starts or ends strictly inside one original code point's
- *  normalized expansion — see the module header, point 1. */
+/**
+ * A completed match, before `precise` filtering.
+ *
+ * `precise` is the authoritative definition for this whole module, so state
+ * it by mechanism rather than by intuition — the intuitive phrasings are all
+ * subtly wrong, including upstream's own docstring ("set to false if the
+ * match starts or ends _inside_ a character that, when normalized, expands
+ * to multiple characters"), which the U+1D160 case in `stringMatchesInRange`
+ * contradicts.
+ *
+ * `precise` is `posPrecise && endPrecise`, and what it certifies is that the
+ * original-text range `[from, to)` covers **exactly** the content the match
+ * consumed — no original text on either side that the match did not actually
+ * match. (That is upstream's own second sentence: an imprecise match's
+ * "`from`-`to` range covers content that isn't part of the actual match".
+ * Its first sentence — "starts or ends _inside_ a character that expands" —
+ * is the part that does not survive the U+1D160 case.) The two halves:
+ *
+ * - `posPrecise` stays true only while the normalized expansion, read left
+ *   to right, is still unit-for-unit identical to the original code point's
+ *   own leading units. While that holds, the expansion units *skipped*
+ *   before the match's start correspond one-to-one to original units also
+ *   skipped, so `from` excludes exactly them and nothing more. At the first
+ *   divergence that correspondence is gone and the flag drops, for that
+ *   start position and every later one within this code point.
+ * - `endPrecise` is true only on the final unit of the expansion, i.e. the
+ *   match ran to the end of this code point, so `to` (always the code
+ *   point's own end) adds no unmatched trailing content. This is what makes
+ *   query "f" against a "ﬁ" ligature imprecise: `to` would cover the whole
+ *   ligature while the match is only its first half.
+ *
+ * It does **not** mean the match began at the start of an expansion, and it
+ * does **not** mean the endpoints are code point aligned — an original-text
+ * UTF-16 offset can still sit between an astral character's two surrogates,
+ * which is exactly the U+1D160 case pinned in replacescope.test.ts.
+ */
 interface NormalizedMatch {
   readonly from: number;
   readonly to: number;
@@ -493,15 +531,15 @@ function matchNormalizedChar(
  *   an astral character whose NFKD begins with its own high surrogate
  *   (U+1D160 is one: its NFKD is U+1D158 U+1D165 U+1D16E, all sharing the
  *   0xD834 lead unit), a `precise: true` match can begin on the *low*
- *   surrogate. Replacing it then leaves an unpaired surrogate behind.
- *   `precise` means "the match did not start or end part-way through an
- *   expansion", which is not the same statement as "the match is
- *   code-point aligned". This is upstream's behavior exactly — CM6's own
- *   whole-document Replace All produces the identical edit, verified
- *   against the real `SearchCursor` and pinned by test — so it is
- *   inherited here rather than diverged from, on the same principle as the
- *   other inherited quirks above. It needs a query that itself begins with
- *   a lone low surrogate to trigger.
+ *   surrogate. Replacing it then leaves an unpaired surrogate behind. Note
+ *   that such a match does start part-way through the expansion (at
+ *   normalized offset 1 of 6) and is still `precise` — see
+ *   `matchNormalizedChar` for what `precise` actually tracks. This is
+ *   upstream's behavior exactly — CM6's own whole-document Replace All
+ *   produces the identical edit, verified against the real `SearchCursor`
+ *   and pinned by test — so it is inherited here rather than diverged
+ *   from, on the same principle as the other inherited quirks above. It
+ *   needs a query that itself begins with a lone low surrogate to trigger.
  * - **No match is ever zero-length** (`from < to` always), which is what
  *   lets `replaceAllInSelection`'s zero-length-boundary `ownership`
  *   bookkeeping and `mapPosition`'s `zeroLengthAtPosPrecedes` decision stay
