@@ -111,7 +111,20 @@ export const editorBaseThemeSpec = {
   // rather than incidental. Only an outline is added, bolder than the
   // plain match's (2px vs 1px), as an independent "this one is current"
   // cue that doesn't touch background/foreground contrast at all.
+  //
+  // `backgroundColor` must be set to `transparent` explicitly here, not
+  // merely left out: CM6 renders a selected match with *both* classes on
+  // the same span (`class="cm-searchMatch cm-searchMatch-selected"`), so
+  // the plain `.cm-searchMatch` rule above still matches this element too
+  // and CSS cascades its `backgroundColor: var(--accent-soft)` in — the
+  // two rules' declared properties merge per-property, an unset property
+  // here does not cancel a value a *different, less specific* rule sets on
+  // the same element. Only an explicit, more specific declaration on this
+  // rule can override that inherited fill, which is exactly why plain
+  // omission was still leaving a (smaller, but real) second layer on top
+  // of `.cm-selectionBackground`.
   ".cm-searchMatch.cm-searchMatch-selected": {
+    backgroundColor: "transparent",
     outline: "2px solid var(--accent)",
   },
   ".cm-panels": {
