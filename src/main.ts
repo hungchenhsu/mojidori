@@ -19,6 +19,7 @@ import {
   lineCountOf,
   suspiciousCharCountOf,
   textStatsOf,
+  type ScopedReplaceResult,
 } from "./editor";
 import { showCharInspector } from "./charinspect";
 import {
@@ -122,6 +123,7 @@ import { orphanBackups } from "./orphans";
 import { showPalette } from "./palette";
 import { showQuickOpen } from "./quickopen";
 import { showFilterableMenu, showMenu, type MenuItem } from "./popup";
+import { buildReplaceScopeResultMessage } from "./replacescope";
 import { decideSaveCompletion, shouldRollbackForceDirty } from "./savecompletion";
 import {
   isFetchAttemptTrustworthy,
@@ -3433,12 +3435,56 @@ function syncReopenClosedTabState(): void {
  *  so this guard is their only protection; move/duplicate/delete are
  *  genuine CM6 commands that would self-no-op even without it (verified in
  *  editor.test.ts), but are guarded the same way here for one uniform
- *  rejection dialog regardless of which line operation was invoked. */
-function runLineOperation(action: () => void): void {
+ *  rejection dialog regardless of which line operation was invoked.
+ *
+ *  Generic over `action`'s return value (ROADMAP.md v0.9 C2) so a caller
+ *  that needs to know what happened — `replace_in_selection`/
+ *  `replace_all_in_selection`'s scoped-replace result counts, currently the
+ *  only case — can read it back; `undefined` covers both "blocked/no doc"
+ *  (this function's own guard) and whatever `action` itself returns for its
+ *  own no-op case, so a caller must already treat `undefined` as "nothing to
+ *  report" regardless of which of the two it was. Every other call site
+ *  still passes an `action` typed `() => void` and simply discards the
+ *  (`undefined`) result, unaffected by this generalization. */
+function runLineOperation<T>(action: () => T): T | undefined {
   const doc = tabs.active;
-  if (!doc) return;
-  if (blockedByReadOnly(doc)) return;
-  action();
+  if (!doc) return undefined;
+  if (blockedByReadOnly(doc)) return undefined;
+  return action();
+}
+
+/**
+ * Surfaces the scoped-replace disclosure for `replace_in_selection`/
+ * `replace_all_in_selection` (ROADMAP.md v0.9 C2, issue #292's optional
+ * follow-up) — `result` is `undefined` when `runLineOperation`'s guard
+ * blocked the call or the search query was invalid (see editor.ts's
+ * `dispatchScopedReplace`), in which case there is nothing to report.
+ *
+ * Shown only when `skippedNonPrecise > 0` — a deliberate departure from
+ * "always report both counts" (see `buildReplaceScopeResultMessage`'s doc
+ * comment for the full reasoning): a purely successful Replace/Replace All
+ * (every on-screen highlighted match either replaced or simply absent)
+ * stays exactly as silent as this feature was before this PR, matching
+ * every other Line-Operations-style command in this app. Only a genuine
+ * divergence — at least one match the find panel would highlight that this
+ * command did not touch, because it was not NFKD-`precise` — is judged
+ * worth interrupting the user with a dialog for.
+ *
+ * A blocking `message()` dialog, the same plugin/IPC channel and `kind:
+ * "info"` styling `toggleBookmarkFlow`'s `dialog.bookmarkNeedsGotoMessage`
+ * and streamreplace.ts's own result dialog already use — this repo has no
+ * less-interruptive "toast"/status-bar surface for a one-off event message
+ * (status bar elements are all persistent document-state indicators, e.g.
+ * encoding/line-ending/cursor position, not a queue for transient
+ * messages), so this is the closest existing precedent rather than a new
+ * pattern.
+ */
+function showScopedReplaceResultIfNeeded(result: ScopedReplaceResult | undefined): void {
+  if (!result || result.skippedNonPrecise === 0) return;
+  void messageDialog(buildReplaceScopeResultMessage(result.replaced, result.skippedNonPrecise), {
+    title: t("dialog.replaceScopeResultTitle"),
+    kind: "info",
+  });
 }
 
 /** Whether `encoding` (a canonical encoding_rs name, e.g. "UTF-8",
@@ -3793,11 +3839,16 @@ function dispatchMenuCommand(id: string): void {
     // guard. The actual matching, `$`-group substitution, and offset
     // bookkeeping are editor.ts's thin `replaceInSelection`/
     // `replaceAllInSelection`, backed by the pure core replacescope.ts.
+    // ROADMAP.md v0.9 C2: both now return a result (`undefined` when
+    // `runLineOperation`'s own guard blocked the call, or when the search
+    // query was invalid — see editor.ts's `dispatchScopedReplace`), which
+    // `showScopedReplaceResultIfNeeded` turns into a dialog only when at
+    // least one match was skipped.
     case "replace_in_selection":
-      runLineOperation(() => editor.replaceInSelection());
+      showScopedReplaceResultIfNeeded(runLineOperation(() => editor.replaceInSelection()));
       break;
     case "replace_all_in_selection":
-      runLineOperation(() => editor.replaceAllInSelection());
+      showScopedReplaceResultIfNeeded(runLineOperation(() => editor.replaceAllInSelection()));
       break;
     case "toggle_bookmark":
       toggleBookmarkFlow();

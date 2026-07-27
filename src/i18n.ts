@@ -421,6 +421,14 @@ export interface Messages {
   "dialog.lineIndexFailedTitle": string;
   "dialog.bookmarkNeedsGotoTitle": string;
   "dialog.bookmarkNeedsGotoMessage": string;
+  // ROADMAP.md v0.9 C2 (issue #292's optional follow-up): shown after
+  // Replace/Replace All in Selection only when at least one on-screen
+  // highlighted match was skipped for not being NFKD-`precise` (see
+  // replacescope.ts's module header) — see
+  // `replacescope.ts`'s `buildReplaceScopeResultMessage` doc comment for why
+  // a purely successful run (zero skipped) never shows this at all.
+  "dialog.replaceScopeResultTitle": string;
+  "dialog.replaceScopeResultMessage": (replaced: number, skipped: number) => string;
   "dialog.normalizeConfirmTitle": (form: string) => string;
   "dialog.normalizeConfirmMessage": (count: number, form: string) => string;
   "dialog.normalizeConfirmButton": string;
@@ -908,6 +916,11 @@ const en: Messages = {
   "dialog.bookmarkNeedsGotoMessage":
     "This window's position in the file isn't known yet. Use Go to Line " +
     "to jump somewhere first, then bookmark it.",
+  "dialog.replaceScopeResultTitle": "Replace in Selection",
+  "dialog.replaceScopeResultMessage": (replaced, skipped) =>
+    `${replaced} replacement${replaced === 1 ? "" : "s"} made; ${skipped} more ` +
+    `normalization-equivalent match${skipped === 1 ? "" : "es"} ` +
+    `skipped (not precisely aligned).`,
   "dialog.normalizeConfirmTitle": (form) => `Normalize to ${form}`,
   "dialog.normalizeConfirmMessage": (count, form) =>
     `${count} character sequence${count === 1 ? "" : "s"} will change when ` +
@@ -1309,6 +1322,9 @@ const zhTW: Messages = {
   "dialog.bookmarkNeedsGotoTitle": "位置未知",
   "dialog.bookmarkNeedsGotoMessage":
     "目前視窗在檔案中的位置尚未確定。請先用「跳至行號」跳轉一次，再設定書籤。",
+  "dialog.replaceScopeResultTitle": "在選取範圍內取代",
+  "dialog.replaceScopeResultMessage": (replaced, skipped) =>
+    `已取代 ${replaced} 處；另有 ${skipped} 處正規化等價的匹配因非精確對齊被略過。`,
   "dialog.normalizeConfirmTitle": (form) => `正規化為 ${form}`,
   "dialog.normalizeConfirmMessage": (count, form) =>
     `正規化為 ${form} 將變更 ${count} 處字元序列，是否繼續？`,
@@ -1729,6 +1745,10 @@ const ja: Messages = {
   "dialog.bookmarkNeedsGotoMessage":
     "このウィンドウのファイル内での位置がまだ確定していません。先に「行に移動」で" +
     "ジャンプしてから、ブックマークを設定してください。",
+  "dialog.replaceScopeResultTitle": "選択範囲内で置換",
+  "dialog.replaceScopeResultMessage": (replaced, skipped) =>
+    `${replaced} 件を置換しました。正規化上は一致するものの位置が正確でないため、` +
+    `他に ${skipped} 件がスキップされました。`,
   "dialog.normalizeConfirmTitle": (form) => `${form} に正規化`,
   "dialog.normalizeConfirmMessage": (count, form) =>
     `${form} に正規化すると ${count} 件の文字シーケンスが変更されます。続行しますか？`,
@@ -2126,6 +2146,9 @@ const zhCN: Messages = {
   "dialog.bookmarkNeedsGotoTitle": "位置未知",
   "dialog.bookmarkNeedsGotoMessage":
     "当前窗口在文件中的位置尚未确定。请先使用“跳转到行”跳转一次，再设置书签。",
+  "dialog.replaceScopeResultTitle": "在选取范围内替换",
+  "dialog.replaceScopeResultMessage": (replaced, skipped) =>
+    `已替换 ${replaced} 处；另有 ${skipped} 处正规化等价的匹配因非精确对齐被跳过。`,
   "dialog.normalizeConfirmTitle": (form) => `规范化为 ${form}`,
   "dialog.normalizeConfirmMessage": (count, form) =>
     `规范化为 ${form} 将更改 ${count} 处字符序列，是否继续？`,

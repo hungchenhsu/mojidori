@@ -8,12 +8,23 @@
 // function with zero CodeMirror dependency — editor.ts is the only module
 // allowed to import CodeMirror (see its own header comment), and the thin
 // `EditorHandle.replaceInSelection`/`replaceAllInSelection` binding there is
-// the only caller. 100% vitest-covered here (replacescope.test.ts), which
-// also drives the *real* @codemirror/search commands against an unattached
-// `EditorView` (a live EditorView works fine with no `parent`/DOM measure
-// pass — see that file's header) to empirically pin this module's output
-// against CM6's own whole-document replace for every case where the two
-// should agree.
+// the only caller of the matching/replacement functions below. 100%
+// vitest-covered here (replacescope.test.ts), which also drives the *real*
+// @codemirror/search commands against an unattached `EditorView` (a live
+// EditorView works fine with no `parent`/DOM measure pass — see that file's
+// header) to empirically pin this module's output against CM6's own
+// whole-document replace for every case where the two should agree.
+//
+// One exception to "editor.ts is the only caller": `buildReplaceScopeResultMessage`
+// near the bottom of this file (ROADMAP.md v0.9 C2, issue #292's optional
+// follow-up) is also imported directly by main.ts's `dispatchMenuCommand`.
+// It is a plain string-formatting function with no CodeMirror dependency of
+// its own — it only reads `ReplaceScopeResult`'s counts and `i18n.ts`'s
+// dictionary — so this does not reopen the CodeMirror-isolation boundary the
+// rest of the module exists to enforce; it lives here rather than in its own
+// file because it is one small pure function over this module's own result
+// type, and main.ts has no vitest coverage of its own for pure helpers to
+// live in (see CLAUDE.md's Definition of done #3).
 //
 // Plain-string matching (issue #292) is a direct port of
 // @codemirror/search's own `SearchCursor` scanning automaton, NFKD
@@ -51,8 +62,10 @@
 //    *every* match, precise or not (`StringQuery.highlight`,
 //    dist/index.js:672-676) — can still show something that neither this
 //    module nor CM6's own whole-document Replace All will touch. That
-//    residual gap is CM6's own, identical in both, and is what issue
-//    #292's optional follow-up (surfacing a skipped count) is about.
+//    residual gap is CM6's own, identical in both, and is what
+//    `ReplaceScopeResult.skippedNonPrecise` (ROADMAP.md v0.9 C2, issue
+//    #292's optional follow-up) counts and `buildReplaceScopeResultMessage`
+//    surfaces to the user, rather than leaving it invisible.
 // 2. Canonical reordering is not handled, because upstream does not
 //    handle it: the document is normalized one code point at a time,
 //    which cannot reorder combining marks by canonical combining class,
@@ -100,6 +113,8 @@
 // sitting exactly there is a legitimate candidate for both — see
 // `replaceAllInSelection`'s doc comment for how ownership of that shared
 // candidate is resolved (issue #300).
+import { t } from "./i18n";
+
 export interface ReplaceRange {
   readonly from: number;
   readonly to: number;
@@ -162,6 +177,31 @@ export interface ReplaceScopeResult {
    * to search within.
    */
   readonly ranges: readonly ReplaceRange[];
+  /**
+   * How many additional matches, across every scanned range, were found by
+   * the NFKD-normalizing scan but not replaced because they were not
+   * `precise` (see `NormalizedMatch`'s doc comment on `stringMatchesInRange`
+   * for what `precise` means) — the same matches CM6's own find-panel
+   * highlight would show (`StringQuery.highlight` marks every match) but its
+   * whole-document Replace/Replace All would silently skip, exactly as this
+   * module's `edits` do (see the module header's point 1). Always `0` in
+   * regexp mode: `RegExpCursor` never normalizes at all, so there is no
+   * precise/imprecise distinction to skip on (see the module header's
+   * "Regexp search has neither issue" paragraph).
+   *
+   * Counted, not just detected: every range actually scanned contributes its
+   * own imprecise-match count, including a range whose scan found this and
+   * nothing else (see `stringMatchesInRange`) and — for `replaceInSelection`
+   * only — every range scanned on the way to the one range whose first
+   * match was actually replaced (ranges after that one are never scanned,
+   * the same way CM6's own `replaceNext` never looks past the match it took).
+   * `main.ts`'s `dispatchMenuCommand` uses this to decide whether to show
+   * `buildReplaceScopeResultMessage`'s disclosure at all (ROADMAP.md v0.9
+   * C2): a value of `0` is the ordinary, fully-silent case; a positive value
+   * means at least one on-screen highlighted match was not touched, which is
+   * the one case worth interrupting the user about.
+   */
+  readonly skippedNonPrecise: number;
 }
 
 /** @codemirror/search always applies this to the replace text (see
@@ -189,6 +229,17 @@ interface FoundMatch {
   readonly to: number;
   readonly matched: string;
   readonly groups?: readonly (string | undefined)[];
+}
+
+/** The result of scanning one range for matches: the replaceable matches
+ *  themselves, plus (plain-string mode only — see `matchesInRange`) how many
+ *  additional matches were found but skipped for not being `precise`
+ *  (ROADMAP.md v0.9 C2). Shared return shape for `stringMatchesInRange` and
+ *  `regexMatchesInRange` via `matchesInRange`, so every caller of
+ *  `matchesInRange` gets the skipped count for free regardless of mode. */
+interface RangeScanResult {
+  readonly matches: FoundMatch[];
+  readonly skippedNonPrecise: number;
 }
 
 function isHighSurrogate(code: number): boolean {
@@ -576,6 +627,19 @@ function matchNormalizedChar(
  * on the same input — and this module is additionally bounded by the
  * selection rather than the document, but it does run synchronously on the
  * WebView's main thread.
+ *
+ * Alongside the replaceable matches, also counts every match this scan found
+ * but did not push because it was not `precise` (ROADMAP.md v0.9 C2, issue
+ * #292's optional follow-up) — the same count the "matches come back
+ * strictly ascending" bullet above already relies on being tracked
+ * (`partials` is cleared, and the scan resumes, for an imprecise match too,
+ * exactly like a precise one). Counting is a pure side observation of the
+ * existing `found.precise` branch below; it changes no control flow and
+ * therefore cannot change which matches are replaced — see this file's
+ * `replaceAllInSelection`/`replaceInSelection` doc comments for the
+ * hard-constraint that the replace-relevant differential property sweeps in
+ * replacescope.test.ts (which predate this counter) still pin `edits`
+ * byte-for-byte against the real `SearchCursor`/`replaceAll`.
  */
 function stringMatchesInRange(
   docText: string,
@@ -583,15 +647,16 @@ function stringMatchesInRange(
   search: string,
   caseSensitive: boolean,
   wholeWord: boolean,
-): FoundMatch[] {
+): RangeScanResult {
   const matches: FoundMatch[] = [];
+  let skippedNonPrecise = 0;
   const normalize = nfkdNormalizerFor(caseSensitive);
   // The query is normalized as one whole string, the document one code
   // point at a time — upstream does the same (:48 vs :86), and that
   // asymmetry is the origin of the canonical-reordering limitation
   // documented in the module header. Deliberately preserved.
   const query = normalize(search);
-  if (query.length === 0) return matches;
+  if (query.length === 0) return { matches, skippedNonPrecise };
   const wholeWordTest = wholeWord
     ? (from: number, to: number) => isWordBoundaryOk(docText, from, to)
     : undefined;
@@ -654,6 +719,8 @@ function stringMatchesInRange(
             // not the same string as the query.
             matched: docText.slice(found.from, found.to),
           });
+        } else {
+          skippedNonPrecise++;
         }
         partials.length = 0;
         break;
@@ -667,7 +734,7 @@ function stringMatchesInRange(
       else posPrecise = false;
     }
   }
-  return matches;
+  return { matches, skippedNonPrecise };
 }
 
 /**
@@ -812,9 +879,14 @@ function matchesInRange(
   // where that is proven rather than assumed), so this is simply ignored
   // there.
   seedLastAcceptedTo = -1,
-): FoundMatch[] {
+): RangeScanResult {
   if (query.regexp) {
-    if (!compiledRegExp) return [];
+    // Regexp mode never normalizes at all (see the module header's "Regexp
+    // search has neither issue" paragraph) — there is no precise/imprecise
+    // distinction for `RegExpCursor` to disagree with this module on, so
+    // `skippedNonPrecise` is unconditionally `0` here, not derived from
+    // anything upstream reports.
+    if (!compiledRegExp) return { matches: [], skippedNonPrecise: 0 };
     // wholeWord must be woven into the scan itself, not filtered out of its
     // results afterwards — see regexMatchesInRange's doc comment on
     // `wholeWordTest` for why a post-hoc filter here can wrongly suppress a
@@ -826,7 +898,10 @@ function matchesInRange(
     const wholeWordTest = query.wholeWord
       ? (from: number, to: number) => isWordBoundaryOk(docText, from, to)
       : undefined;
-    return regexMatchesInRange(docText, range, compiledRegExp, seedLastAcceptedTo, wholeWordTest);
+    return {
+      matches: regexMatchesInRange(docText, range, compiledRegExp, seedLastAcceptedTo, wholeWordTest),
+      skippedNonPrecise: 0,
+    };
   }
   // Plain-string mode searches with the *unquoted* text (see `unquote` and
   // the `ReplaceScopeQuery` doc comment): @codemirror/search's own
@@ -1037,7 +1112,7 @@ export function replaceAllInSelection(
   ranges: readonly ReplaceRange[],
   query: ReplaceScopeQuery,
 ): ReplaceScopeResult {
-  if (query.search === "") return { edits: [], ranges: [...ranges] };
+  if (query.search === "") return { edits: [], ranges: [...ranges], skippedNonPrecise: 0 };
   const compiled = query.regexp ? buildRegExp(query) : null;
   const edits: ReplaceEdit[] = [];
   // Per-range ownership of a match sitting exactly at that range's own
@@ -1050,13 +1125,23 @@ export function replaceAllInSelection(
   // when it touches that `to` exactly — see this function's doc comment.
   let previousRangeTo: number | null = null;
   let previousRangeLastAcceptedTo = -1;
+  // Summed across every non-empty range's own scan (ROADMAP.md v0.9 C2) —
+  // see `ReplaceScopeResult.skippedNonPrecise`'s doc comment.
+  let skippedNonPrecise = 0;
   for (const range of ranges) {
     if (range.from === range.to) {
       ownership.push({ ownsLeadingBoundary: false, ownsTrailingBoundary: false });
       continue;
     }
     const seed = range.from === previousRangeTo ? previousRangeLastAcceptedTo : -1;
-    const matches = matchesInRange(docText, range, query, compiled, seed);
+    const { matches, skippedNonPrecise: rangeSkipped } = matchesInRange(
+      docText,
+      range,
+      query,
+      compiled,
+      seed,
+    );
+    skippedNonPrecise += rangeSkipped;
     for (const match of matches) {
       edits.push({ from: match.from, to: match.to, insert: expandReplacement(query, match) });
     }
@@ -1073,7 +1158,7 @@ export function replaceAllInSelection(
   const mappedRanges = ranges.map((range, i) =>
     mapRangeEndpoints(range, edits, ownership[i].ownsLeadingBoundary, ownership[i].ownsTrailingBoundary),
   );
-  return { edits, ranges: mappedRanges };
+  return { edits, ranges: mappedRanges, skippedNonPrecise };
 }
 
 /**
@@ -1118,18 +1203,34 @@ export function replaceAllInSelection(
  * boundary between two ranges (PR #318's second round of review), so an
  * untouched neighboring range never grows to swallow a match that was
  * actually replaced in a different range.
+ *
+ * `skippedNonPrecise` (ROADMAP.md v0.9 C2) only ever reflects ranges this
+ * function actually scanned: every range up to and including the one whose
+ * first match was replaced, in order — never the ranges after it, which are
+ * never reached once a match is found (mirroring @codemirror/search's own
+ * `replaceNext`, which never looks past the match it takes either). A range
+ * with zero replaceable matches still contributes its own count here, since
+ * `matchesInRange` is called on it in full before moving to the next range.
  */
 export function replaceInSelection(
   docText: string,
   ranges: readonly ReplaceRange[],
   query: ReplaceScopeQuery,
 ): ReplaceScopeResult {
-  if (query.search === "") return { edits: [], ranges: [...ranges] };
+  if (query.search === "") return { edits: [], ranges: [...ranges], skippedNonPrecise: 0 };
   const compiled = query.regexp ? buildRegExp(query) : null;
+  let skippedNonPrecise = 0;
   for (let i = 0; i < ranges.length; i++) {
     const range = ranges[i];
     if (range.from === range.to) continue;
-    const [first] = matchesInRange(docText, range, query, compiled);
+    const { matches, skippedNonPrecise: rangeSkipped } = matchesInRange(
+      docText,
+      range,
+      query,
+      compiled,
+    );
+    skippedNonPrecise += rangeSkipped;
+    const [first] = matches;
     if (!first) continue;
     const edits: ReplaceEdit[] = [
       { from: first.from, to: first.to, insert: expandReplacement(query, first) },
@@ -1143,7 +1244,31 @@ export function replaceInSelection(
         /* ownsTrailingBoundary */ j === i && isZeroLength && first.to === r.to,
       ),
     );
-    return { edits, ranges: mappedRanges };
+    return { edits, ranges: mappedRanges, skippedNonPrecise };
   }
-  return { edits: [], ranges: [...ranges] };
+  return { edits: [], ranges: [...ranges], skippedNonPrecise };
+}
+
+/**
+ * The result message for a scoped Replace/Replace All (ROADMAP.md v0.9 C2,
+ * issue #292's optional follow-up) — split out from the DOM-driving
+ * `dispatchMenuCommand` in main.ts so it's vitest-covered without a WebView
+ * (mirrors streamreplace.ts's `buildStreamReplaceResultMessage` /
+ * lossysave.ts's `buildLossySaveDialogContent`).
+ *
+ * Deliberately called by main.ts only when `skippedNonPrecise > 0` — this
+ * function itself has no opinion on that gating and will happily format a
+ * "0 skipped" sentence, but the caller never asks it to: an ordinary,
+ * fully-precise Replace/Replace All (the overwhelming common case) stays
+ * exactly as silent as it was before this feature existed, matching every
+ * other Line-Operations-style command in this app, none of which confirm an
+ * ordinary success with a dialog. Only the presence of a genuine
+ * divergence — an on-screen highlighted match (CM6's find-panel highlight
+ * marks every match, precise or not) that this command did not touch — is
+ * judged worth interrupting the user about. This is a deliberate departure
+ * from a plain "always report both counts" design; see this PR's
+ * description for the reasoning.
+ */
+export function buildReplaceScopeResultMessage(replaced: number, skippedNonPrecise: number): string {
+  return t("dialog.replaceScopeResultMessage", replaced, skippedNonPrecise);
 }

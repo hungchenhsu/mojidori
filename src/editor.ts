@@ -124,6 +124,19 @@ function cm6Phrases(locale: Locale): Record<string, string> {
 
 export type EditorBuffer = EditorState;
 
+/** The outcome of a scoped Replace/Replace All (ROADMAP.md v0.9 C2) —
+ *  `EditorHandle.replaceInSelection`/`replaceAllInSelection`'s return value
+ *  when the query was valid (see those methods' doc comments for the
+ *  `undefined` case). Mirrors `replacescope.ts`'s `ReplaceScopeResult`
+ *  counts, not its `edits`/`ranges` (already dispatched by the time this is
+ *  returned — see `dispatchScopedReplace`), so main.ts's caller only ever
+ *  sees the two numbers it needs to decide whether to call
+ *  `buildReplaceScopeResultMessage`. */
+export interface ScopedReplaceResult {
+  readonly replaced: number;
+  readonly skippedNonPrecise: number;
+}
+
 export interface EditorHandle {
   /** Create a detached buffer, e.g. for a newly opened document. */
   newBuffer(content: string, readOnly?: boolean, cursor?: number): EditorBuffer;
@@ -170,15 +183,21 @@ export interface EditorHandle {
    * read the live query and selection, call the core, dispatch its result.
    * A no-op (dispatches nothing) when the query is invalid
    * (`SearchQuery.valid`, e.g. an empty search term or, in regexp mode, an
-   * unparseable pattern) or when no range contains a match — see
-   * `dispatchScopedReplace`.
+   * unparseable pattern) — see `dispatchScopedReplace`. Returns `undefined`
+   * in exactly that invalid-query case; otherwise returns how many matches
+   * were replaced (`0` when no range contained one) and how many additional
+   * NFKD-normalized-equivalent matches were found but skipped for not being
+   * `precise` (ROADMAP.md v0.9 C2 — always `0` in regexp mode; see
+   * `replacescope.ts`'s `ReplaceScopeResult.skippedNonPrecise`), so
+   * `main.ts`'s caller can decide whether to surface
+   * `buildReplaceScopeResultMessage`.
    */
-  replaceInSelection(): void;
+  replaceInSelection(): ScopedReplaceResult | undefined;
   /** Replace every match of the current search query found within the live
    *  buffer's selection — ROADMAP.md v0.7 Track C "Replace All in
-   *  Selection" [danger]. Same core, same no-op conditions, same thin
+   *  Selection" [danger]. Same core, same no-op/return contract, same thin
    *  binding as `replaceInSelection` above; see that method's doc comment. */
-  replaceAllInSelection(): void;
+  replaceAllInSelection(): ScopedReplaceResult | undefined;
   /** Move the cursor to a 1-based line and scroll it into view. `line` is
    *  clamped to the document's line range. `column` (1-based, UTF-16 code
    *  units — same unit and origin as the `column` `onCursorMoved` reports,
@@ -1401,7 +1420,9 @@ export function createEditor(
    * catches an empty search field or, in regexp mode, a pattern that
    * doesn't parse (mirrors `SearchQuery.valid`; see replacescope.ts's
    * `buildRegExp` doc comment), so this never even calls into the core
-   * with a query CM6 itself would refuse to search with.
+   * with a query CM6 itself would refuse to search with; `undefined` is
+   * returned in that case (never `{replaced: 0, ...}`, which would claim a
+   * real, empty attempt was made).
    *
    * `result.edits.length === 0` (nothing matched, or every selection range
    * was empty) dispatches nothing — same no-op-dispatches-nothing contract
@@ -1411,6 +1432,15 @@ export function createEditor(
    * per original range — see `ReplaceScopeResult.ranges`'s doc comment)
    * with the original selection's `mainIndex` preserved, so whichever
    * range was "main" before stays "main" after.
+   *
+   * Unlike the dispatch decision above, the *returned* counts (ROADMAP.md
+   * v0.9 C2) are reported regardless of whether anything was actually
+   * dispatched: a query whose only matches were all skipped as non-`precise`
+   * legitimately has `replaced: 0, skippedNonPrecise: N > 0`, and that is
+   * exactly the case worth telling the user about (see main.ts's caller) —
+   * gating the *count* on `edits.length > 0` the way the dispatch itself is
+   * gated would silently hide the one outcome this feature exists to
+   * surface.
    */
   function dispatchScopedReplace(
     core: (
@@ -1419,9 +1449,9 @@ export function createEditor(
       query: ReplaceScopeQuery,
     ) => ReplaceScopeResult,
     userEvent: string,
-  ): void {
+  ): ScopedReplaceResult | undefined {
     const query = getSearchQuery(view.state);
-    if (!query.valid) return;
+    if (!query.valid) return undefined;
     const { ranges: liveRanges, mainIndex } = view.state.selection;
     const ranges: ReplaceRange[] = liveRanges.map((r) => ({ from: r.from, to: r.to }));
     const result = core(view.state.doc.toString(), ranges, {
@@ -1437,15 +1467,17 @@ export function createEditor(
       caseSensitive: query.caseSensitive,
       wholeWord: query.wholeWord,
     });
-    if (result.edits.length === 0) return;
-    view.dispatch({
-      changes: result.edits,
-      selection: EditorSelection.create(
-        result.ranges.map((r) => EditorSelection.range(r.from, r.to)),
-        mainIndex,
-      ),
-      userEvent,
-    });
+    if (result.edits.length > 0) {
+      view.dispatch({
+        changes: result.edits,
+        selection: EditorSelection.create(
+          result.ranges.map((r) => EditorSelection.range(r.from, r.to)),
+          mainIndex,
+        ),
+        userEvent,
+      });
+    }
+    return { replaced: result.edits.length, skippedNonPrecise: result.skippedNonPrecise };
   }
 
   return {
@@ -1503,12 +1535,9 @@ export function createEditor(
     openSearch: () => {
       openSearchPanel(view);
     },
-    replaceInSelection: () => {
-      dispatchScopedReplace(coreReplaceInSelection, "input.replace");
-    },
-    replaceAllInSelection: () => {
-      dispatchScopedReplace(coreReplaceAllInSelection, "input.replace.all");
-    },
+    replaceInSelection: () => dispatchScopedReplace(coreReplaceInSelection, "input.replace"),
+    replaceAllInSelection: () =>
+      dispatchScopedReplace(coreReplaceAllInSelection, "input.replace.all"),
     revealCursor: () => {
       view.dispatch({
         effects: EditorView.scrollIntoView(view.state.selection.main.head, {

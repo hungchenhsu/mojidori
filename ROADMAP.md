@@ -89,11 +89,17 @@ contributors.
   by test). Merge-gated on a differential property sweep against the
   real SearchCursor plus pre-merge adversarial review. (Feasibility
   investigation posted to the issue 2026-07-27.)
-- [ ] C2 (#292 follow-up, optional this cycle): scoped-replace result
-  message (replaced + skipped-non-precise counts) — requires building
-  result reporting for replace-in-selection from scratch
-  (replacescope → editor → main + four locales); dropped without
-  prejudice if the clock runs out.
+- [x] C2 (#292 follow-up): scoped-replace result message (replaced +
+  skipped-non-precise counts), plumbed end to end
+  (replacescope → editor → main + four locales — `runLineOperation`
+  generalized to return a value). Shown as a `messageDialog` only
+  when at least one match was skipped for not being NFKD-precise; a
+  purely successful Replace/Replace All stays silent, unlike the
+  investigation appendix's "always report both counts" suggestion
+  (reasoning in the PR body). Counting logic and message builder are
+  pure, vitest-covered, including differential sweeps against the
+  real SearchCursor; the replace-behavior differential sweep and all
+  prior tests are unchanged.
 - [ ] C3 (#280): watcher rename-event probe run on macOS + Windows
   CI to measure notify's `event.paths` behavior (including whether
   the old-path watch survives at all) — findings recorded on the
