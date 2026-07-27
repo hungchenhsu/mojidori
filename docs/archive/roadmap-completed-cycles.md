@@ -2039,9 +2039,12 @@ merged 2026-07-23: #307, #308, #309, #311, #312.
   pickers, mojibake/normalize wizards, and more) so none of them can
   slip a change past the flush; the flush itself is serialized with
   any other in-flight save so the two can't race. The updater endpoint
-  is a fixed rolling `updater` release
+  is designed as a fixed rolling `updater` release
   (`.github/workflows/updater-json.yml`), not `releases/latest/...`
-  (prerelease alphas would 404 there); known accepted limitation: the
+  (prerelease alphas would 404 there) — but that workflow only runs on
+  a `release: published` event, and `v0.8.0-alpha.1` remains an
+  unpublished draft, so the feed has not actually been created yet;
+  known accepted limitation once it is live: the
   updater compares version numbers, so alphas sharing one version
   (e.g. two re-releases of `0.8.0-alpha.1`) never trigger an update
   between them — only an actual version bump does. Not yet exercised

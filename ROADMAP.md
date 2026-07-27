@@ -193,8 +193,11 @@ Item counts below are shipped `[x]` items per cycle.
   `tauri-plugin-updater` wired in with a silent startup check and a
   manual File > Check for Updates, the pre-restart flush funneled
   through one shared mutation guard so no input path can slip a
-  change past it, updater feed served from a rolling `updater` release
-  tag, and every tag push opens a draft release for manual publish.
+  change past it, and a rolling `updater` release tag configured to
+  serve the update feed — but not yet doing so, since the feed-publish
+  workflow only runs on a `release: published` event and
+  `v0.8.0-alpha.1` remains an unpublished draft (see DIRECTION §3/D2).
+  Every tag push opens a draft release for manual publish.
   Follow-up migration hardening landed in the same cycle (#311).
   Then a 2026-07-26→27 issue-clearing sweep (PRs #313–#328, not a
   checkbox cycle): CI third-party actions pinned to SHA with minimized

@@ -52,9 +52,12 @@ material.
   resolved and applied — product renamed to **Mojidori** (bundle
   identifier, window title, IPC namespace, crate name) with a
   crash-safe one-time config-directory migration; D2 macOS signing +
-  notarization + auto-update pipeline shipped (`tauri-plugin-updater`,
-  update-time edit-freeze, rolling `updater` release feed) — Windows
-  signing remains undecided (§3/D2). The issue sweep closed a CSP gap
+  notarization + auto-update pipeline implemented
+  (`tauri-plugin-updater`, update-time edit-freeze, a rolling
+  `updater` release tag configured to serve the update feed once
+  activated) — not yet operational since that requires a published
+  release (§3/D2, tracks the same gap as #330); Windows signing
+  remains undecided (§3/D2). The issue sweep closed a CSP gap
   (`security.csp: null` → explicit policy, #316), added macOS
   single-instance enforcement (#315), fixed a save-to-symlink
   regression (#317), two replace-in-selection correctness bugs (#318,
