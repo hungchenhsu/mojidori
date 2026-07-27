@@ -10,7 +10,13 @@ import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import type { Extension } from "@codemirror/state";
 
-const baseTheme = EditorView.theme({
+// Exported separately from `baseTheme` (the wrapped `EditorView.theme()`
+// Extension) so tests can assert on the raw rule values directly — see
+// editor-theme.test.ts. `EditorView.theme()` compiles this object into a
+// CM6 StyleModule/Facet with no supported way to read individual rules back
+// out, so the only non-lying way to unit-test "did we regress to an opaque
+// background" is to check this plain object before it goes in.
+export const editorBaseThemeSpec = {
   "&": {
     color: "var(--fg)",
     backgroundColor: "var(--bg-base)",
@@ -73,10 +79,86 @@ const baseTheme = EditorView.theme({
     backgroundColor: "var(--accent-soft)",
     outline: "1px solid var(--accent)",
   },
+  // Issue #329: pressing Enter in the search panel moves CM6's actual
+  // selection onto this match — @codemirror/search only ever adds the
+  // "-selected" class when `view.state.selection.ranges.some(r => r.from
+  // == from && r.to == to)` (see node_modules/@codemirror/search's match
+  // decoration builder), so `.cm-selectionBackground` above is *always*
+  // painted for this exact range too, every time this rule applies. This
+  // used to be `backgroundColor: var(--accent)` (fully opaque) plus
+  // `color: var(--accent-fg)` to keep the text legible on top of it — a
+  // real user report (opaque block, text fully hidden) showed that isn't
+  // robust in every WebView.
+  //
+  // Two fix attempts were superseded within this same PR after adversarial
+  // review before landing on the current one:
+  //   1. A second translucent layer (`--bg-search-selected`) on top of
+  //      `.cm-selectionBackground` instead of an opaque one. Worse, not
+  //      better: because both layers share the accent hue, they compound
+  //      to an effective opacity of roughly 0.6-0.7, which pulls contrast
+  //      for ordinary `--fg` text down to ~4.2:1 in Dark and ~3.3:1 in
+  //      Dusk, and syntax colors are far worse (e.g. `--syn-comment`,
+  //      already a deliberately muted color, drops to ~1.0-1.7:1 against
+  //      the compounded wash — effectively invisible).
+  //   2. No background of its own at all, relying purely on
+  //      `.cm-selectionBackground`'s existing fill — but CM6 renders a
+  //      selected match with *both* classes on the same span
+  //      (`class="cm-searchMatch cm-searchMatch-selected"`), so the plain
+  //      `.cm-searchMatch` rule above still matches this element too, and
+  //      CSS cascades its `backgroundColor: var(--accent-soft)` in: an
+  //      unset property on this (more specific) rule does not cancel a
+  //      value a *different, less specific* rule sets on the same element.
+  //      That silently left a second (smaller, but real) layer on top of
+  //      `.cm-selectionBackground` again.
+  //
+  // The actual fix has two parts:
+  //   - `backgroundColor: "transparent"` explicitly (not omitted), so this
+  //     rule's higher specificity (two classes vs. `.cm-searchMatch`'s
+  //     one) wins and actually cancels the inherited `--accent-soft` fill.
+  //     The only background left is `.cm-selectionBackground`'s existing,
+  //     already-shipped single translucent layer — the same one every
+  //     ordinary text selection already uses.
+  //   - `color: var(--fg) !important` (below, on a separate, wider rule),
+  //     rather than leaving whatever color the underlying text already
+  //     had. A match can land inside syntax-highlighted text (e.g.
+  //     searching a word that appears in a comment), and this app's syntax
+  //     colors are not all guaranteed to contrast well against
+  //     `--bg-selection` — `--syn-comment` in particular is a deliberately
+  //     muted color already, well under AA against that single layer in
+  //     every theme. Forcing the plain document foreground color sidesteps
+  //     needing every syntax color to individually clear that bar: `--fg`
+  //     itself is verified >=5.6:1 against `--bg-selection`'s composite in
+  //     all four themes (light 10.73, dark 7.01, paper 6.72, dusk 5.65) —
+  //     comfortably above the 4.5 AA threshold. (`--accent-fg` was
+  //     considered and rejected here: it's tuned to pair with a fully
+  //     opaque `--accent`, and lands at only 1.6-2.1:1 against this pale,
+  //     translucent wash — worse than doing nothing.)
+  //
+  // The outline is bolder than the plain match's (2px vs 1px), as an
+  // independent "this one is current" cue that doesn't touch
+  // background/foreground contrast at all.
   ".cm-searchMatch.cm-searchMatch-selected": {
-    backgroundColor: "var(--accent)",
-    color: "var(--accent-fg)",
+    backgroundColor: "transparent",
+    outline: "2px solid var(--accent)",
   },
+  // Separate, wider rule (not merged into the one above) because it also
+  // needs to reach any syntax-highlighting decoration CM6 nests *inside*
+  // a selected match for a partially-overlapping token (e.g. matching
+  // "TODO" inside a longer highlighted comment): `color` is inherited, but
+  // a descendant's own explicit `color` from a syntax rule always wins
+  // over simple inheritance from an ancestor, no matter how that
+  // ancestor's rule is written — `!important` alone only arbitrates
+  // between rules that target the *same* element, it does not let a
+  // parent's color bleed through past a child's own declared style. Only
+  // a selector that also explicitly targets the descendant (the `*` here)
+  // — combined with `!important` to beat the syntax rule's own specificity
+  // for that descendant — is guaranteed to win regardless of exactly how
+  // @codemirror/search and @codemirror/language happen to nest or flatten
+  // overlapping decorations for a given match.
+  ".cm-searchMatch.cm-searchMatch-selected, .cm-searchMatch.cm-searchMatch-selected *":
+    {
+      color: "var(--fg) !important",
+    },
   ".cm-panels": {
     backgroundColor: "var(--bg-raised)",
     color: "var(--fg)",
@@ -233,7 +315,9 @@ const baseTheme = EditorView.theme({
     padding: "0 1px",
     cursor: "pointer",
   },
-});
+} as const;
+
+const baseTheme = EditorView.theme(editorBaseThemeSpec);
 
 const highlightStyle = HighlightStyle.define([
   { tag: t.keyword, color: "var(--syn-keyword)" },
