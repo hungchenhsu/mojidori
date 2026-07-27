@@ -18,16 +18,19 @@ This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinel
 
 Planned 2026-07-27 under the user's standing overnight delegation;
 adversarially reviewed before start (AGREE-WITH-CHANGES — all seven
-required changes adopted, notably: #329's root cause relocated to the
-opaque selected-search-match theme rule, #330 rescoped to the error
-split the upstream updater plugin can actually deliver, a third
-aggregate-ranking gate added to the mojibake batch, and a planned docs
-sweep replaced by the #280 rename-event probe after the sweep was
-verified to be a no-op). Theme: no invented scope — every item traces
-to a filed issue or an established recurring program. Cycle
-constraints: no GUI launch, no release publishing, no visibility
-changes; good-first-issue items (#278, #304, #236, #89) are
-deliberately left for community contributors.
+required changes adopted, notably: #329's initial two hypotheses
+(selection-layer stacking, `--bg-selection` opacity) were falsified
+and the investigation was reopened onto the search-match theme rule
+with a strengthened, fail-first regression-test requirement rather
+than a settled root cause, #330 rescoped to the error split the
+upstream updater plugin can actually deliver, a third aggregate-ranking
+gate added to the mojibake batch, and a planned docs sweep replaced by
+the #280 rename-event probe after the sweep was verified to be a
+no-op). Theme: no invented scope — every item traces to a filed issue
+or an established recurring program. Cycle constraints: no GUI launch,
+no release publishing, no visibility changes; good-first-issue items
+(#278, #304, #236, #89) are deliberately left for community
+contributors.
 
 ### Track A — bug fixes
 
@@ -61,8 +64,10 @@ deliberately left for community contributors.
 ### Track B — encoding trust
 
 - [ ] B1: mojibake `REPAIR_PAIRS` expansion batch (currently 15
-  pairs; the `(windows-125x, UTF-8)` family among chardetng's 19
-  single-byte candidates is the remaining vein). Three admission
+  pairs; the `(windows-125x, UTF-8)` family among chardetng's 21
+  single-byte candidates — per `SINGLE_BYTE_DATA` in the vendored
+  crate, source-verified in `src-tauri/src/mojibake.rs:73–78` — is the
+  remaining vein). Three admission
   gates: (1) chardetng reachability, (2) mutual ambiguity /
   reversibility, (3) new this cycle — an aggregate ranking-regression
   assertion over all existing repair fixtures, because
