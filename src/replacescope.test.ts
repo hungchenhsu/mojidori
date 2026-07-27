@@ -1195,3 +1195,51 @@ describe("consistency with @codemirror/search's own whole-document replace", () 
     expect(expected).toBe("dog cat cat"); // hand-derived: only the first "cat" is replaced
   });
 });
+
+describe("issue #292: NFKD normalized-equivalent matches must be replaced, exactly like CM6's own replaceAll", () => {
+  // Every literal below is written with explicit \u escapes on purpose: the
+  // whole point of these three cases is *which* UTF-16 encoding of the same
+  // visible text sits in the document versus the query, which a source file
+  // full of pre-rendered "\u00e9" glyphs cannot express unambiguously.
+  const PRECOMPOSED_E_ACUTE = "\u00e9"; // é, one code point
+  const DECOMPOSED_E_ACUTE = "e\u0301"; // e + COMBINING ACUTE ACCENT, two code points
+  const LIGATURE_FI = "\ufb01"; // ﬁ, LATIN SMALL LIGATURE FI (NFKD -> "fi")
+
+  function coreWholeDoc(docText: string, query: ReplaceScopeQuery): string {
+    return applyEdits(docText, replaceAllInSelection(docText, wholeDoc(docText), query).edits);
+  }
+
+  it("issue example 1: decomposed e-acute in the document, precomposed in the query", () => {
+    const docText = `caf${DECOMPOSED_E_ACUTE} latte`;
+    const query: ReplaceScopeQuery = {
+      search: `caf${PRECOMPOSED_E_ACUTE}`,
+      replace: "TEA",
+      regexp: false,
+      caseSensitive: true,
+    };
+    const expected = cm6ReplaceAllWholeDoc(docText, query);
+    expect(expected).toBe("TEA latte"); // hand-derived: CM6's own replaceAll does replace it
+    expect(coreWholeDoc(docText, query)).toBe(expected);
+  });
+
+  it("issue example 2: precomposed e-acute in the document, decomposed in the query", () => {
+    const docText = `caf${PRECOMPOSED_E_ACUTE} latte`;
+    const query: ReplaceScopeQuery = {
+      search: `caf${DECOMPOSED_E_ACUTE}`,
+      replace: "TEA",
+      regexp: false,
+      caseSensitive: true,
+    };
+    const expected = cm6ReplaceAllWholeDoc(docText, query);
+    expect(expected).toBe("TEA latte");
+    expect(coreWholeDoc(docText, query)).toBe(expected);
+  });
+
+  it("issue example 3: compatibility ligature in the document, plain \"fi\" in the query", () => {
+    const docText = `${LIGATURE_FI}sh and chips`;
+    const query: ReplaceScopeQuery = { search: "fi", replace: "FI", regexp: false, caseSensitive: true };
+    const expected = cm6ReplaceAllWholeDoc(docText, query);
+    expect(expected).toBe("FIsh and chips");
+    expect(coreWholeDoc(docText, query)).toBe(expected);
+  });
+});
