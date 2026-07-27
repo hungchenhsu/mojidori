@@ -520,6 +520,22 @@ export interface Messages {
   "updater.downloadFailedMessage": string;
   "updater.checkFailedTitle": string;
   "updater.checkFailedMessage": string;
+  // Shown instead of checkFailedTitle/Message when the check's error
+  // classifies as `releaseNotFound` (updaterErrors.ts, issue #330) — the
+  // updater feed itself is unavailable (a 404 from an unpublished/draft
+  // release, indistinguishable from a 403/500 at this point — see that
+  // module's doc comment), not a network problem, so this stays neutral:
+  // never claims "you're up to date" (upToDateTitle/Message below, which
+  // would be false) and never points at the network (checkFailedMessage
+  // above, which would be misleading here).
+  "updater.updateInfoUnavailableTitle": string;
+  "updater.updateInfoUnavailableMessage": string;
+  // Shown instead of checkFailedTitle/Message when the check's error
+  // classifies as `other` (updaterErrors.ts) — a parse/semver/etc. error
+  // that isn't network-shaped and isn't `releaseNotFound` either; a
+  // generic failure message that doesn't guess at a cause.
+  "updater.checkErrorTitle": string;
+  "updater.checkErrorMessage": string;
   // Shown when a manual "Check for Updates…" click lands while another
   // check (background or manual) is already running (ROADMAP.md D2,
   // Codex re-review of PR #309's in-flight guard).
@@ -962,6 +978,11 @@ const en: Messages = {
   "updater.downloadFailedMessage": "The update could not be downloaded. Please try again later.",
   "updater.checkFailedTitle": "Update Check Failed",
   "updater.checkFailedMessage": "Could not check for updates. Please check your internet connection.",
+  "updater.updateInfoUnavailableTitle": "Update Info Unavailable",
+  "updater.updateInfoUnavailableMessage":
+    "No update information is available right now. Please try again later.",
+  "updater.checkErrorTitle": "Update Check Error",
+  "updater.checkErrorMessage": "An error occurred while checking for updates. Please try again later.",
   "updater.checkInProgressTitle": "Check in Progress",
   "updater.checkInProgressMessage": "An update check is already in progress. Please wait for it to finish.",
   "updater.upToDateTitle": "You're Up to Date",
@@ -1354,6 +1375,10 @@ const zhTW: Messages = {
   "updater.downloadFailedMessage": "無法下載更新，請稍後再試。",
   "updater.checkFailedTitle": "檢查更新失敗",
   "updater.checkFailedMessage": "無法檢查更新，請確認網路連線。",
+  "updater.updateInfoUnavailableTitle": "無法取得更新資訊",
+  "updater.updateInfoUnavailableMessage": "目前沒有可用的更新資訊，請稍後再試。",
+  "updater.checkErrorTitle": "檢查更新發生錯誤",
+  "updater.checkErrorMessage": "檢查更新時發生錯誤，請稍後再試。",
   "updater.checkInProgressTitle": "檢查進行中",
   "updater.checkInProgressMessage": "已有更新檢查正在進行，請稍候。",
   "updater.upToDateTitle": "已是最新版本",
@@ -1772,6 +1797,11 @@ const ja: Messages = {
   "updater.downloadFailedMessage": "アップデートをダウンロードできませんでした。しばらくしてから再試行してください。",
   "updater.checkFailedTitle": "アップデートの確認に失敗しました",
   "updater.checkFailedMessage": "アップデートを確認できませんでした。インターネット接続をご確認ください。",
+  "updater.updateInfoUnavailableTitle": "更新情報を取得できません",
+  "updater.updateInfoUnavailableMessage":
+    "現在、更新情報は利用できません。しばらくしてから再度お試しください。",
+  "updater.checkErrorTitle": "アップデートの確認エラー",
+  "updater.checkErrorMessage": "アップデートの確認中にエラーが発生しました。しばらくしてから再度お試しください。",
   "updater.checkInProgressTitle": "確認中",
   "updater.checkInProgressMessage": "アップデートの確認はすでに進行中です。しばらくお待ちください。",
   "updater.upToDateTitle": "最新の状態です",
@@ -2162,6 +2192,10 @@ const zhCN: Messages = {
   "updater.downloadFailedMessage": "无法下载更新，请稍后重试。",
   "updater.checkFailedTitle": "检查更新失败",
   "updater.checkFailedMessage": "无法检查更新，请确认网络连接。",
+  "updater.updateInfoUnavailableTitle": "无法获取更新信息",
+  "updater.updateInfoUnavailableMessage": "目前没有可用的更新信息，请稍后重试。",
+  "updater.checkErrorTitle": "检查更新时出错",
+  "updater.checkErrorMessage": "检查更新时发生错误，请稍后重试。",
   "updater.checkInProgressTitle": "检查进行中",
   "updater.checkInProgressMessage": "已有更新检查正在进行，请稍候。",
   "updater.upToDateTitle": "已是最新版本",
