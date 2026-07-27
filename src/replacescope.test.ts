@@ -30,9 +30,12 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { t } from "./i18n";
 import {
+  buildReplaceScopeResultMessage,
   replaceAllInSelection,
   replaceInSelection,
+  shouldShowReplaceScopeResult,
   type ReplaceEdit,
   type ReplaceRange,
   type ReplaceScopeQuery,
@@ -1787,6 +1790,118 @@ describe("issue #292 differential property sweep: plain-string matching is @code
     }
     expect(casesChecked).toBe(600);
   });
+
+  // ROADMAP.md v0.9 C2 (issue #292's optional follow-up): the same
+  // differential-sweep discipline as (A)/(A') above, applied to
+  // `ReplaceScopeResult.skippedNonPrecise` instead of `edits` — ground truth
+  // is the real `SearchCursor`'s own imprecise-match count, not a
+  // hand-derived expectation.
+  it("(C) replaceAllInSelection's skippedNonPrecise equals the real SearchCursor's imprecise-match count, for whole-document and sub-ranges alike", () => {
+    const rand = mulberry32(0x292f);
+    let casesChecked = 0;
+    let casesWithSkip = 0;
+    for (let iteration = 0; iteration < 3000; iteration++) {
+      const docText = randomString(rand, NFKD_ALPHABET, 6);
+      const searchText = randomQuery(rand, docText, NFKD_ALPHABET);
+      const caseSensitive = rand() < 0.5;
+      const query: ReplaceScopeQuery = {
+        search: searchText,
+        replace: "Z",
+        regexp: false,
+        caseSensitive,
+        wholeWord: false,
+      };
+      const ranges: ReplaceRange[] = [
+        { from: 0, to: docText.length },
+        randomRange(rand, docText),
+        randomRange(rand, docText),
+        randomUnalignedRange(rand, docText),
+      ];
+      for (const range of ranges) {
+        casesChecked++;
+        const upstream = cm6MatchesInRange(docText, range, searchText, caseSensitive);
+        const expectedSkipped = upstream.filter((m) => !m.precise).length;
+        const result = replaceAllInSelection(docText, [range], query);
+        expect(result.skippedNonPrecise).toBe(expectedSkipped);
+        if (expectedSkipped > 0) casesWithSkip++;
+      }
+    }
+    expect(casesChecked).toBe(12000);
+    // Same "still reached" floor discipline as (A) above.
+    expect(casesWithSkip).toBeGreaterThan(200);
+  });
+
+  it("(C') a multi-range selection's skippedNonPrecise is exactly the sum of the real SearchCursor's per-range imprecise-match counts", () => {
+    const rand = mulberry32(0x2930);
+    let casesChecked = 0;
+    for (let iteration = 0; iteration < 1500; iteration++) {
+      const docText = randomString(rand, NFKD_ALPHABET, 8);
+      const searchText = randomQuery(rand, docText, NFKD_ALPHABET);
+      const caseSensitive = rand() < 0.5;
+      const query: ReplaceScopeQuery = {
+        search: searchText,
+        replace: "Z",
+        regexp: false,
+        caseSensitive,
+        wholeWord: false,
+      };
+      const positions = codePointAlignedPositions(docText);
+      const cut = positions[Math.floor(rand() * positions.length)];
+      const ranges: ReplaceRange[] = [
+        { from: 0, to: cut },
+        { from: cut, to: docText.length },
+      ];
+      casesChecked++;
+      const result = replaceAllInSelection(docText, ranges, query);
+      const expectedSkipped = ranges.reduce(
+        (sum, r) =>
+          sum + cm6MatchesInRange(docText, r, searchText, caseSensitive).filter((m) => !m.precise).length,
+        0,
+      );
+      expect(result.skippedNonPrecise).toBe(expectedSkipped);
+    }
+    expect(casesChecked).toBe(1500);
+  });
+
+  it("(D) replaceInSelection's skippedNonPrecise sums only the ranges actually scanned - up to and including the one whose match was replaced, never the ranges after it", () => {
+    const rand = mulberry32(0x2931);
+    let casesChecked = 0;
+    let casesWithSkip = 0;
+    for (let iteration = 0; iteration < 2000; iteration++) {
+      const docText = randomString(rand, NFKD_ALPHABET, 8);
+      const searchText = randomQuery(rand, docText, NFKD_ALPHABET);
+      const caseSensitive = rand() < 0.5;
+      const query: ReplaceScopeQuery = {
+        search: searchText,
+        replace: "Z",
+        regexp: false,
+        caseSensitive,
+        wholeWord: false,
+      };
+      const positions = codePointAlignedPositions(docText);
+      const cut = positions[Math.floor(rand() * positions.length)];
+      const ranges: ReplaceRange[] = [
+        { from: 0, to: cut },
+        { from: cut, to: docText.length },
+      ];
+      casesChecked++;
+      const result = replaceInSelection(docText, ranges, query);
+      // Ground truth: scan ranges in order, exactly like replaceInSelection
+      // itself - accumulate each range's imprecise count, and stop (without
+      // scanning any later range) as soon as one range has a precise match.
+      let expectedSkipped = 0;
+      for (const r of ranges) {
+        if (r.from === r.to) continue;
+        const upstream = cm6MatchesInRange(docText, r, searchText, caseSensitive);
+        expectedSkipped += upstream.filter((m) => !m.precise).length;
+        if (upstream.some((m) => m.precise)) break;
+      }
+      expect(result.skippedNonPrecise).toBe(expectedSkipped);
+      if (expectedSkipped > 0) casesWithSkip++;
+    }
+    expect(casesChecked).toBe(2000);
+    expect(casesWithSkip).toBeGreaterThan(150);
+  });
 });
 
 describe("issue #292: inherited upstream semantics that must NOT be 'fixed'", () => {
@@ -2178,4 +2293,230 @@ describe("issue #292: scoping, replacement text, and termination for the NFKD sc
     },
     15000,
   );
+});
+
+// ---------------------------------------------------------------------------
+// ROADMAP.md v0.9 C2 (issue #292's optional follow-up): skippedNonPrecise
+// counting and the result message it feeds. The property sweeps (C)/(C')/(D)
+// above already pin the counting logic differentially against the real
+// SearchCursor; these are the hand-written fixtures the hard-constraint
+// checklist calls for by name (has-a-skip via a half-ligature query,
+// zero-skip, regexp-mode-always-0, and a range boundary that changes the
+// count), plus coverage of the pure message builder.
+// ---------------------------------------------------------------------------
+describe("ROADMAP.md v0.9 C2: skippedNonPrecise counting", () => {
+  it("a half-ligature query (query covers only part of the ligature's NFKD expansion) is counted as one skipped match, in both replaceAllInSelection and replaceInSelection", () => {
+    const docText = LIGATURE_FI + "sh"; // NFKD-expands to "fi"; query "f" only covers half
+    const query: ReplaceScopeQuery = { search: "f", replace: "X", regexp: false, caseSensitive: true };
+
+    const allResult = replaceAllInSelection(docText, wholeDoc(docText), query);
+    expect(allResult.edits).toEqual([]);
+    expect(allResult.skippedNonPrecise).toBe(1);
+
+    const oneResult = replaceInSelection(docText, wholeDoc(docText), query);
+    expect(oneResult.edits).toEqual([]);
+    expect(oneResult.skippedNonPrecise).toBe(1);
+  });
+
+  it("zero skipped when every match found is precise (ordinary ASCII, no NFKD divergence)", () => {
+    const docText = "cat cat cat";
+    const query: ReplaceScopeQuery = { search: "cat", replace: "dog", regexp: false, caseSensitive: true };
+
+    const allResult = replaceAllInSelection(docText, wholeDoc(docText), query);
+    expect(allResult.edits.length).toBe(3);
+    expect(allResult.skippedNonPrecise).toBe(0);
+
+    const oneResult = replaceInSelection(docText, wholeDoc(docText), query);
+    expect(oneResult.edits.length).toBe(1);
+    expect(oneResult.skippedNonPrecise).toBe(0);
+  });
+
+  it("zero skipped when there is no match at all", () => {
+    const docText = "hello world";
+    const query: ReplaceScopeQuery = { search: "xyz", replace: "Z", regexp: false, caseSensitive: true };
+    expect(replaceAllInSelection(docText, wholeDoc(docText), query).skippedNonPrecise).toBe(0);
+    expect(replaceInSelection(docText, wholeDoc(docText), query).skippedNonPrecise).toBe(0);
+  });
+
+  it("regexp mode always reports skippedNonPrecise 0, even on a document a plain-string scan would find an imprecise match in", () => {
+    // Same docText/query shape as the half-ligature case above, but with
+    // regexp: true — RegExpCursor never normalizes at all (see the module
+    // header's "Regexp search has neither issue" paragraph), so there is no
+    // precise/imprecise distinction to skip on in the first place: the raw
+    // pattern "f" simply does not match the ligature's raw UTF-16 text, and
+    // skippedNonPrecise is unconditionally 0 rather than derived from "no
+    // matches found".
+    const docText = LIGATURE_FI + "sh";
+    const regexpQuery: ReplaceScopeQuery = { search: "f", replace: "X", regexp: true, caseSensitive: true };
+    expect(replaceAllInSelection(docText, wholeDoc(docText), regexpQuery).skippedNonPrecise).toBe(0);
+    expect(replaceInSelection(docText, wholeDoc(docText), regexpQuery).skippedNonPrecise).toBe(0);
+
+    // And on a document/pattern pair where regexp mode *does* replace
+    // something, to confirm 0 is reported even alongside real edits, not
+    // just in the trivial zero-match case above.
+    const plainDoc = "fish";
+    const matchingRegexpQuery: ReplaceScopeQuery = {
+      search: "f",
+      replace: "F",
+      regexp: true,
+      caseSensitive: true,
+    };
+    const result = replaceAllInSelection(plainDoc, wholeDoc(plainDoc), matchingRegexpQuery);
+    expect(result.edits).toEqual([{ from: 0, to: 1, insert: "F" }]);
+    expect(result.skippedNonPrecise).toBe(0);
+  });
+
+  it("range boundary: skippedNonPrecise only counts an imprecise match when the scanned range actually includes it", () => {
+    // "xx" + ligature + "sh": the ligature (one UTF-16 code unit) sits at
+    // offset 2, so a range ending at or before 2 never reads it at all,
+    // while a range starting at or before 2 and ending past it does.
+    const docText = "xx" + LIGATURE_FI + "sh";
+    const query: ReplaceScopeQuery = { search: "f", replace: "X", regexp: false, caseSensitive: true };
+
+    const excluding = replaceAllInSelection(docText, [{ from: 0, to: 2 }], query);
+    expect(excluding.edits).toEqual([]);
+    expect(excluding.skippedNonPrecise).toBe(0);
+
+    const including = replaceAllInSelection(docText, [{ from: 2, to: docText.length }], query);
+    expect(including.edits).toEqual([]);
+    expect(including.skippedNonPrecise).toBe(1);
+
+    const wholeDocResult = replaceAllInSelection(docText, wholeDoc(docText), query);
+    expect(wholeDocResult.skippedNonPrecise).toBe(1);
+
+    // Same range split, but as two ranges handed to one call: the boundary
+    // that excludes the ligature contributes nothing, only the one that
+    // reaches it does - summed, not double-counted.
+    const split = replaceAllInSelection(
+      docText,
+      [
+        { from: 0, to: 2 },
+        { from: 2, to: docText.length },
+      ],
+      query,
+    );
+    expect(split.skippedNonPrecise).toBe(1);
+  });
+
+  it("range boundary: two ranges each containing their own ligature contribute one skip each (sum, not just presence)", () => {
+    const docText = LIGATURE_FI + LIGATURE_FI; // two independent ligatures, offsets [0,1) and [1,2)
+    const query: ReplaceScopeQuery = { search: "f", replace: "X", regexp: false, caseSensitive: true };
+    const result = replaceAllInSelection(
+      docText,
+      [
+        { from: 0, to: 1 },
+        { from: 1, to: 2 },
+      ],
+      query,
+    );
+    expect(result.edits).toEqual([]);
+    expect(result.skippedNonPrecise).toBe(2);
+  });
+
+  it("replaceInSelection keeps scanning (and keeps accumulating skippedNonPrecise) past a range whose only match was imprecise", () => {
+    // First range has no match at all (0 skipped, nothing replaced); second
+    // range has only the ligature's imprecise match, so replaceInSelection's
+    // `if (!first) continue` moves on to a third range rather than stopping;
+    // that third range has no "f" either. The point: a range that
+    // contributes a skip but no replaceable match must not be mistaken for
+    // "a match was found here" by whatever loop accumulates the count.
+    const docText = "zz" + LIGATURE_FI + "sh" + "cat"; // "zzﬁshcat", length 8
+    const query: ReplaceScopeQuery = { search: "f", replace: "X", regexp: false, caseSensitive: true };
+    const ranges: ReplaceRange[] = [
+      { from: 0, to: 2 }, // "zz" - no match, 0 skipped
+      { from: 2, to: 5 }, // ligature + "sh" - 1 skipped, no precise match
+      { from: 5, to: 8 }, // "cat" - no "f", 0 skipped
+    ];
+    const result = replaceInSelection(docText, ranges, query);
+    expect(result.edits).toEqual([]);
+    expect(result.skippedNonPrecise).toBe(1);
+  });
+});
+
+describe("ROADMAP.md v0.9 C2: buildReplaceScopeResultMessage", () => {
+  it("delegates to the i18n dictionary with the replaced and skipped counts, in order", () => {
+    expect(buildReplaceScopeResultMessage(3, 2)).toBe(t("dialog.replaceScopeResultMessage", 3, 2));
+    expect(buildReplaceScopeResultMessage(0, 1)).toBe(t("dialog.replaceScopeResultMessage", 0, 1));
+  });
+
+  it("handles a zero-replaced, positive-skipped combination - the case worth surfacing even though nothing was replaced", () => {
+    const message = buildReplaceScopeResultMessage(0, 1);
+    expect(message).toBe(t("dialog.replaceScopeResultMessage", 0, 1));
+    // Not the same string as a genuine replacement - guards against a copy
+    // that collapses "0 replaced" into the "some replaced" phrasing.
+    expect(message).not.toBe(t("dialog.replaceScopeResultMessage", 1, 1));
+  });
+});
+
+// Codex review (PR #340) found that showing the disclosure unconditionally
+// whenever skippedNonPrecise > 0 makes "Replace in Selection" (the
+// single-match command, normally invoked repeatedly to step through a
+// selection) re-show the same dialog after every click while a persisting
+// imprecise match remains in the (shrinking) selection - e.g. replacing "f"
+// one at a time across "f f ﬁ" would interrupt after the first replacement,
+// again after the second, and again once only the ligature is left.
+// shouldShowReplaceScopeResult is the fix: single-mode defers to
+// `replaced === 0` (this invocation made no further progress - the one point
+// where the skipped count actually explains something), while all-mode
+// (a one-shot bulk operation with no later invocation on the same selection)
+// keeps reporting immediately.
+describe("ROADMAP.md v0.9 C2: shouldShowReplaceScopeResult (Codex review, PR #340)", () => {
+  it("never shows when skippedNonPrecise is 0, regardless of mode or replaced count", () => {
+    expect(shouldShowReplaceScopeResult("single", 0, 0)).toBe(false);
+    expect(shouldShowReplaceScopeResult("single", 5, 0)).toBe(false);
+    expect(shouldShowReplaceScopeResult("all", 0, 0)).toBe(false);
+    expect(shouldShowReplaceScopeResult("all", 5, 0)).toBe(false);
+  });
+
+  it("'all' mode shows immediately whenever skippedNonPrecise > 0, whether or not anything was replaced", () => {
+    expect(shouldShowReplaceScopeResult("all", 3, 1)).toBe(true);
+    expect(shouldShowReplaceScopeResult("all", 0, 1)).toBe(true);
+  });
+
+  it("'single' mode only shows when this invocation replaced nothing (replaced === 0)", () => {
+    expect(shouldShowReplaceScopeResult("single", 0, 1)).toBe(true);
+    expect(shouldShowReplaceScopeResult("single", 1, 1)).toBe(false);
+    expect(shouldShowReplaceScopeResult("single", 3, 2)).toBe(false);
+  });
+
+  it("simulates the repeated-single-Replace walk-through across 'f f ﬁ' that Codex's review flagged: silent for every productive click, shown only on the final one", () => {
+    // Chains real replaceInSelection calls through applyEdits/result.ranges,
+    // exactly like main.ts's dispatchMenuCommand feeds one call's mapped
+    // ranges into the next invocation's live selection - not an approximate
+    // hand-simulation.
+    let docText = "f f " + LIGATURE_FI; // "f f ﬁ"
+    let ranges: readonly ReplaceRange[] = wholeDoc(docText);
+    const query: ReplaceScopeQuery = { search: "f", replace: "X", regexp: false, caseSensitive: true };
+
+    // Click 1: replaces the first "f"; the ligature's imprecise match is
+    // still found by this range's full scan, but must stay silent.
+    let result = replaceInSelection(docText, ranges, query);
+    expect(result.edits.length).toBe(1);
+    expect(result.skippedNonPrecise).toBe(1);
+    expect(shouldShowReplaceScopeResult("single", result.edits.length, result.skippedNonPrecise)).toBe(
+      false,
+    );
+    docText = applyEdits(docText, result.edits);
+    ranges = result.ranges;
+
+    // Click 2, against the post-edit document/selection: replaces the
+    // second "f"; still silent.
+    result = replaceInSelection(docText, ranges, query);
+    expect(result.edits.length).toBe(1);
+    expect(result.skippedNonPrecise).toBe(1);
+    expect(shouldShowReplaceScopeResult("single", result.edits.length, result.skippedNonPrecise)).toBe(
+      false,
+    );
+    docText = applyEdits(docText, result.edits);
+    ranges = result.ranges;
+
+    // Click 3: only the ligature's imprecise match is left - nothing more
+    // can be replaced. This is the one click that must show the dialog.
+    result = replaceInSelection(docText, ranges, query);
+    expect(result.edits.length).toBe(0);
+    expect(result.skippedNonPrecise).toBe(1);
+    expect(shouldShowReplaceScopeResult("single", result.edits.length, result.skippedNonPrecise)).toBe(
+      true,
+    );
+  });
 });
