@@ -1286,6 +1286,12 @@ const KELVIN_SIGN = "\u212a";
 const DOTTED_CAPITAL_I = "\u0130";
 /** "i" + U+0307 - exactly `DOTTED_CAPITAL_I.toLowerCase()`. */
 const DOTTED_I_LOWERCASED = "i\u0307";
+/** U+1D160 MUSICAL SYMBOL EIGHTH NOTE: astral, and its NFKD is *longer* than
+ *  itself (U+1D158 U+1D165 U+1D16E) while sharing its own leading surrogate
+ *  unit (0xD834). That combination is what lets a match start on a *low*
+ *  surrogate while still being reported `precise` - see the surrogate-split
+ *  test below. U+1D400 cannot reach that state: its NFKD only shrinks. */
+const MUSICAL_EIGHTH_NOTE = "\u{1D160}";
 /** U+1D2C MODIFIER LETTER CAPITAL A: has no lowercase mapping of its own,
  *  but its NFKD is the ASCII "A", which does - so the two possible
  *  compositions of NFKD and case folding give different answers for it.
@@ -1413,6 +1419,14 @@ describe("issue #292 differential property sweep: plain-string matching is @code
     KELVIN_SIGN,
     "K",
     MODIFIER_CAPITAL_A,
+    MUSICAL_EIGHTH_NOTE,
+    // A line break, so `cm6MatchesInRange`'s `Text.of(docText.split("\n"))`
+    // actually produces a multi-chunk document. Upstream's SearchCursor
+    // iterates the searched region one *line* at a time, and this module
+    // scans the flat string instead; without a newline in the corpus that
+    // equivalence argument (see `codePointSizeAt`'s doc comment) would never
+    // be exercised at all.
+    "\n",
   ];
   // The same corpus minus everything carrying a combining mark: with
   // `wholeWord` on, this module categorizes word boundaries per code point
@@ -1650,6 +1664,56 @@ describe("issue #292 differential property sweep: plain-string matching is @code
       expect(() => applyEditsViaCodeMirrorState(docText, result.edits)).not.toThrow();
     }
     expect(casesChecked).toBe(1500);
+  });
+
+  it("(A'') replaceInSelection replaces exactly the first precise match the real SearchCursor reports in the first range that has one", () => {
+    // `replaceInSelection` has its own match-selection path (first range with
+    // any match, earliest match in it) that the (A)/(A') sweeps never touch -
+    // they only drive `replaceAllInSelection`. Without this, the single-match
+    // command's interaction with `precise` gating rests on three hand-written
+    // negative assertions.
+    const rand = mulberry32(0x292e);
+    let casesChecked = 0;
+    let casesWithAnEdit = 0;
+    for (let iteration = 0; iteration < 2000; iteration++) {
+      const docText = randomString(rand, NFKD_ALPHABET, 8);
+      const searchText = randomQuery(rand, docText, NFKD_ALPHABET);
+      const caseSensitive = rand() < 0.5;
+      const query: ReplaceScopeQuery = {
+        search: searchText,
+        replace: "Z",
+        regexp: false,
+        caseSensitive,
+        wholeWord: false,
+      };
+      const positions = codePointAlignedPositions(docText);
+      const cut = positions[Math.floor(rand() * positions.length)];
+      const ranges: ReplaceRange[] = [
+        { from: 0, to: cut },
+        { from: cut, to: docText.length },
+      ];
+      casesChecked++;
+      const result = replaceInSelection(docText, ranges, query);
+      // Ground truth: the first range (in order) that has a precise match,
+      // and that range's earliest precise match.
+      let expected: { from: number; to: number } | null = null;
+      for (const r of ranges) {
+        if (r.from === r.to) continue;
+        const [first] = cm6PreciseMatchesInRange(docText, r, searchText, caseSensitive);
+        if (first) {
+          expected = first;
+          break;
+        }
+      }
+      if (expected === null) {
+        expect(result.edits).toEqual([]);
+      } else {
+        casesWithAnEdit++;
+        expect(result.edits).toEqual([{ from: expected.from, to: expected.to, insert: "Z" }]);
+      }
+    }
+    expect(casesChecked).toBe(2000);
+    expect(casesWithAnEdit).toBeGreaterThan(400);
   });
 
   it("(B) whole-document edits reproduce the real replaceAll command's document exactly", () => {
@@ -1974,6 +2038,75 @@ describe("issue #292: scoping, replacement text, and termination for the NFKD sc
       { from: 0, to: 2, insert: "Y" },
     ]);
   });
+
+  it("a precise match can begin on a low surrogate, and this module splits the pair exactly where CM6 does (inherited, not diverged)", () => {
+    // `precise` does NOT mean "code-point aligned" - it means "the match did
+    // not start or end part-way through an expansion". U+1D160's NFKD is
+    // longer than itself AND shares its own leading surrogate unit, so a
+    // query beginning with a lone low surrogate can start a `precise` match
+    // one unit into the character. Replacing it leaves an unpaired surrogate.
+    //
+    // This is pinned rather than fixed: CM6's own whole-document Replace All
+    // produces the identical edit (asserted below against the real cursor and
+    // the real command), and this PR's contract is exact parity with it. It
+    // requires the user to get a lone low surrogate into the Find field.
+    const docText = MUSICAL_EIGHTH_NOTE + "x";
+    const expansion = MUSICAL_EIGHTH_NOTE.normalize("NFKD");
+    expect(expansion.length).toBe(6); // longer than the 2-unit original
+    expect(expansion.charCodeAt(0)).toBe(MUSICAL_EIGHTH_NOTE.charCodeAt(0)); // shared lead unit
+    const searchText = expansion.slice(1); // starts with a lone low surrogate
+    // Upstream reports it, precise, starting at offset 1 - mid-surrogate.
+    expect(cm6MatchesInRange(docText, { from: 0, to: docText.length }, searchText, true)).toEqual([
+      { from: 1, to: 2, precise: true },
+    ]);
+    const query: ReplaceScopeQuery = {
+      search: searchText,
+      replace: "Z",
+      regexp: false,
+      caseSensitive: true,
+    };
+    const result = replaceAllInSelection(docText, wholeDoc(docText), query);
+    expect(result.edits).toEqual([{ from: 1, to: 2, insert: "Z" }]);
+    // Byte-for-byte agreement with the real replaceAll command, including the
+    // unpaired high surrogate both of them leave behind.
+    const ours = applyEditsViaCodeMirrorState(docText, result.edits);
+    expect(ours).toBe(cm6ReplaceAllWholeDoc(docText, query));
+    expect(ours.charCodeAt(0)).toBe(0xd834);
+    expect(ours.charCodeAt(1)).toBe("Z".charCodeAt(0)); // the pair really is split
+  });
+
+  it(
+    "a range reaching past the end of the document terminates instead of hanging",
+    () => {
+      // `range.to > docText.length` used to make the scan's slice come back
+      // empty, so the position never advanced and the loop spun forever -
+      // the #320/#327 no-progress family again, reachable through a bad
+      // range rather than a bad character. Not reachable from the app
+      // (editor.ts always passes live selection ranges against the matching
+      // document), but this module is a pure function and its contract
+      // should not be "pre-validate the range or the process hangs".
+      //
+      // Out-of-process for the same reason as the issue #320 test above: a
+      // regression is a synchronous loop that Vitest's own timeout cannot
+      // interrupt.
+      const docText = "ab";
+      const query: ReplaceScopeQuery = {
+        search: "a",
+        replace: "Z",
+        regexp: false,
+        caseSensitive: true,
+      };
+      const result = runReplaceAllInSelectionInChildProcess(
+        docText,
+        [{ from: 0, to: 5 }], // past the end of a 2-character document
+        query,
+        5000,
+      );
+      expect(result.edits).toEqual([{ from: 0, to: 1, insert: "Z" }]);
+      expect(applyEditsViaCodeMirrorState(docText, result.edits)).toBe("Zb");
+    },
+    15000,
+  );
 
   it(
     "replaceAllInSelection terminates out-of-process on an NFKD-heavy astral/combining document",

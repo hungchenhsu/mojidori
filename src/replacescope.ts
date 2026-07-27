@@ -397,11 +397,15 @@ interface NormalizedMatch {
  * - `pos`/`posPrecise` describe where this code unit's own would-be match
  *   *start* is, `end`/`endPrecise` where the current original code point
  *   ends; a completed match takes `from` from whichever partial completed
- *   (or `pos`, for a one-code-unit query) and `to` always from `end`, which
- *   is why every match boundary this module ever produces is an original
- *   code point boundary and the downstream offset bookkeeping
- *   (`mapPosition`/`mapRangeEndpoints`/`expandReplacement`) needs no
- *   normalization awareness at all.
+ *   (or `pos`, for a one-code-unit query) and `to` always from `end`. A
+ *   match's `to` is therefore always an original code point boundary. Its
+ *   `from` is **not** guaranteed to be one — see `stringMatchesInRange`'s
+ *   note on `matchStart`, which can advance *into* a code point while
+ *   `posPrecise` is still true. What the downstream offset bookkeeping
+ *   (`mapPosition`/`mapRangeEndpoints`/`expandReplacement`) actually needs
+ *   is only that these are plain `docText` offsets in the original
+ *   coordinate system, which they are; nothing downstream inspects
+ *   surrogate alignment.
  * - `wholeWordTest` is applied here, at completion, and only nulls out the
  *   *result* — the partial it came from has already been spliced out and is
  *   not restored. Upstream does exactly this (`this.test` at :128-129), so
@@ -479,10 +483,25 @@ function matchNormalizedChar(
  *   match's `to`. Non-`precise` matches are filtered out of the *result*
  *   but still consume the scan exactly as they do upstream — dropping them
  *   earlier would let a later match overlap one CM6 had already consumed.
- * - **Every match is fully inside the range**, and every boundary is an
- *   original code point boundary: `from` comes from a partial started at or
- *   after `range.from`, and `to` is always the end of a code point the scan
- *   read without crossing `range.to` (see `codePointSizeAt`).
+ * - **Every match is fully inside the range**: `from` comes from a partial
+ *   started at or after `range.from`, and `to` is always the end of a code
+ *   point the scan read without crossing `range.to` (see `codePointSizeAt`).
+ * - `to` is always an original code point boundary. **`from` is not
+ *   necessarily one**, and saying otherwise would be wrong: `matchStart`
+ *   below advances *within* the current code point for as long as the
+ *   normalized expansion still matches the original unit for unit, so for
+ *   an astral character whose NFKD begins with its own high surrogate
+ *   (U+1D160 is one: its NFKD is U+1D158 U+1D165 U+1D16E, all sharing the
+ *   0xD834 lead unit), a `precise: true` match can begin on the *low*
+ *   surrogate. Replacing it then leaves an unpaired surrogate behind.
+ *   `precise` means "the match did not start or end part-way through an
+ *   expansion", which is not the same statement as "the match is
+ *   code-point aligned". This is upstream's behavior exactly — CM6's own
+ *   whole-document Replace All produces the identical edit, verified
+ *   against the real `SearchCursor` and pinned by test — so it is
+ *   inherited here rather than diverged from, on the same principle as the
+ *   other inherited quirks above. It needs a query that itself begins with
+ *   a lone low surrogate to trigger.
  * - **No match is ever zero-length** (`from < to` always), which is what
  *   lets `replaceAllInSelection`'s zero-length-boundary `ownership`
  *   bookkeeping and `mapPosition`'s `zeroLengthAtPosPrecedes` decision stay
@@ -496,14 +515,28 @@ function matchNormalizedChar(
  *   replacescope.test.ts so a future Unicode revision cannot quietly break
  *   the assumption.
  *
- * Termination: `codePointSizeAt` returns at least 1 every iteration, so the
- * outer loop always advances regardless of what NFKD does to the code point
- * (including expanding it, leaving it alone, or — the `norm.length` guard,
- * upstream :86 — producing nothing at all). A query whose normalized form
- * is empty returns no matches instead of scanning, mirroring upstream's
- * behavior for an empty query (`query.charCodeAt(0)` is `NaN`, which never
- * equals any code unit) while making the reason explicit rather than
- * incidental.
+ * Termination: the outer loop advances by `str.length`, and `str` is one
+ * code point read from *inside* the clamped `limit` below, so it is always
+ * at least one unit long — that, not `codePointSizeAt`'s return value on
+ * its own, is what guarantees progress. (The clamp is load-bearing for
+ * exactly this reason: past the end of `docText` the slice would be empty
+ * and the scan would spin. See the comment on `limit`.) Given progress, the
+ * loop terminates regardless of what NFKD does to a code point — expand it,
+ * leave it alone, or, per the `norm.length` guard (upstream :87), produce
+ * nothing at all. A query whose normalized form is empty returns no matches
+ * instead of scanning, mirroring upstream's behavior for an empty query
+ * (`query.charCodeAt(0)` is `NaN`, which never equals any code unit) while
+ * making the reason explicit rather than incidental.
+ *
+ * Cost: O(range length x query length) in the worst case, with one
+ * `String.prototype.normalize` call per code point scanned. Ordinary prose
+ * is roughly 3x the old exact-substring scan (~50ms for a 1 MB selection);
+ * highly repetitive text with a long query is the bad shape (200k repeats
+ * of one character with a 2000-character query takes ~2s). This is CM6's
+ * own asymptotic behavior — its whole-document Replace All pays the same
+ * on the same input — and this module is additionally bounded by the
+ * selection rather than the document, but it does run synchronously on the
+ * WebView's main thread.
  */
 function stringMatchesInRange(
   docText: string,
@@ -524,10 +557,23 @@ function stringMatchesInRange(
     ? (from: number, to: number) => isWordBoundaryOk(docText, from, to)
     : undefined;
   const partials: PartialMatch[] = [];
-  let pos = range.from;
-  while (pos < range.to) {
+  // Clamped to the document, not taken on trust from the caller. Without
+  // this, a range reaching past the end of `docText` (`range.to >
+  // docText.length`) makes `docText.slice(start, start + 1)` return `""`
+  // once the scan passes the end: `pos` then never advances, `norm.length`
+  // is 0 so the `continue` below fires every time, and the loop spins
+  // forever — a synchronous hang, the same failure mode as issues #320 and
+  // #327. The in-app caller (editor.ts's `dispatchScopedReplace`) always
+  // passes live selection ranges against the matching document, so this is
+  // not reachable through the app today; it is guarded here anyway because
+  // this module is a pure function whose contract should not include "and
+  // the caller must pre-validate the range or the process hangs". Pinned by
+  // an out-of-process test in replacescope.test.ts.
+  const limit = Math.min(range.to, docText.length);
+  let pos = Math.max(range.from, 0);
+  while (pos < limit) {
     const start = pos;
-    const str = docText.slice(start, start + codePointSizeAt(docText, start, range.to));
+    const str = docText.slice(start, start + codePointSizeAt(docText, start, limit));
     // Advanced past the whole code point *before* its expansion is walked,
     // exactly as upstream does (:84-85) — which is why `end` below is the
     // position after the entire code point, never a position inside it.
