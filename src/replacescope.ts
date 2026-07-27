@@ -35,15 +35,16 @@
 // here:
 //
 // 1. Only `precise` matches are replaceable — a match is `precise` when
-//    both its endpoints land on real UTF-16 offsets of the original text,
-//    so `[from, to)` denotes exactly the matched content and nothing more
-//    (`NormalizedMatch`'s doc comment is the authoritative definition; the
-//    obvious intuitive phrasings, upstream's own docstring included, are
-//    wrong in a corner this module has a test for). The everyday case is a
-//    query covering only part of one character's expansion — query "f"
-//    against a "ﬁ" U+FB01 ligature, which NFKD-expands to "fi" — which
-//    comes back `precise: false`,
-//    and CM6's own commands never replace those: `replaceAll` pushes a
+//    the original-text range `[from, to)` covers exactly the content the
+//    match consumed, with no unmatched original text pulled in on either
+//    side (`NormalizedMatch`'s doc comment is the authoritative definition;
+//    the obvious intuitive phrasings, upstream's own docstring included,
+//    are wrong in a corner this module has a test for). The everyday case
+//    is a query covering only part of one character's expansion — query
+//    "f" against a "ﬁ" U+FB01 ligature, which NFKD-expands to "fi" — which
+//    comes back `precise: false`, and `to` would otherwise swallow the
+//    ligature's whole "i" half as well.
+//    CM6's own commands never replace those: `replaceAll` pushes a
 //    change only `if (precise)` (dist/index.js:956-959) and `replaceNext`
 //    skips straight past an imprecise match (dist/index.js:925-927). This
 //    module does the same, so the find panel's highlight — which marks

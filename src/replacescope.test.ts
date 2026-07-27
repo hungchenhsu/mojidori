@@ -1488,11 +1488,12 @@ describe("issue #292 differential property sweep: plain-string matching is @code
    *  manufactures the most safety-critical state in this PR (replace vs
    *  skip) on purpose instead of waiting for two independent random draws to
    *  collide into it. It is not a characterization of `precise`: a proper
-   *  substring of an expansion can still be matched precisely when its
-   *  endpoints happen to land on real original-text offsets (see the
-   *  low-surrogate test below, and `NormalizedMatch`'s doc comment in
-   *  replacescope.ts for the authoritative definition). Returns null when the
-   *  document has no code point that expands at all. */
+   *  substring of an expansion can still be matched precisely, when the
+   *  expansion units it skips happen to correspond one-to-one with original
+   *  units the match's `from` also excludes (see the low-surrogate test
+   *  below, and `NormalizedMatch`'s doc comment in replacescope.ts for the
+   *  authoritative definition). Returns null when the document has no code
+   *  point that expands at all. */
   function randomImpreciseQuery(rand: () => number, docText: string): string | null {
     const starts = codePointAlignedPositions(docText).filter((p) => p < docText.length);
     if (starts.length === 0) return null;
@@ -2045,18 +2046,20 @@ describe("issue #292: scoping, replacement text, and termination for the NFKD sc
   });
 
   it("a precise match can begin on a low surrogate, and this module splits the pair exactly where CM6 does (inherited, not diverged)", () => {
-    // `precise` means "both endpoints land on real UTF-16 offsets of the
-    // original text" (see `NormalizedMatch` in replacescope.ts). It does NOT
-    // mean "code-point aligned", and it does NOT mean "did not start
-    // part-way through an expansion" - this case is precisely the
-    // counterexample to that second, tempting reading, and to upstream's own
-    // docstring. U+1D160's NFKD is longer than itself AND shares its own
-    // leading surrogate unit, so a query beginning with a lone low surrogate
-    // starts a match at normalized offset 1 of 6 - part-way through the
-    // expansion - which is still reported `precise: true`, because after
-    // consuming that one identical leading unit the start position is the
-    // genuine original-text offset 1. Replacing it leaves an unpaired
-    // surrogate.
+    // `precise` means the original-text range `[from, to)` covers exactly
+    // the content the match consumed, pulling in no unmatched original text
+    // on either side (see `NormalizedMatch` in replacescope.ts for the
+    // authoritative definition). It does NOT mean "code-point aligned", and
+    // it does NOT mean "did not start part-way through an expansion" - this
+    // case is the counterexample to that second, tempting reading, and to
+    // upstream's own docstring. U+1D160's NFKD is longer than itself AND
+    // shares its own leading surrogate unit, so a query beginning with a
+    // lone low surrogate starts a match at normalized offset 1 of 6 -
+    // part-way through the expansion - and is still reported `precise: true`:
+    // the single expansion unit it skipped (0xD834) is identical to the
+    // original unit at offset 0, which `from = 1` excludes and nothing else,
+    // so the range still covers exactly what was matched. Replacing it
+    // leaves an unpaired surrogate.
     //
     // This is pinned rather than fixed: CM6's own whole-document Replace All
     // produces the identical edit (asserted below against the real cursor and
