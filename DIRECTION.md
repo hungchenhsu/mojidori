@@ -245,11 +245,16 @@ Three independent pieces, cheapest first:
 **Recommended sequencing:** updater keys → auto-update feature behind them
 → macOS signing → (at public release) Windows signing.
 
-**Status (2026-07-27):** steps 1–2 shipped in the v0.8 cycle (PRs
+**Status (2026-07-27):** steps 1–2 implemented in the v0.8 cycle (PRs
 #307–#312, tag `v0.8.0-alpha.1`) — updater keys, the signed/notarized
-macOS pipeline, and `tauri-plugin-updater` auto-update are live. Step 3
-(Windows signing) remains undecided; Windows builds ship unsigned for
-now.
+macOS pipeline, and `tauri-plugin-updater` auto-update are all in the
+codebase, but not yet operational: the rolling `updater` release feed
+(`.github/workflows/updater-json.yml`) only publishes on a GitHub
+`release: published` event, and `v0.8.0-alpha.1` is still an
+unpublished draft, so no feed exists yet and update checks currently
+hit the error #330 tracks. Activation awaits the maintainer publishing
+a release. Step 3 (Windows signing) remains undecided; Windows builds
+ship unsigned for now.
 
 ### D3 — Going public
 
