@@ -1279,10 +1279,23 @@ mod tests {
         pools: &MojibakePools,
     ) {
         let edge = universal_edge_scalars();
-        let mut checked = 0usize;
-        let mut skipped = 0usize;
 
         for &(intermediate, original) in crate::mojibake::REPAIR_PAIRS.iter() {
+            // Per-pair, not global: a pair whose intermediate has enough
+            // gap bytes (or other structural rejection) to skip *every*
+            // draw would otherwise hide behind a single pool's worth of
+            // genuine checks elsewhere in the list and still report
+            // `checked > 0` overall. `(WINDOWS_1253, UTF_8)` is already the
+            // first pair in this list with any real skip rate (its three
+            // gap bytes), and it isn't especially close to skipping every
+            // draw; but nothing stops a future pair (e.g. a windows-1257-
+            // shaped `original` with gap bytes landing more aggressively
+            // in the UTF-8 continuation-byte range) from skipping all
+            // `cases_per_pair` draws and passing silently under a
+            // list-wide `checked > 0` -- so each pair independently proves
+            // it was actually exercised.
+            let mut checked = 0usize;
+            let mut skipped = 0usize;
             let intermediate_label = intermediate.name();
             let original_label = original.name();
             let source = match (intermediate_label, original_label) {
@@ -1373,12 +1386,14 @@ mod tests {
                      original: {text:?}\nmojibake: {mojibake:?}\nrepaired: {repaired:?}"
                 );
             }
-        }
 
-        assert!(
-            checked > 0,
-            "fuzz must exercise at least one clean mis-decode case (checked=0, skipped={skipped})"
-        );
+            assert!(
+                checked > 0,
+                "({intermediate_label}, {original_label}) must exercise at least one clean \
+                 mis-decode case (checked=0, skipped={skipped}) -- a pair that skips every \
+                 single draw is exercising nothing, not merely under-covered"
+            );
+        }
     }
 
     /// Seed = ROUNDTRIP_FUZZ_SEED. 40 cases per `mojibake::REPAIR_PAIRS`

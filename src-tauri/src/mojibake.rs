@@ -249,15 +249,33 @@ use serde::Serialize;
 /// on real Vietnamese (`no_candidates_for_normal_vietnamese_text`); no
 /// shadowing (`windows1258_utf8_pair_does_not_shadow_sibling_single_byte_
 /// pairs`, `new_windows125x_pairs_do_not_shadow_each_other`).
-/// `docs/archive/roadmap-completed-cycles.md`'s v0.5 Track E1 record notes
-/// windows-1258's single-byte path does no Unicode normalization, so a
-/// combining-character non-injectivity concern was raised and held off
-/// there for the unrelated round-trip-fuzz encode-filter pool; it does not
-/// apply here either, for the same reason: `encoding_rs::encode()` never
-/// normalizes, so only precomposed Vietnamese letters -- exactly what
-/// `VIETNAMESE_TEXT` is written with, the only form Rust source text
-/// naturally produces -- ever reach the encoder, and this pair's own
-/// forward test empirically confirms the full round trip on that text.
+/// `docs/archive/roadmap-completed-cycles.md`'s v0.5 Track E1 record raised
+/// a combining-character non-injectivity concern for windows-1258's
+/// round-trip-fuzz encode-filter pool; a direct probe of the encoder for
+/// this batch found that concern does not transfer here as might be
+/// assumed -- `encoding_rs`'s windows-1258 encoder does not filter out
+/// combining diacritical marks either (U+0300/U+0301/U+0303/U+0309/U+0323
+/// each encode to their own dedicated byte, confirmed empirically), so
+/// decomposed Vietnamese input is not structurally excluded from this
+/// pair's gate (a). `VIETNAMESE_TEXT` itself happens to use only
+/// precomposed characters (confirmed to contain zero standalone combining
+/// marks, simply because that is how the fixture was typed), so this
+/// pair's forward test only empirically exercises the precomposed case --
+/// see `VIETNAMESE_TEXT`'s doc comment for the corrected account (an
+/// earlier version of both comments incorrectly claimed the encoder only
+/// accepts precomposed forms).
+///
+/// One benign interaction, documented rather than hidden: windows-1258 and
+/// windows-1252 differ at only 18 of 256 byte positions, with disjoint
+/// character assignments at each (confirmed empirically -- the same
+/// benign-duplicate shape as the KOI8-R/KOI8-U pair and the deprioritized
+/// windows-1254/windows-1252 pairing discussed elsewhere in this comment,
+/// not the ISO-8859-5 hazard shape). So UTF-8 mojibake from *any* script
+/// mis-decoded via windows-1252 -- Greek, Persian, Urdu, whatever -- whose
+/// bytes never happen to land on those 18 positions will also cleanly
+/// match this pair and recover the identical, correct text via the
+/// already-admitted `(WINDOWS_1252, UTF_8)` pair. This is a
+/// redundant-candidate UX footnote, not a wrong-repair hazard.
 ///
 /// `(WINDOWS_1253, UTF_8)` -- Greek UTF-8 mis-decoded as windows-1253.
 /// Unlike the two pairs just above, windows-1253 is *not* a total
@@ -711,18 +729,23 @@ mod tests {
     /// (windows-1258, UTF-8) pair -- windows-1258 is also a total
     /// single-byte decoder. Same three-sentence shape as `ARABIC_TEXT`
     /// above. Exercises a wide spread of Vietnamese tone-mark diacritics
-    /// (ô, ậ, ẹ, ắ, ấ, á, ạ, ơ, ố, ệ), which is a deliberate stress case:
-    /// `docs/archive/roadmap-completed-cycles.md`'s v0.5 Track E1 record
-    /// notes windows-1258's single-byte path does no Unicode
-    /// normalization, so only precomposed forms round-trip -- this fixture
-    /// is written with precomposed Vietnamese letters throughout (the only
-    /// form Rust source text naturally produces for these characters), and
-    /// `repairs_utf8_misdecoded_as_windows1258` below is the direct
-    /// empirical confirmation that this holds for a real mojibake
-    /// round-trip, not just the encoder pool sanity checks that guarantee
-    /// predates this batch. Not reviewed by a native Vietnamese speaker
-    /// (see the batch's investigation record) -- same caveat as
-    /// `ARABIC_TEXT`.
+    /// (ô, ậ, ẹ, ắ, ấ, á, ạ, ơ, ố, ệ), all written as precomposed
+    /// characters simply because that is how the Rust source text below
+    /// was typed -- confirmed empirically this fixture contains zero
+    /// standalone Unicode combining marks (U+0300..=U+036F). This is *not*
+    /// a stress case for combining-mark handling (an earlier version of
+    /// this comment claimed it was, and claimed `encoding_rs`'s
+    /// windows-1258 encoder only accepts precomposed forms -- both wrong,
+    /// corrected here): a direct probe of the encoder shows it does not
+    /// filter out combining diacritical marks either -- U+0300 (grave),
+    /// U+0301 (acute), U+0303 (tilde), U+0309 (hook above), and U+0323
+    /// (dot below) each encode cleanly to their own dedicated windows-1258
+    /// byte value. `repairs_utf8_misdecoded_as_windows1258` below
+    /// empirically confirms the full mojibake round trip for the
+    /// precomposed text this fixture actually contains; it says nothing
+    /// about decomposed input, since none is present here to exercise.
+    /// Not reviewed by a native Vietnamese speaker (see the batch's
+    /// investigation record) -- same caveat as `ARABIC_TEXT`.
     const VIETNAMESE_TEXT: &str = "Hôm nay thời tiết rất đẹp và nắng ấm áp. Chúng tôi đi dạo trong công viên cùng gia đình và chơi bóng ở đó rất lâu. Buổi tối chúng tôi ăn một bữa tối ngon miệng cùng bạn bè.";
 
     /// v0.9 Track B1 evaluation fixture: realistic Greek prose for the
@@ -2182,11 +2205,13 @@ mod tests {
     // exactly the signal that `REPAIR_PAIRS`'s growth introduced new
     // ambiguity.
     //
-    // `cases.len()` is asserted equal to `REPAIR_PAIRS.len() -
-    // KNOWN_UNREACHABLE_PAIRS.len()` so this list cannot silently drift out
-    // of sync with the const it is meant to cover -- adding a
-    // `REPAIR_PAIRS` entry without a matching `RankCase` here fails loudly
-    // instead of quietly under-covering the gate.
+    // `cases` is compared against `REPAIR_PAIRS` (minus
+    // `KNOWN_UNREACHABLE_PAIRS`) as a *set* of `(intermediate, original)`
+    // labels, not just a matching length -- a length-only check would
+    // silently pass if a future edit added a `REPAIR_PAIRS` entry X but
+    // only a `RankCase` for some unrelated entry Y (same count, wrong
+    // coverage). The set comparison fails loudly on that instead of
+    // quietly under-covering the gate.
     //
     // **Pre-existing dead entry found while building this gate (not
     // introduced by this batch, out of scope to fix here):**
@@ -2214,10 +2239,11 @@ mod tests {
 
     /// `REPAIR_PAIRS` entries this gate deliberately excludes because
     /// `detect_mojibake` can structurally never surface them (see this
-    /// module's discussion above) -- listed so the `cases.len()` assertion
-    /// documents *why* it isn't `REPAIR_PAIRS.len()`, instead of just being
-    /// a mysterious off-by-one.
-    const KNOWN_UNREACHABLE_PAIRS: usize = 1; // (WINDOWS_1252, GB18030)
+    /// module's discussion above), keyed by `(intermediate.name(),
+    /// original.name())` -- compared against `REPAIR_PAIRS` and `cases` as
+    /// actual sets below, so this documents *why* an entry is missing
+    /// instead of leaving a mysterious gap.
+    const KNOWN_UNREACHABLE_PAIRS: [(&str, &str); 1] = [("windows-1252", "gb18030")];
 
     struct RankCase {
         intermediate: &'static Encoding,
@@ -2367,12 +2393,39 @@ mod tests {
                 fixture: GREEK_TEXT,
             },
         ];
-        assert_eq!(
-            cases.len(),
-            REPAIR_PAIRS.len() - KNOWN_UNREACHABLE_PAIRS,
-            "one RankCase per REPAIR_PAIRS entry, except the entries listed in \
-             KNOWN_UNREACHABLE_PAIRS's doc comment -- update both together"
+
+        use std::collections::HashSet;
+        let repair_pairs_set: HashSet<(&str, &str)> = REPAIR_PAIRS
+            .iter()
+            .map(|(i, o)| (i.name(), o.name()))
+            .collect();
+        let known_unreachable_set: HashSet<(&str, &str)> =
+            KNOWN_UNREACHABLE_PAIRS.iter().copied().collect();
+        assert!(
+            known_unreachable_set.is_subset(&repair_pairs_set),
+            "KNOWN_UNREACHABLE_PAIRS must only list entries that actually exist in \
+             REPAIR_PAIRS: {known_unreachable_set:?}"
         );
+        let cases_set: HashSet<(&str, &str)> = cases
+            .iter()
+            .map(|c| (c.intermediate.name(), c.original.name()))
+            .collect();
+        assert_eq!(
+            cases_set.len(),
+            cases.len(),
+            "RankCase list must not contain duplicate (intermediate, original) pairs: {cases_set:?}"
+        );
+        let expected_set: HashSet<(&str, &str)> = repair_pairs_set
+            .difference(&known_unreachable_set)
+            .copied()
+            .collect();
+        assert_eq!(
+            cases_set, expected_set,
+            "RankCase list must cover exactly REPAIR_PAIRS minus KNOWN_UNREACHABLE_PAIRS, as a \
+             set -- a matching *count* alone would silently pass if a future edit added a \
+             REPAIR_PAIRS entry X but only a RankCase for an unrelated entry Y"
+        );
+
         for case in &cases {
             assert_ranks_first(case);
         }
