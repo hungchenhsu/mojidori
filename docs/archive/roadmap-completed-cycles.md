@@ -2104,3 +2104,148 @@ here were issues, not PRs).
 - [x] #328: the save path's several ad hoc atomic-write helpers
   converged onto a single durable, provenance-bound atomic-commit
   primitive — one code path now backs every save-family write.
+
+## v0.9 — trust deepening + issue closure (delegated, 2026-07-27)
+
+Planned 2026-07-27 under the user's standing overnight delegation;
+adversarially reviewed before start (AGREE-WITH-CHANGES — all seven
+required changes adopted, notably: #329's initial two hypotheses
+(selection-layer stacking, `--bg-selection` opacity) were falsified
+and the investigation was reopened onto the search-match theme rule
+with a strengthened, fail-first regression-test requirement rather
+than a settled root cause; #330 rescoped to the error split the
+upstream updater plugin can actually deliver; a third aggregate-ranking
+gate added to the mojibake batch; and a planned docs sweep was replaced
+by the #280 rename-event probe after the sweep was verified to be a
+no-op). Theme: no invented scope — every item traces to a filed issue
+or an established recurring program. Cycle constraints: no GUI launch,
+no release publishing, no visibility changes; good-first-issue items
+(#278, #304, #236, #89) were deliberately left for community
+contributors. PRs merged 2026-07-27→28: #331, #332, #333, #334, #335,
+plus this close-out PR (#340, C2, remained open past close-out — see
+Track C below).
+
+**Track A — bug fixes**
+
+- [x] #329 (P2, PR #333): the search match the cursor jumps to was
+  unreadable in some themes — the issue's original two hypotheses
+  (selection-layer stacking, `--bg-selection` opacity) were falsified
+  in pre-cycle review, since `.cm-searchMatch.cm-searchMatch-selected`
+  in `src/editor-theme.ts` already paired an opaque `var(--accent)`
+  background with an explicit `var(--accent-fg)` foreground. The real
+  defect: CodeMirror's own higher-specificity built-in default for the
+  jumped-to-match selector was silently winning the cascade — the same
+  failure mode `.cm-selectionBackground` a few lines above needed
+  `!important` to avoid. Fix: a new `--bg-search-selected` translucent
+  token (declared in all six theme blocks in `src/styles.css`) replaces
+  the opaque background, keeping the underlying syntax-highlight text
+  color legible instead of relying on a foreground override that CM6's
+  cascade could out-rank again. Regression test written to fail against
+  the pre-fix revision first (asserting only theme-spec structure that
+  already existed would have passed without fixing anything), then
+  pass once the real rule changed; `npm test` at merge: 53 files / 1227
+  tests passed. Visual acceptance on both WebViews across all four
+  themes stays with the user; the PR references, not closes, #329.
+- [x] #330 (P3, PR #332): update-check error handling split into
+  network-layer / "no update information available" (the
+  `Error::ReleaseNotFound` bucket, which the upstream
+  `tauri-plugin-updater` 2.10.1 collapses every non-2xx HTTP status
+  into, verified against its source) / other errors, in all four
+  locales. A Rust-side test (`updater_errors.rs`) pins the upstream
+  error's `Display` string the frontend's `classifyUpdateCheckError`
+  matches on, so an unpinned `tauri-plugin-updater` bump can't silently
+  regress the classification — the only test that goes red on a
+  version-string change. `npm test`: 1231 passed (9 new
+  `updaterErrors.test.ts` cases + 3 new `updater.test.ts` cases);
+  `cargo test`: 650 passed.
+
+**Track B — encoding trust**
+
+- [x] B1 (PR #335): mojibake `REPAIR_PAIRS` expansion batch, 15 → 18
+  pairs: `(windows-1256, UTF-8)` Arabic, `(windows-1258, UTF-8)`
+  Vietnamese, `(windows-1253, UTF-8)` Greek (batch capped at 3, as
+  planned). windows-1255 deferred to a future batch purely on the cap;
+  windows-1254 deprioritized as a low-marginal-value duplicate of the
+  existing `(windows-1252, UTF-8)` pair; windows-1257 rejected
+  (chardetng's own README calls its detection inaccurate, and its gap
+  bytes land in the UTF-8 continuation-byte range). All three admission
+  gates satisfied, including the new aggregate ranking-regression
+  assertion (proven against the pre-batch 15 pairs first, then
+  re-proven at 18); `fuzz_roundtrip.rs` pools/match arms synced in the
+  same PR — confirmed the sync requirement is still a real, executable
+  dead end by reproducing the unsynced-arm panic before fixing it (see
+  judgment overlay). Independently re-verified before merge: adversarial
+  harness re-derivation by a separate agent, plus a critic review
+  (APPROVE-WITH-NOTES — four doc/test precision fixes applied), on top
+  of Codex CI review. `cargo test`: 663 passed (666 running, 3
+  ignored); `npm test`: 1221 passed, frontend untouched. Incidentally
+  surfaced a pre-existing, unrelated dead entry, `(windows-1252,
+  gb18030)` — chardetng has no distinct GB18030 detection candidate
+  (its `Gbk` candidate's `encoding()` always returns `GBK`), so
+  `detect_mojibake` can never confirm it — filed as issue #336, left
+  unfixed as out of scope for this batch.
+
+**Track C — filed-issue closure**
+
+- [x] C1 (#292, PR #334): replace-in-selection now applies NFKD
+  normalized matching with CM6's own precise-match gating, ported from
+  `SearchCursor`'s per-code-point automaton (non-precise matches are
+  skipped, exactly like upstream `replaceAll`; the upstream
+  canonical-reordering limitation is inherited by design and pinned by
+  test). Merge-gated on a differential property sweep against the real
+  `SearchCursor` (12,000 single-range + 1,500 multi-range cases, mutation
+  tested — 9/10 reachable mutations caught, the tenth structurally
+  unreachable and documented as such) plus pre-merge adversarial review.
+  Two fixes bundled into the same PR because the sweep surfaced them
+  directly: a pre-existing synchronous infinite loop reachable from this
+  module's contract (guarded with the same out-of-process,
+  `execFileSync`-with-timeout termination test #320/#327 established,
+  since a real sync infinite loop defeats vitest's own timeout), and a
+  correction to #320/#327's own regression-test time budget, which had
+  been silently counting esbuild bundling overhead against its limit —
+  moved the bundle step outside the timed section. `npm test` at merge:
+  52 files / 1239 tests passed (74 in `replacescope.test.ts` alone).
+  Feasibility investigation posted to the issue 2026-07-27.
+- [ ] C2 (#292 follow-up, PR #340): scoped-replace result message
+  (replaced + skipped-non-precise counts), built from scratch
+  (replacescope → editor → main + four locales), merge-gated the same
+  way as C1 (fail-first regression test, differential sweep, Codex
+  review). **Still open at close-out time**: CI green (macOS + Windows)
+  and a clean Codex review landed 2026-07-27 17:30 UTC, but the PR had
+  not been merged as of this cycle's close-out; it carries forward into
+  the next cycle rather than being folded into v0.9.0-alpha.1.
+- [x] C3 (#280): watcher rename-event probe run on macOS + Windows CI
+  (production-identical `notify::recommended_watcher` +
+  `RecursiveMode::NonRecursive` configuration, plus a watch-parent-
+  directory control group; Linux not measured, no CI runner available)
+  — results posted to the issue; the old-path watch does not survive a
+  rename on either platform, so the issue was escalated from P3 to P2
+  per the pre-registered criterion. The probe branch was discarded
+  (does not earn its keep as a permanent regression test, per plan).
+
+**Track D — research & decision prep (no code)**
+
+- [x] D1 (#314): CSP-nonce feasibility research posted to the issue
+  (conditionally feasible via a placeholder `<style>` nonce carrier +
+  `EditorView.cspNonce`; deferred until a real-machine verification
+  window).
+- [x] D2 (#303): decision-ready trim-on-save contract proposal posted
+  to the issue for the maintainer's ruling (ties in PR #288's pending
+  undo-semantics sign-off).
+
+**Close-out**
+
+- [x] E1: version bump to 0.9.0 across `tauri.conf.json` /
+  `package.json` / `Cargo.toml` (+ both lockfiles), `CHANGELOG.md`'s
+  `[v0.9.0-alpha.1]` section written, this section archived, DIRECTION
+  §2 refreshed, three lessons written back to the judgment overlay, tag
+  `v0.9.0-alpha.1` created (pre-release authority). Publishing stays
+  user-held: the new draft release sits alongside the still-unpublished
+  `v0.8.0-alpha.1` draft.
+
+New issues filed during the cycle (beyond #280's P2 escalation):
+#336 (mojibake dead entry, `(windows-1252, gb18030)`), #337 (NFKD scan
+performance on large selections, ~10–19 MB/s, P3), #338 (a recurring
+mojibake false-positive category affecting multiple pairs, P3), #339
+(a Dependabot glib 0.18 unsoundness advisory, Linux Tier-2-only
+exposure, P3).

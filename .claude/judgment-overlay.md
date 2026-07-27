@@ -1,4 +1,4 @@
-# Judgment Overlay — plume（最後查證日期：2026-07-27）
+# Judgment Overlay — plume（最後查證日期：2026-07-28）
 
 依全域 skill `judgment-rubrics` 的 overlay 規格建立，由 repo 根目錄 CLAUDE.md 正式引用。內容更新時同步上方查證日期；若本檔與 CLAUDE.md 衝突，以 CLAUDE.md 為準並更新本檔。
 
@@ -51,3 +51,6 @@ plume 是本機文字編輯器，「使用者檔案的資料完整性」等同�
 - `mojibake::REPAIR_PAIRS` 與 `fuzz_roundtrip.rs`（`MojibakePools` 欄位／`run_mojibake_reversibility_fuzz` 的 match）是手動同步、非自動衍生——新增或刪除 `REPAIR_PAIRS` 項目若未同步補齊該處的 pool 欄位與 match arm，對應 fuzz 測試會在執行期 panic（`unhandled mojibake::REPAIR_PAIRS entry`），不是編譯期錯誤，肉眼看 `mojibake.rs` 本身抓不到（ROADMAP v0.6 E2 新增 (WINDOWS_1252, EUC_JP) 時實跑 `cargo test` 才發現，2026-07-17）。
 - PR 顯示「no checks reported」時先查 `gh pr view N --json mergeable`——GitHub 對 CONFLICTING 的 PR 根本不建 merge ref、pull_request workflow 靜默不觸發，樣子與 Actions 服務停擺一模一樣；rebase 解衝突後 CI 立即恢復。empty commit／close-reopen／重開 PR 都救不了 conflict 造成的 no-checks（v0.7 C4/C5 PR，2026-07-19）。
 - `gh pr merge --squash --delete-branch` 在 local branch 被 worktree 佔用時 exit 1：merge 本身成功，但**local 與 remote 兩側的 branch 刪除都不會執行**——清 worktree 後要補 `git branch -D` 與 `git push origin --delete`，並在 session 尾對 `git ls-remote --heads origin` 做總對帳（v0.7 一輪 14 個 remote branch 全數殘留的實測，2026-07-19）。
+- chardetng 的候選模型完全沒有 GB18030（只有 GBK；`Gbk` 候選的 `encoding()` 永遠回傳 `GBK`）——任何要求 chardetng 確認某假說為 GB18030 的邏輯結構上不可能通過，與既有 KOI8-R 死路同形（issue #336，v0.9 B1 ranking 閘門實測，2026-07-27）。
+- out-of-process hang 回歸測試（`execFileSync` 帶 timeout）的時限不得把 esbuild bundling 等建置開銷算進計時段——bundle 一次的耗時要移出計時區間，否則會以 flake 形式誤殺不相干的 CI（曾誤殺 #331 的 Windows CI）（#334 修正，2026-07-27）。
+- auto-mode 權限分類器可能隨機擋下 `gh pr merge`（subagent 與主對話皆可能中）：處置是拆掉複合指令後單獨重試一次，再被擋就停下回報，絕不繞路（v0.9 #335 實例，2026-07-27）。
