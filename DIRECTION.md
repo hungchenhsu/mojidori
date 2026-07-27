@@ -51,10 +51,14 @@ material.
   (AGREE-WITH-CHANGES, all seven required changes adopted), PRs
   #331–#335 + #340 plus close-out, tag `v0.9.0-alpha.1`): #329
   (unreadable jumped-to search match) fixed after its issue's original
-  two hypotheses were falsified in pre-cycle review — root cause was
-  CodeMirror's own higher-specificity built-in default winning the
-  cascade, fixed with a new translucent `--bg-search-selected` token
-  and a fail-first regression test; #330 (update-check error message)
+  two hypotheses were falsified in pre-cycle review — the real defect
+  (a real WKWebView user report) was a fully opaque background on the
+  jumped-to match, fixed across three superseded attempts (each caught
+  by a further Codex round) by making the background transparent
+  (relying on the existing translucent selection fill) and forcing the
+  match's foreground to the plain document text color so it stays
+  legible inside dim syntax-highlighted text too, with a fail-first
+  regression test; #330 (update-check error message)
   split three ways (network / no-update-info / other) and pinned
   against the upstream `tauri-plugin-updater` error string; mojibake
   `REPAIR_PAIRS` expanded 15→18 (windows-1256/1258/1253 × UTF-8) behind

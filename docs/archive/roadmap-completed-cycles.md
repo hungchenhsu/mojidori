@@ -2127,24 +2127,49 @@ contributors. PRs merged 2026-07-27→28: #331, #332, #333, #334, #335,
 **Track A — bug fixes**
 
 - [x] #329 (P2, PR #333): the search match the cursor jumps to was
-  unreadable in some themes — the issue's original two hypotheses
-  (selection-layer stacking, `--bg-selection` opacity) were falsified
-  in pre-cycle review, since `.cm-searchMatch.cm-searchMatch-selected`
-  in `src/editor-theme.ts` already paired an opaque `var(--accent)`
-  background with an explicit `var(--accent-fg)` foreground. The real
-  defect: CodeMirror's own higher-specificity built-in default for the
-  jumped-to-match selector was silently winning the cascade — the same
-  failure mode `.cm-selectionBackground` a few lines above needed
-  `!important` to avoid. Fix: a new `--bg-search-selected` translucent
-  token (declared in all six theme blocks in `src/styles.css`) replaces
-  the opaque background, keeping the underlying syntax-highlight text
-  color legible instead of relying on a foreground override that CM6's
-  cascade could out-rank again. Regression test written to fail against
-  the pre-fix revision first (asserting only theme-spec structure that
-  already existed would have passed without fixing anything), then
-  pass once the real rule changed; `npm test` at merge: 53 files / 1227
-  tests passed. Visual acceptance on both WebViews across all four
-  themes stays with the user; the PR references, not closes, #329.
+  unreadable — the issue's original two hypotheses (selection-layer
+  stacking, `--bg-selection` opacity) were falsified in pre-cycle
+  review, since `.cm-searchMatch.cm-searchMatch-selected` in
+  `src/editor-theme.ts` already paired a background with an explicit
+  foreground. The actual defect, from a real WKWebView user report:
+  that pairing was a fully **opaque** `backgroundColor: var(--accent)`
+  + `color: var(--accent-fg)`, and on that WebView the matched text
+  rendered as completely hidden (headless Chromium testing alone did
+  not reproduce it). Three fix attempts were superseded within the
+  same PR, each caught by a further Codex review round: (1) a second,
+  new translucent token layered on top of `.cm-selectionBackground` —
+  worse, because CM6 always paints both classes on the exact same
+  range at once, so the two same-hue translucent layers compounded to
+  ~0.6-0.7 effective opacity, tanking contrast for muted syntax colors
+  (e.g. `--syn-comment`) to ~1.0-1.7:1, worse than the original opaque
+  background; (2) omitting `backgroundColor` entirely to rely purely on
+  `.cm-selectionBackground` — still wrong, because CM6 renders both
+  `cm-searchMatch` and `cm-searchMatch-selected` on the same span, so
+  the plain `.cm-searchMatch` rule's own `backgroundColor:
+  var(--accent-soft)` still cascaded in (an unset property on the more
+  specific rule does not cancel a value set by a different, less
+  specific rule on the same element); (3) `backgroundColor:
+  "transparent"` alone — correct as far as it went (explicit, so its
+  higher specificity actually cancels the inherited fill, leaving only
+  `.cm-selectionBackground`), but with no forced foreground, so a match
+  landing inside dim syntax-highlighted text (e.g. a comment) could
+  still be unreadable against that single translucent layer. The
+  landed fix keeps `backgroundColor: "transparent"` and adds a second,
+  wider rule forcing `color: var(--fg) !important` on the match and
+  any nested descendant (`--fg` verified >=5.6:1 against
+  `--bg-selection` in all four themes, vs. 1.6-2.1:1 for the
+  previously-used `--accent-fg`), plus a bolder 2px outline (vs. 1px
+  for a plain match) as an independent "current match" cue. No new
+  CSS custom property; `src/styles.css` untouched. Regression test
+  (`editor-theme.test.ts`, asserting `editorBaseThemeSpec`'s raw rule
+  values, never `getComputedStyle` since jsdom doesn't resolve `var()`)
+  was written to fail against the pre-fix revision first, then pass
+  only once the real rule changed, and was updated in step with each
+  superseded attempt; real-machine (headless Chromium) `getComputedStyle`
+  spot-checks independently confirmed the final background and
+  foreground. `npm test` at merge: 53 files / 1227 tests passed. Visual
+  acceptance on both WebViews across all four themes stays with the
+  user; the PR references, not closes, #329.
 - [x] #330 (P3, PR #332): update-check error handling split into
   network-layer / "no update information available" (the
   `Error::ReleaseNotFound` bucket, which the upstream
@@ -2214,8 +2239,9 @@ contributors. PRs merged 2026-07-27→28: #331, #332, #333, #334, #335,
   undefined`) to the menu handler. UX choice, deliberately narrower
   than the feasibility investigation's "always report both counts"
   suggestion: a `messageDialog` appears only when at least one match
-  was skipped, via a pure `buildReplaceScopeResultMessage` (four new
-  locale keys). Two-round Codex review: round 1 landed the feature;
+  was skipped, via a pure `buildReplaceScopeResultMessage` (two new
+  keys, `dialog.replaceScopeResultTitle`/`Message`, in all four
+  locales). Two-round Codex review: round 1 landed the feature;
   round 2 caught a real defect before merge — repeatedly invoking
   single-step Replace against a selection with a persistent
   non-precise match (e.g. stepping through "f f ﬁ") re-popped the

@@ -34,11 +34,14 @@ Semantic Versioning compatibility guarantees.
   message), and a generic fallback — pinned by a Rust-side test against
   the upstream error string so an unpinned `tauri-plugin-updater` bump
   cannot silently regress the classification (#332, fixes #330).
-- The search match the cursor jumps to is readable again in all four
-  themes: it now uses a translucent highlight rather than the opaque
-  background that was silently losing to CodeMirror's own
-  higher-specificity built-in selection style (#333, refs #329; visual
-  acceptance on both WebViews stays with the user).
+- The search match the cursor jumps to is readable again: the previous
+  fully opaque highlight (reported by a WKWebView user as making the
+  matched text completely invisible) is now transparent, relying on
+  the same translucent selection fill every ordinary text selection
+  already uses, with the match's own foreground color forced to the
+  plain document text color so it stays legible even when the match
+  lands inside dim syntax-highlighted text such as a comment (#333,
+  refs #329; visual acceptance on both WebViews stays with the user).
 - Replace in Selection and Replace All in Selection now apply to
   matches that only exist under Unicode normalization (previously
   skipped by design) — ported from CodeMirror's own `SearchCursor`
