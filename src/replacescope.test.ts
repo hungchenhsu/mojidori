@@ -1278,8 +1278,11 @@ const LIGATURE_FI = "\ufb01";
 const MATH_BOLD_A = "\u{1D400}";
 /** U+212A KELVIN SIGN: a compatibility *singleton*, NFKD is the ASCII "K". */
 const KELVIN_SIGN = "\u212a";
-/** U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE: NFKD is a no-op, but its
- *  lowercase is two code units ("i" + U+0307 COMBINING DOT ABOVE). */
+/** U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE: one code unit that grows
+ *  under both operations - its NFKD is "I" + U+0307 COMBINING DOT ABOVE, and
+ *  its lowercase is "i" + U+0307. (It is *not* a normalization-order
+ *  discriminator, despite being an obvious candidate: both compositions land
+ *  on the same "i" + U+0307. See `MODIFIER_CAPITAL_A` for one that is.) */
 const DOTTED_CAPITAL_I = "\u0130";
 /** "i" + U+0307 - exactly `DOTTED_CAPITAL_I.toLowerCase()`. */
 const DOTTED_I_LOWERCASED = "i\u0307";
@@ -1311,12 +1314,12 @@ const CJK_CHAR = "\u5b57";
  * is checked against the real `replaceAll` command instead (see the sweeps'
  * own comments).
  */
-function cm6PreciseMatchesInRange(
+function cm6MatchesInRange(
   docText: string,
   range: ReplaceRange,
   search: string,
   caseSensitive: boolean,
-): { from: number; to: number }[] {
+): { from: number; to: number; precise: boolean }[] {
   const cursor = new SearchCursor(
     Text.of(docText.split("\n")),
     search,
@@ -1324,11 +1327,22 @@ function cm6PreciseMatchesInRange(
     range.to,
     caseSensitive ? undefined : (x: string) => x.toLowerCase(),
   );
-  const out: { from: number; to: number }[] = [];
-  while (!cursor.next().done) {
-    if (cursor.value.precise) out.push({ from: cursor.value.from, to: cursor.value.to });
-  }
+  const out: { from: number; to: number; precise: boolean }[] = [];
+  while (!cursor.next().done) out.push({ ...cursor.value });
   return out;
+}
+
+/** `cm6MatchesInRange` filtered to the replaceable (`precise`) matches, with
+ *  the flag dropped so it compares directly against `editBoundaries`. */
+function cm6PreciseMatchesInRange(
+  docText: string,
+  range: ReplaceRange,
+  search: string,
+  caseSensitive: boolean,
+): { from: number; to: number }[] {
+  return cm6MatchesInRange(docText, range, search, caseSensitive)
+    .filter((m) => m.precise)
+    .map((m) => ({ from: m.from, to: m.to }));
 }
 
 /** `edits` reduced to just their match boundaries, for comparison against
@@ -1430,6 +1444,72 @@ describe("issue #292 differential property sweep: plain-string matching is @code
     return out;
   }
 
+  /** A query drawn so that it actually stands a chance of hitting the
+   *  document: a random code-point-aligned slice of `docText`, usually
+   *  re-encoded into a *different* Unicode normal form. This is what makes
+   *  normalized-but-not-byte-identical matches - the entire subject of issue
+   *  #292 - common in the corpus rather than a rare coincidence of two
+   *  independent random draws. Returns null when the document is too short
+   *  to slice, so the caller can fall back to a free-form random query.
+   *  (Both kinds are kept: free-form queries are what exercise the
+   *  no-match and partial-overlap paths.) */
+  function randomRelatedQuery(rand: () => number, docText: string): string | null {
+    const positions = codePointAlignedPositions(docText);
+    const startIndex = Math.floor(rand() * (positions.length - 1));
+    const from = positions[startIndex];
+    const candidateEnds = positions.slice(startIndex + 1, startIndex + 4);
+    if (candidateEnds.length === 0) return null;
+    const to = candidateEnds[Math.floor(rand() * candidateEnds.length)];
+    const slice = docText.slice(from, to);
+    const forms = ["NFC", "NFD", "NFKC", "NFKD"] as const;
+    const pick = Math.floor(rand() * 5);
+    return pick === 4 ? slice : slice.normalize(forms[pick]);
+  }
+
+  /** A query built to land *inside* one document code point's normalized
+   *  expansion: take a code point from the document, expand it, and keep a
+   *  proper substring of that expansion. Those are precisely the queries that
+   *  produce `precise: false` matches - the ones CM6 finds and highlights but
+   *  never replaces - so this generator manufactures the single most
+   *  safety-critical state in this PR (replace vs skip) on purpose, instead
+   *  of waiting for two independent random draws to collide into it. Returns
+   *  null when the document has no code point that expands at all. */
+  function randomImpreciseQuery(rand: () => number, docText: string): string | null {
+    const starts = codePointAlignedPositions(docText).filter((p) => p < docText.length);
+    if (starts.length === 0) return null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const from = starts[Math.floor(rand() * starts.length)];
+      const size =
+        from + 1 < docText.length &&
+        docText.charCodeAt(from) >= 0xd800 &&
+        docText.charCodeAt(from) <= 0xdbff &&
+        docText.charCodeAt(from + 1) >= 0xdc00 &&
+        docText.charCodeAt(from + 1) <= 0xdfff
+          ? 2
+          : 1;
+      const original = docText.slice(from, from + size);
+      const expansion =
+        rand() < 0.5 ? original.normalize("NFKD") : original.normalize("NFKD").toLowerCase();
+      if (expansion.length < 2) continue;
+      // A proper, non-empty substring of the expansion: strictly shorter than
+      // the whole thing, so it can never cover the code point completely.
+      const cut = 1 + Math.floor(rand() * (expansion.length - 1));
+      return rand() < 0.5 ? expansion.slice(0, cut) : expansion.slice(expansion.length - cut);
+    }
+    return null;
+  }
+
+  function randomQuery(rand: () => number, docText: string, alphabet: string[]): string {
+    const roll = rand();
+    const drawn =
+      roll < 0.2
+        ? randomImpreciseQuery(rand, docText)
+        : roll < 0.75
+          ? randomRelatedQuery(rand, docText)
+          : null;
+    return drawn !== null && drawn !== "" ? drawn : randomString(rand, alphabet, 3);
+  }
+
   function randomRange(rand: () => number, text: string): ReplaceRange {
     const positions = codePointAlignedPositions(text);
     const a = positions[Math.floor(rand() * positions.length)];
@@ -1469,9 +1549,16 @@ describe("issue #292 differential property sweep: plain-string matching is @code
   it("(A) replaced-match set equals the real SearchCursor's precise match set, for whole-document and sub-ranges alike", () => {
     const rand = mulberry32(0x292a);
     let casesChecked = 0;
+    const reached = {
+      withPreciseMatch: 0,
+      withMultipleMatches: 0,
+      withImpreciseMatch: 0,
+      withNormalizationOnlyMatch: 0,
+      withAstralMatch: 0,
+    };
     for (let iteration = 0; iteration < 3000; iteration++) {
       const docText = randomString(rand, NFKD_ALPHABET, 6);
-      const searchText = randomString(rand, NFKD_ALPHABET, 3);
+      const searchText = randomQuery(rand, docText, NFKD_ALPHABET);
       const caseSensitive = rand() < 0.5;
       const query: ReplaceScopeQuery = {
         search: searchText,
@@ -1488,14 +1575,41 @@ describe("issue #292 differential property sweep: plain-string matching is @code
       ];
       for (const range of ranges) {
         casesChecked++;
+        const upstream = cm6MatchesInRange(docText, range, searchText, caseSensitive);
+        const upstreamPrecise = upstream.filter((m) => m.precise);
         const result = replaceAllInSelection(docText, [range], query);
         expect(editBoundaries(result.edits)).toEqual(
-          cm6PreciseMatchesInRange(docText, range, searchText, caseSensitive),
+          upstreamPrecise.map((m) => ({ from: m.from, to: m.to })),
         );
         expectAscendingNonOverlappingInsideRanges(result, [range]);
+
+        // Tally which *interesting* states this corpus actually reached.
+        if (upstreamPrecise.length > 0) reached.withPreciseMatch++;
+        if (upstreamPrecise.length > 1) reached.withMultipleMatches++;
+        if (upstream.some((m) => !m.precise)) reached.withImpreciseMatch++;
+        // A match whose raw document text is not the query itself: found
+        // only because of normalization. This is the state issue #292 is
+        // about, and a corpus that never reaches it proves nothing.
+        if (upstreamPrecise.some((m) => docText.slice(m.from, m.to) !== searchText)) {
+          reached.withNormalizationOnlyMatch++;
+        }
+        if (upstreamPrecise.some((m) => /[\ud800-\udbff]/.test(docText.slice(m.from, m.to)))) {
+          reached.withAstralMatch++;
+        }
       }
     }
     expect(casesChecked).toBe(12000);
+    // A sweep that only ever compares "no matches" against "no matches" is
+    // decorative. These floors are what keep it honest: they fail if a future
+    // change to the corpus, the alphabet, or the query generator stops
+    // reaching the states the port actually has to get right. Values are well
+    // below what the seeded generator currently produces, so they assert
+    // "still reached", not "reached exactly this often".
+    expect(reached.withPreciseMatch).toBeGreaterThan(2000);
+    expect(reached.withMultipleMatches).toBeGreaterThan(200);
+    expect(reached.withImpreciseMatch).toBeGreaterThan(250);
+    expect(reached.withNormalizationOnlyMatch).toBeGreaterThan(500);
+    expect(reached.withAstralMatch).toBeGreaterThan(150);
   });
 
   it("(A') a multi-range selection is exactly the concatenation of the real SearchCursor's precise matches per range", () => {
@@ -1509,7 +1623,7 @@ describe("issue #292 differential property sweep: plain-string matching is @code
     let casesChecked = 0;
     for (let iteration = 0; iteration < 1500; iteration++) {
       const docText = randomString(rand, NFKD_ALPHABET, 8);
-      const searchText = randomString(rand, NFKD_ALPHABET, 3);
+      const searchText = randomQuery(rand, docText, NFKD_ALPHABET);
       const caseSensitive = rand() < 0.5;
       const query: ReplaceScopeQuery = {
         search: searchText,
@@ -1543,7 +1657,7 @@ describe("issue #292 differential property sweep: plain-string matching is @code
     let casesChecked = 0;
     for (let iteration = 0; iteration < 600; iteration++) {
       const docText = randomString(rand, NFKD_ALPHABET, 6);
-      const searchText = randomString(rand, NFKD_ALPHABET, 3);
+      const searchText = randomQuery(rand, docText, NFKD_ALPHABET);
       const query: ReplaceScopeQuery = {
         search: searchText,
         replace: "<Z>",
@@ -1565,7 +1679,7 @@ describe("issue #292 differential property sweep: plain-string matching is @code
     let casesChecked = 0;
     for (let iteration = 0; iteration < 600; iteration++) {
       const docText = randomString(rand, NFKD_ALPHABET_NO_COMBINING, 6);
-      const searchText = randomString(rand, NFKD_ALPHABET_NO_COMBINING, 3);
+      const searchText = randomQuery(rand, docText, NFKD_ALPHABET_NO_COMBINING);
       const query: ReplaceScopeQuery = {
         search: searchText,
         replace: "<Z>",

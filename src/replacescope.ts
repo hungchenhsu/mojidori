@@ -722,9 +722,10 @@ function matchesInRange(
   query: ReplaceScopeQuery,
   compiledRegExp: RegExp | null,
   // Only meaningful in regexp mode — see regexMatchesInRange's doc comment
-  // on `seedLastAcceptedTo`; plain-string mode has no zero-length matches
-  // to guard against (see stringMatchesInRange's "defense in depth" note),
-  // so this is simply ignored there.
+  // on `seedLastAcceptedTo`; plain-string mode has no zero-length matches to
+  // guard against (see stringMatchesInRange's structural-properties list,
+  // where that is proven rather than assumed), so this is simply ignored
+  // there.
   seedLastAcceptedTo = -1,
 ): FoundMatch[] {
   if (query.regexp) {
