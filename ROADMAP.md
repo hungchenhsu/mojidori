@@ -32,14 +32,22 @@ deliberately left for community contributors.
 ### Track A — bug fixes
 
 - [ ] A1 (#329, P2): the search match the cursor jumps to is
-  unreadable — root cause is the opaque `.cm-searchMatch-selected`
-  background (`var(--accent)`) in `src/editor-theme.ts`, painted over
-  the match (the issue's original two hypotheses — selection-layer
-  stacking and `--bg-selection` opacity — were both falsified in
-  pre-cycle review). Fix must keep the jumped-to match readable in
-  all four themes; vitest asserts the theme-spec structure (a
-  readable foreground set alongside any opaque background), no
-  `getComputedStyle`-based fake greens; visual acceptance on both
+  unreadable — the issue's original two hypotheses (selection-layer
+  stacking, `--bg-selection` opacity) were falsified in pre-cycle
+  review. `.cm-searchMatch.cm-searchMatch-selected` in
+  `src/editor-theme.ts` already pairs an opaque `var(--accent)`
+  background with an explicit `var(--accent-fg)` foreground, so a
+  missing foreground color is not the actual defect — the track must
+  investigate further (contrast of `--accent`/`--accent-fg` per theme;
+  whether CM6's own higher-specificity built-in default for this
+  selector silently wins the cascade the same way it did for
+  `.cm-selectionBackground` a few lines above in the same file, which
+  needed `!important` to actually apply). The regression test must
+  fail against the current, unfixed revision — asserting theme-spec
+  structure that already exists today would pass without fixing
+  anything — and pass only once the true cause is addressed; no
+  `getComputedStyle`-based fake greens. Fix must keep the jumped-to
+  match readable in all four themes; visual acceptance on both
   WebViews stays with the user — the PR must reference, not close,
   #329.
 - [ ] A2 (#330, P3): update-check error handling splits into
