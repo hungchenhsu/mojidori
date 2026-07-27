@@ -25,7 +25,7 @@
 use chardetng::EncodingDetector;
 use encoding_rs::{
     Encoding, BIG5, EUC_JP, EUC_KR, GB18030, GBK, KOI8_R, KOI8_U, SHIFT_JIS, UTF_8, WINDOWS_1250,
-    WINDOWS_1251, WINDOWS_1252,
+    WINDOWS_1251, WINDOWS_1252, WINDOWS_1253, WINDOWS_1256, WINDOWS_1258,
 };
 use serde::Serialize;
 
@@ -225,9 +225,80 @@ use serde::Serialize;
 /// not the wrong-repair hazard the ISO-8859-5 case was
 /// (`koi8u_windows1251_pair_does_not_shadow_existing_koi8r_pair`).
 ///
+/// `(WINDOWS_1256, UTF_8)` -- Arabic UTF-8 mis-decoded as windows-1256,
+/// the sixth single-byte-Latin/Cyrillic-shaped `(*, UTF_8)` pair (the
+/// first non-Latin-script one). windows-1256 is a total single-byte
+/// decoder like windows-1250/1251/1252 (confirmed empirically: decoding
+/// every byte 0x00..=0xFF individually reports zero malformed sequences),
+/// so gate 1 reduces to chardetng recognizing UTF-8 on the recovered
+/// bytes -- confirmed by `repairs_utf8_misdecoded_as_windows1256`. Gate 2:
+/// the reverse, `(UTF_8, WINDOWS_1256)`, is rejected
+/// (`windows1256_utf8_reverse_hypothesis_is_rejected`); real Arabic text
+/// doesn't trigger it (`no_candidates_for_normal_arabic_text`); and it
+/// doesn't shadow the sibling single-byte pairs, or the other two new
+/// pairs in this same batch, in either direction
+/// (`windows1256_utf8_pair_does_not_shadow_sibling_single_byte_pairs`,
+/// `new_windows125x_pairs_do_not_shadow_each_other`) -- Arabic's
+/// repertoire doesn't overlap Cyrillic or Central/Western European Latin.
+///
+/// `(WINDOWS_1258, UTF_8)` -- Vietnamese UTF-8 mis-decoded as
+/// windows-1258, same shape as `(WINDOWS_1256, UTF_8)` (also a total
+/// single-byte decoder). Confirmed by
+/// `repairs_utf8_misdecoded_as_windows1258`; reverse rejected
+/// (`windows1258_utf8_reverse_hypothesis_is_rejected`); no false positive
+/// on real Vietnamese (`no_candidates_for_normal_vietnamese_text`); no
+/// shadowing (`windows1258_utf8_pair_does_not_shadow_sibling_single_byte_
+/// pairs`, `new_windows125x_pairs_do_not_shadow_each_other`).
+/// `docs/archive/roadmap-completed-cycles.md`'s v0.5 Track E1 record notes
+/// windows-1258's single-byte path does no Unicode normalization, so a
+/// combining-character non-injectivity concern was raised and held off
+/// there for the unrelated round-trip-fuzz encode-filter pool; it does not
+/// apply here either, for the same reason: `encoding_rs::encode()` never
+/// normalizes, so only precomposed Vietnamese letters -- exactly what
+/// `VIETNAMESE_TEXT` is written with, the only form Rust source text
+/// naturally produces -- ever reach the encoder, and this pair's own
+/// forward test empirically confirms the full round trip on that text.
+///
+/// `(WINDOWS_1253, UTF_8)` -- Greek UTF-8 mis-decoded as windows-1253.
+/// Unlike the two pairs just above, windows-1253 is *not* a total
+/// single-byte decoder: three byte values (`0xAA`, `0xD2`, `0xFF`) are
+/// unassigned (confirmed empirically). `GREEK_TEXT`'s doc comment works
+/// out why none of the three are reachable from its content (0xFF can
+/// never appear in valid UTF-8 at all; 0xD2 would require a lead byte
+/// outside the Greek-and-Coptic block's UTF-8 lead-byte range entirely;
+/// 0xAA as a trail byte only arises from two rare letters not used in the
+/// fixture), and `repairs_utf8_misdecoded_as_windows1253` empirically
+/// confirms the decode is clean. Gate 2: reverse rejected
+/// (`windows1253_utf8_reverse_hypothesis_is_rejected`); no false positive
+/// on real Greek (`no_candidates_for_normal_greek_text`); no shadowing
+/// (`windows1253_utf8_pair_does_not_shadow_sibling_single_byte_pairs`,
+/// `new_windows125x_pairs_do_not_shadow_each_other`).
+///
+/// This three-pair batch (ROADMAP v0.9 B1) was evaluated against six
+/// windows-125x-family candidates chardetng 0.1.17 has no coverage for
+/// yet, capped at three per batch; the other three:
+/// - `(WINDOWS_1255, UTF_8)` (Hebrew) passed every gate identically to the
+///   three admitted here, and is next in line for a future batch -- left
+///   out purely for this batch's 3-pair cap, not any structural concern.
+/// - `(WINDOWS_1254, UTF_8)` (Turkish) also passed every gate, but was
+///   deprioritized: windows-1254 and windows-1252 differ at only 8 of 256
+///   byte positions, with disjoint character assignments at each (so the
+///   two hypotheses can never both cleanly pass and disagree -- the same
+///   benign-duplicate shape as the KOI8-R/KOI8-U pair above, not the
+///   ISO-8859-5 hazard), meaning most real Turkish mojibake already
+///   resolves correctly via the existing `(WINDOWS_1252, UTF_8)` pair;
+///   admitting this one would mostly just add a redundant candidate.
+/// - `(WINDOWS_1257, UTF_8)` (Baltic) was rejected outright, not merely
+///   deprioritized: chardetng 0.1.17's own README states its windows-1257
+///   detection "is very inaccurate" (it doesn't use trigrams for it), and
+///   empirically windows-1257's two gap bytes (`0xA1`, `0xA5`) land inside
+///   the UTF-8 continuation-byte range -- a real, realistic Baltic-script
+///   fixture failed gate 1 (reachability) outright in the investigation
+///   probe, not just rarely.
+///
 /// `pub(crate)` so `fuzz_roundtrip.rs`'s reversibility fuzz can iterate
 /// this exact list instead of maintaining a separately-drifting copy.
-pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 15] = [
+pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 18] = [
     (WINDOWS_1252, UTF_8),
     (WINDOWS_1252, BIG5),
     (WINDOWS_1252, GB18030),
@@ -249,6 +320,12 @@ pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 15] = [
     (EUC_JP, UTF_8),
     (WINDOWS_1250, UTF_8),
     (KOI8_U, WINDOWS_1251),
+    // ROADMAP v0.9 Track B1 mojibake-pair investigation batch: see the
+    // doc comment above for each pair's two-gate evaluation and the
+    // rejected/deferred candidates from the same investigation.
+    (WINDOWS_1256, UTF_8),
+    (WINDOWS_1258, UTF_8),
+    (WINDOWS_1253, UTF_8),
 ];
 
 /// `detect_mojibake` samples at most this many bytes of `content`.
@@ -612,6 +689,60 @@ mod tests {
     /// (KOI8-R, windows-1251) pair structurally cannot (see
     /// `koi8u_windows1251_pair_does_not_shadow_existing_koi8r_pair` below).
     const KOI8U_WINDOWS1251_UKRAINIAN_TEXT: &str = "Україна – це моя батьківщина. У Києві є багато гарних парків. Я люблю пити чай і їсти смачну їжу. Мій дідусь вирощує квіти у своєму ґрунті.";
+
+    /// v0.9 Track B1 evaluation fixture: realistic Arabic prose for the
+    /// (windows-1256, UTF-8) pair -- windows-1256 is, like windows-1250/
+    /// 1251/1252, a "total" single-byte decoder (confirmed in the batch's
+    /// investigation record: decoding every byte 0x00..=0xFF individually
+    /// reports zero malformed sequences), so gate 1 reduces to chardetng
+    /// recognizing UTF-8 on the recovered bytes, same shape as the three
+    /// already-admitted `(windows-1250/1251/1252, UTF_8)` pairs. Same
+    /// three-sentence weather/park/dinner shape as `WINDOWS1251_UTF8_
+    /// RUSSIAN_TEXT`/`WINDOWS1250_UTF8_POLISH_TEXT` above, for the same
+    /// "realistic amount of text for chardetng's statistical detection"
+    /// reason. Not reviewed by a native Arabic speaker (see the batch's
+    /// investigation record) -- grammar is believed correct but unverified;
+    /// this only affects fixture naturalness, not any test assertion,
+    /// since every gate here is purely structural/statistical, not a
+    /// meaning check.
+    const ARABIC_TEXT: &str = "اليوم الطقس جميل جدًا والشمس مشرقة. ذهبنا إلى الحديقة مع العائلة ولعبنا هناك طويلاً. في المساء تناولنا عشاءً لذيذًا مع الأصدقاء.";
+
+    /// v0.9 Track B1 evaluation fixture: realistic Vietnamese prose for the
+    /// (windows-1258, UTF-8) pair -- windows-1258 is also a total
+    /// single-byte decoder. Same three-sentence shape as `ARABIC_TEXT`
+    /// above. Exercises a wide spread of Vietnamese tone-mark diacritics
+    /// (ô, ậ, ẹ, ắ, ấ, á, ạ, ơ, ố, ệ), which is a deliberate stress case:
+    /// `docs/archive/roadmap-completed-cycles.md`'s v0.5 Track E1 record
+    /// notes windows-1258's single-byte path does no Unicode
+    /// normalization, so only precomposed forms round-trip -- this fixture
+    /// is written with precomposed Vietnamese letters throughout (the only
+    /// form Rust source text naturally produces for these characters), and
+    /// `repairs_utf8_misdecoded_as_windows1258` below is the direct
+    /// empirical confirmation that this holds for a real mojibake
+    /// round-trip, not just the encoder pool sanity checks that guarantee
+    /// predates this batch. Not reviewed by a native Vietnamese speaker
+    /// (see the batch's investigation record) -- same caveat as
+    /// `ARABIC_TEXT`.
+    const VIETNAMESE_TEXT: &str = "Hôm nay thời tiết rất đẹp và nắng ấm áp. Chúng tôi đi dạo trong công viên cùng gia đình và chơi bóng ở đó rất lâu. Buổi tối chúng tôi ăn một bữa tối ngon miệng cùng bạn bè.";
+
+    /// v0.9 Track B1 evaluation fixture: realistic Greek prose for the
+    /// (windows-1253, UTF-8) pair. Unlike windows-1250/1251/1252/1256/1258,
+    /// windows-1253 is *not* a total single-byte decoder -- three byte
+    /// values (`0xAA`, `0xD2`, `0xFF`) are unassigned (confirmed in the
+    /// batch's investigation record via exhaustive 0x00..=0xFF probing).
+    /// This fixture is written using only common modern Greek letters and
+    /// their precomposed tonos accents (ά, έ, ή, ί, ό, ύ); none of the
+    /// codepoints used land on the two gap bytes that are even
+    /// theoretically reachable from valid UTF-8 (`0xAA` as a 2-byte
+    /// UTF-8 trail byte requires a codepoint congruent to `0x2A` mod `0x40`
+    /// within the Greek-and-Coptic block, i.e. only U+03AA/U+03EA -- rare
+    /// letters not used here; `0xFF` can never appear in valid UTF-8 at
+    /// all, lead or trail; `0xD2` would require a lead byte outside the
+    /// Greek block's `0xCD..=0xCF` range entirely). `repairs_utf8_
+    /// misdecoded_as_windows1253` below empirically confirms the resulting
+    /// bytes decode cleanly. Not reviewed by a native Greek speaker (see
+    /// the batch's investigation record) -- same caveat as `ARABIC_TEXT`.
+    const GREEK_TEXT: &str = "Σήμερα ο καιρός είναι πολύ όμορφος και ο ήλιος λάμπει. Πήγαμε στο πάρκο με την οικογένεια και παίξαμε εκεί για πολλή ώρα. Το βράδυ φάγαμε ένα νόστιμο δείπνο με τους φίλους μας.";
 
     #[test]
     fn repairs_big5_misdecoded_as_windows1252() {
@@ -1717,5 +1848,533 @@ mod tests {
              correct text as the existing pair -- a benign duplicate candidate, not a \
              wrong-repair hazard"
         );
+    }
+
+    // ----------------------------------------------------------------
+    // v0.9 Track B1 mojibake-pair investigation batch: three more pairs,
+    // same dual-gate process as v0.7 Track E, evaluated in a dedicated
+    // investigation record before implementation (see the PR description
+    // for the full writeup, including rejected/deferred candidates:
+    // windows-1257 rejected structurally -- chardetng's own README says
+    // its detection "is very inaccurate", and its two gap bytes land in
+    // the UTF-8 continuation-byte range, which a real probe showed
+    // rejects realistic text at gate 1 itself, not just rarely; windows-
+    // 1255 (Hebrew) passed every gate identically to the three admitted
+    // here but was deferred purely for this batch's 3-pair cap; windows-
+    // 1254 (Turkish) passed every gate but was deprioritized as a
+    // low-marginal-value duplicate of the already-admitted (windows-1252,
+    // UTF-8) pair for most real Turkish mojibake). Each pair below gets
+    // the same four-test shape v0.6 E2/v0.7 Track E established: forward
+    // reachability/correctness, a pair-scoped false-positive check,
+    // reverse-hypothesis rejection, and non-shadowing checks against the
+    // sibling single-byte `(*, UTF_8)` pairs and each other.
+    // ----------------------------------------------------------------
+
+    // --- (WINDOWS_1256, UTF_8): Arabic UTF-8 mis-decoded as windows-1256 ---
+
+    #[test]
+    fn repairs_utf8_misdecoded_as_windows1256() {
+        let original_text = ARABIC_TEXT;
+        let bytes = original_text.as_bytes();
+        let (mojibake, malformed) = WINDOWS_1256.decode_without_bom_handling(bytes);
+        assert!(!malformed, "windows-1256 decodes every byte value");
+        let mojibake = mojibake.into_owned();
+        assert_ne!(
+            mojibake, original_text,
+            "fixture must actually look garbled"
+        );
+
+        let candidates = detect_mojibake(mojibake.clone());
+        let candidate = candidates
+            .iter()
+            .find(|c| c.intermediate == "windows-1256" && c.original == "UTF-8")
+            .unwrap_or_else(|| {
+                panic!("expected a (windows-1256, UTF-8) candidate, got {candidates:?}")
+            });
+        assert_eq!(candidate.preview, original_text);
+
+        let repaired =
+            apply_mojibake_repair(mojibake, "windows-1256".to_string(), "UTF-8".to_string())
+                .unwrap();
+        assert_eq!(repaired, original_text);
+    }
+
+    #[test]
+    fn no_candidates_for_normal_arabic_text() {
+        let candidates = detect_mojibake(ARABIC_TEXT.to_string());
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.intermediate == "windows-1256" && c.original == "UTF-8"),
+            "correct Arabic UTF-8 text must not trigger a false-positive \
+             (windows-1256, UTF-8) repair candidate: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn windows1256_utf8_reverse_hypothesis_is_rejected() {
+        let text = ARABIC_TEXT;
+        let (mojibake, malformed) = WINDOWS_1256.decode_without_bom_handling(text.as_bytes());
+        assert!(!malformed);
+        let mojibake = mojibake.into_owned();
+        assert_ne!(mojibake, text);
+
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1256, UTF_8)
+            .expect("the forward (windows-1256, UTF-8) hypothesis must pass every gate");
+        assert_eq!(correct_text, text);
+
+        assert_eq!(
+            try_repair(&mojibake, UTF_8, WINDOWS_1256),
+            None,
+            "the reversed (UTF-8, windows-1256) hypothesis must not also pass"
+        );
+    }
+
+    /// Checks the pairs most structurally likely to collide with this one:
+    /// the three sibling single-byte total-decoder `(*, UTF_8)` pairs
+    /// (Cyrillic/Central-European/Western-European Latin), and the other
+    /// two new pairs this same batch admits (Vietnamese/Greek). Arabic's
+    /// repertoire doesn't overlap any of theirs, so gate (a) alone should
+    /// already separate them -- checked in both directions.
+    #[test]
+    fn windows1256_utf8_pair_does_not_shadow_sibling_single_byte_pairs() {
+        let (mojibake, _) = WINDOWS_1256.decode_without_bom_handling(ARABIC_TEXT.as_bytes());
+        let mojibake = mojibake.into_owned();
+        for (name, enc) in [
+            ("windows-1250", WINDOWS_1250),
+            ("windows-1251", WINDOWS_1251),
+            ("windows-1252", WINDOWS_1252),
+        ] {
+            assert_eq!(
+                try_repair(&mojibake, enc, UTF_8),
+                None,
+                "genuine windows-1256 Arabic mojibake must not also match ({name}, UTF-8)"
+            );
+        }
+
+        let (m1252, _) = WINDOWS_1252.decode_without_bom_handling(WESTERN_EUROPEAN_TEXT.as_bytes());
+        assert_eq!(
+            try_repair(&m1252, WINDOWS_1256, UTF_8),
+            None,
+            "genuine windows-1252 Western-European mojibake must not also match \
+             (windows-1256, UTF-8)"
+        );
+    }
+
+    // --- (WINDOWS_1258, UTF_8): Vietnamese UTF-8 mis-decoded as windows-1258 ---
+
+    #[test]
+    fn repairs_utf8_misdecoded_as_windows1258() {
+        let original_text = VIETNAMESE_TEXT;
+        let bytes = original_text.as_bytes();
+        let (mojibake, malformed) = WINDOWS_1258.decode_without_bom_handling(bytes);
+        assert!(!malformed, "windows-1258 decodes every byte value");
+        let mojibake = mojibake.into_owned();
+        assert_ne!(
+            mojibake, original_text,
+            "fixture must actually look garbled"
+        );
+
+        let candidates = detect_mojibake(mojibake.clone());
+        let candidate = candidates
+            .iter()
+            .find(|c| c.intermediate == "windows-1258" && c.original == "UTF-8")
+            .unwrap_or_else(|| {
+                panic!("expected a (windows-1258, UTF-8) candidate, got {candidates:?}")
+            });
+        assert_eq!(candidate.preview, original_text);
+
+        let repaired =
+            apply_mojibake_repair(mojibake, "windows-1258".to_string(), "UTF-8".to_string())
+                .unwrap();
+        assert_eq!(repaired, original_text);
+    }
+
+    #[test]
+    fn no_candidates_for_normal_vietnamese_text() {
+        let candidates = detect_mojibake(VIETNAMESE_TEXT.to_string());
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.intermediate == "windows-1258" && c.original == "UTF-8"),
+            "correct Vietnamese UTF-8 text must not trigger a false-positive \
+             (windows-1258, UTF-8) repair candidate: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn windows1258_utf8_reverse_hypothesis_is_rejected() {
+        let text = VIETNAMESE_TEXT;
+        let (mojibake, malformed) = WINDOWS_1258.decode_without_bom_handling(text.as_bytes());
+        assert!(!malformed);
+        let mojibake = mojibake.into_owned();
+        assert_ne!(mojibake, text);
+
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1258, UTF_8)
+            .expect("the forward (windows-1258, UTF-8) hypothesis must pass every gate");
+        assert_eq!(correct_text, text);
+
+        assert_eq!(
+            try_repair(&mojibake, UTF_8, WINDOWS_1258),
+            None,
+            "the reversed (UTF-8, windows-1258) hypothesis must not also pass"
+        );
+    }
+
+    #[test]
+    fn windows1258_utf8_pair_does_not_shadow_sibling_single_byte_pairs() {
+        let (mojibake, _) = WINDOWS_1258.decode_without_bom_handling(VIETNAMESE_TEXT.as_bytes());
+        let mojibake = mojibake.into_owned();
+        for (name, enc) in [
+            ("windows-1250", WINDOWS_1250),
+            ("windows-1251", WINDOWS_1251),
+            ("windows-1252", WINDOWS_1252),
+        ] {
+            assert_eq!(
+                try_repair(&mojibake, enc, UTF_8),
+                None,
+                "genuine windows-1258 Vietnamese mojibake must not also match ({name}, UTF-8)"
+            );
+        }
+
+        let (m1252, _) = WINDOWS_1252.decode_without_bom_handling(WESTERN_EUROPEAN_TEXT.as_bytes());
+        assert_eq!(
+            try_repair(&m1252, WINDOWS_1258, UTF_8),
+            None,
+            "genuine windows-1252 Western-European mojibake must not also match \
+             (windows-1258, UTF-8)"
+        );
+    }
+
+    // --- (WINDOWS_1253, UTF_8): Greek UTF-8 mis-decoded as windows-1253 ---
+
+    #[test]
+    fn repairs_utf8_misdecoded_as_windows1253() {
+        let original_text = GREEK_TEXT;
+        let bytes = original_text.as_bytes();
+        let (mojibake, malformed) = WINDOWS_1253.decode_without_bom_handling(bytes);
+        assert!(
+            !malformed,
+            "fixture must be constructed so it avoids windows-1253's three gap bytes \
+             (0xAA, 0xD2, 0xFF) -- see GREEK_TEXT's doc comment"
+        );
+        let mojibake = mojibake.into_owned();
+        assert_ne!(
+            mojibake, original_text,
+            "fixture must actually look garbled"
+        );
+
+        let candidates = detect_mojibake(mojibake.clone());
+        let candidate = candidates
+            .iter()
+            .find(|c| c.intermediate == "windows-1253" && c.original == "UTF-8")
+            .unwrap_or_else(|| {
+                panic!("expected a (windows-1253, UTF-8) candidate, got {candidates:?}")
+            });
+        assert_eq!(candidate.preview, original_text);
+
+        let repaired =
+            apply_mojibake_repair(mojibake, "windows-1253".to_string(), "UTF-8".to_string())
+                .unwrap();
+        assert_eq!(repaired, original_text);
+    }
+
+    #[test]
+    fn no_candidates_for_normal_greek_text() {
+        let candidates = detect_mojibake(GREEK_TEXT.to_string());
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.intermediate == "windows-1253" && c.original == "UTF-8"),
+            "correct Greek UTF-8 text must not trigger a false-positive \
+             (windows-1253, UTF-8) repair candidate: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn windows1253_utf8_reverse_hypothesis_is_rejected() {
+        let text = GREEK_TEXT;
+        let (mojibake, malformed) = WINDOWS_1253.decode_without_bom_handling(text.as_bytes());
+        assert!(!malformed);
+        let mojibake = mojibake.into_owned();
+        assert_ne!(mojibake, text);
+
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1253, UTF_8)
+            .expect("the forward (windows-1253, UTF-8) hypothesis must pass every gate");
+        assert_eq!(correct_text, text);
+
+        assert_eq!(
+            try_repair(&mojibake, UTF_8, WINDOWS_1253),
+            None,
+            "the reversed (UTF-8, windows-1253) hypothesis must not also pass"
+        );
+    }
+
+    #[test]
+    fn windows1253_utf8_pair_does_not_shadow_sibling_single_byte_pairs() {
+        let (mojibake, _) = WINDOWS_1253.decode_without_bom_handling(GREEK_TEXT.as_bytes());
+        let mojibake = mojibake.into_owned();
+        for (name, enc) in [
+            ("windows-1250", WINDOWS_1250),
+            ("windows-1251", WINDOWS_1251),
+            ("windows-1252", WINDOWS_1252),
+        ] {
+            assert_eq!(
+                try_repair(&mojibake, enc, UTF_8),
+                None,
+                "genuine windows-1253 Greek mojibake must not also match ({name}, UTF-8)"
+            );
+        }
+
+        let (m1252, _) = WINDOWS_1252.decode_without_bom_handling(WESTERN_EUROPEAN_TEXT.as_bytes());
+        assert_eq!(
+            try_repair(&m1252, WINDOWS_1253, UTF_8),
+            None,
+            "genuine windows-1252 Western-European mojibake must not also match \
+             (windows-1253, UTF-8)"
+        );
+    }
+
+    /// Cross-check among the three new pairs themselves: Arabic, Vietnamese
+    /// and Greek repertoires are pairwise disjoint (and disjoint from the
+    /// existing single-byte Latin/Cyrillic pairs, checked separately above
+    /// in each pair's own `_does_not_shadow_sibling_single_byte_pairs`
+    /// test), so gate (a) should separate every combination.
+    #[test]
+    fn new_windows125x_pairs_do_not_shadow_each_other() {
+        let (arabic_mojibake, _) = WINDOWS_1256.decode_without_bom_handling(ARABIC_TEXT.as_bytes());
+        let arabic_mojibake = arabic_mojibake.into_owned();
+        let (vietnamese_mojibake, _) =
+            WINDOWS_1258.decode_without_bom_handling(VIETNAMESE_TEXT.as_bytes());
+        let vietnamese_mojibake = vietnamese_mojibake.into_owned();
+        let (greek_mojibake, _) = WINDOWS_1253.decode_without_bom_handling(GREEK_TEXT.as_bytes());
+        let greek_mojibake = greek_mojibake.into_owned();
+
+        assert_eq!(try_repair(&arabic_mojibake, WINDOWS_1258, UTF_8), None);
+        assert_eq!(try_repair(&arabic_mojibake, WINDOWS_1253, UTF_8), None);
+        assert_eq!(try_repair(&vietnamese_mojibake, WINDOWS_1256, UTF_8), None);
+        assert_eq!(try_repair(&vietnamese_mojibake, WINDOWS_1253, UTF_8), None);
+        assert_eq!(try_repair(&greek_mojibake, WINDOWS_1256, UTF_8), None);
+        assert_eq!(try_repair(&greek_mojibake, WINDOWS_1258, UTF_8), None);
+    }
+
+    // ----------------------------------------------------------------
+    // v0.9 Track B1 aggregate ranking-regression gate. `REPAIR_PAIRS` is a
+    // manually-grown list (10 pairs pre-v0.7, 15 after v0.7 Track E); every
+    // individual `repairs_*` test above proves its own pair's fixture is
+    // *found* by `detect_mojibake`, but none of them prove it is not
+    // *outranked* once the list has grown this large. `RankCase`/
+    // `assert_ranks_first` below assert, for every pair's own canonical
+    // fixture (the same fixture its dedicated `repairs_*` test above uses,
+    // or the equivalent construction for the three pairs that only had
+    // fuzz coverage before this test -- (WINDOWS_1252, GB18030),
+    // (WINDOWS_1252, EUC_KR), (GBK, UTF_8)), that `detect_mojibake` ranks
+    // the correct (intermediate, original) candidate strictly first
+    // (`candidates[0]`), not merely "present somewhere in the
+    // `MAX_CANDIDATES`-truncated list". This is deliberately the stricter
+    // reading: every fixture here is constructed to trigger only its own
+    // pair, with exactly one documented, benign exception -- KOI8-R/KOI8-U
+    // sharing plain-Russian mojibake (see
+    // `koi8u_windows1251_pair_does_not_shadow_existing_koi8r_pair` above,
+    // and the tie-break reasoning in `assert_ranks_first`'s doc comment) --
+    // which is why this asserts the specific winner, not just
+    // non-emptiness: a silent rank change away from the expected winner is
+    // exactly the signal that `REPAIR_PAIRS`'s growth introduced new
+    // ambiguity.
+    //
+    // `cases.len()` is asserted equal to `REPAIR_PAIRS.len() -
+    // KNOWN_UNREACHABLE_PAIRS.len()` so this list cannot silently drift out
+    // of sync with the const it is meant to cover -- adding a
+    // `REPAIR_PAIRS` entry without a matching `RankCase` here fails loudly
+    // instead of quietly under-covering the gate.
+    //
+    // **Pre-existing dead entry found while building this gate (not
+    // introduced by this batch, out of scope to fix here):**
+    // `(WINDOWS_1252, GB18030)` cannot ever be confirmed by
+    // `detect_mojibake`. Gate (c) requires
+    // `EncodingDetector::guess` to equal `original` exactly, but chardetng
+    // 0.1.17 has no distinct GB18030 candidate at all -- verified directly
+    // against its source: `SINGLE_BYTE_DATA`/the double-byte candidate list
+    // has only a `Gbk` variant, whose `encoding()` method literally
+    // `return`s the `GBK` constant (`chardetng::lib::InnerCandidate::Gbk`'s
+    // match arm), never `GB18030`. So `guess() == GB18030` can never be
+    // true, for any input whatsoever -- the exact same structural-
+    // unreachability shape as the already-documented `(WINDOWS_1251,
+    // KOI8_R)` exclusion in `REPAIR_PAIRS`'s doc comment (chardetng has no
+    // KOI8-R candidate either), just never previously caught because no
+    // test exercised `detect_mojibake` -- as opposed to
+    // `apply_mojibake_repair`, which has no chardetng gate at all -- for
+    // this specific pair before this gate existed. Filed as a known,
+    // non-urgent bug (see PR description) rather than fixed inline: fixing
+    // it (drop the entry, or relax gate (c) for this one pair) is an
+    // encoding-behavior change of its own, needing the same dual-gate
+    // review this repo requires for `mojibake.rs`, not a drive-by edit
+    // bundled into an unrelated batch.
+    // ----------------------------------------------------------------
+
+    /// `REPAIR_PAIRS` entries this gate deliberately excludes because
+    /// `detect_mojibake` can structurally never surface them (see this
+    /// module's discussion above) -- listed so the `cases.len()` assertion
+    /// documents *why* it isn't `REPAIR_PAIRS.len()`, instead of just being
+    /// a mysterious off-by-one.
+    const KNOWN_UNREACHABLE_PAIRS: usize = 1; // (WINDOWS_1252, GB18030)
+
+    struct RankCase {
+        intermediate: &'static Encoding,
+        original: &'static Encoding,
+        fixture: &'static str,
+    }
+
+    /// Builds the canonical mojibake string for `case` the same way every
+    /// `repairs_*` test above does (encode as `original`, mis-decode as
+    /// `intermediate`), then asserts `detect_mojibake` ranks that exact
+    /// pair first (`candidates[0]`).
+    ///
+    /// Tie-break note: when two pairs both legitimately recover the exact
+    /// same text from the exact same mojibake sample (the documented
+    /// KOI8-R/KOI8-U duplicate), `replacement_count`/`cjk_ratio` are
+    /// identical for both, so `detect_mojibake`'s `sort_by` (a stable sort)
+    /// leaves them in `REPAIR_PAIRS` iteration order -- the earlier-listed
+    /// pair wins rank 0. This is relied on, not incidental: it is exactly
+    /// why `(KOI8_R, WINDOWS_1251)` is listed before `(KOI8_U,
+    /// WINDOWS_1251)` in `REPAIR_PAIRS`.
+    fn assert_ranks_first(case: &RankCase) {
+        let (bytes, _, unmappable) = case.original.encode(case.fixture);
+        assert!(
+            !unmappable,
+            "fixture must be fully {}-encodable: {:?}",
+            case.original.name(),
+            case.fixture
+        );
+        let (mojibake, malformed) = case.intermediate.decode_without_bom_handling(&bytes);
+        assert!(
+            !malformed,
+            "{} must decode the {} bytes cleanly: {:?}",
+            case.intermediate.name(),
+            case.original.name(),
+            case.fixture
+        );
+        let mojibake = mojibake.into_owned();
+
+        let candidates = detect_mojibake(mojibake.clone());
+        let top = candidates.first().unwrap_or_else(|| {
+            panic!(
+                "expected at least one candidate for ({}, {}), got none; mojibake={mojibake:?}",
+                case.intermediate.name(),
+                case.original.name()
+            )
+        });
+        assert_eq!(
+            (top.intermediate.as_str(), top.original.as_str()),
+            (case.intermediate.name(), case.original.name()),
+            "expected ({}, {}) to rank first for its own canonical fixture, got {candidates:?}",
+            case.intermediate.name(),
+            case.original.name(),
+        );
+    }
+
+    #[test]
+    fn all_repair_pairs_rank_first_on_their_own_canonical_fixture() {
+        let korean_text =
+            "안녕하세요. 이것은 한국어 테스트 문장입니다. 데이터가 손상되면 안 됩니다.";
+        let cases = [
+            RankCase {
+                intermediate: WINDOWS_1252,
+                original: UTF_8,
+                fixture: LATIN1_SUPPLEMENT_TEXT,
+            },
+            RankCase {
+                intermediate: WINDOWS_1252,
+                original: BIG5,
+                fixture: BIG5_TEXT,
+            },
+            // (WINDOWS_1252, GB18030) deliberately omitted -- see
+            // `KNOWN_UNREACHABLE_PAIRS`'s doc comment above.
+            RankCase {
+                intermediate: WINDOWS_1252,
+                original: SHIFT_JIS,
+                fixture: SHIFT_JIS_TEXT,
+            },
+            RankCase {
+                intermediate: WINDOWS_1252,
+                original: EUC_KR,
+                fixture: korean_text,
+            },
+            RankCase {
+                intermediate: WINDOWS_1252,
+                original: EUC_JP,
+                fixture: EUC_JP_TEXT,
+            },
+            RankCase {
+                intermediate: BIG5,
+                original: UTF_8,
+                fixture: LATIN1_SUPPLEMENT_TEXT,
+            },
+            RankCase {
+                intermediate: GBK,
+                original: UTF_8,
+                fixture: LATIN1_SUPPLEMENT_TEXT,
+            },
+            RankCase {
+                intermediate: SHIFT_JIS,
+                original: UTF_8,
+                fixture: LATIN1_SUPPLEMENT_TEXT,
+            },
+            RankCase {
+                intermediate: KOI8_R,
+                original: WINDOWS_1251,
+                fixture: RUSSIAN_TEXT,
+            },
+            RankCase {
+                intermediate: WINDOWS_1251,
+                original: UTF_8,
+                fixture: WINDOWS1251_UTF8_RUSSIAN_TEXT,
+            },
+            RankCase {
+                intermediate: EUC_KR,
+                original: UTF_8,
+                fixture: LATIN1_SUPPLEMENT_TEXT,
+            },
+            RankCase {
+                intermediate: EUC_JP,
+                original: UTF_8,
+                fixture: LATIN1_SUPPLEMENT_TEXT,
+            },
+            RankCase {
+                intermediate: WINDOWS_1250,
+                original: UTF_8,
+                fixture: WINDOWS1250_UTF8_POLISH_TEXT,
+            },
+            RankCase {
+                intermediate: KOI8_U,
+                original: WINDOWS_1251,
+                fixture: KOI8U_WINDOWS1251_UKRAINIAN_TEXT,
+            },
+            // ROADMAP v0.9 Track B1.
+            RankCase {
+                intermediate: WINDOWS_1256,
+                original: UTF_8,
+                fixture: ARABIC_TEXT,
+            },
+            RankCase {
+                intermediate: WINDOWS_1258,
+                original: UTF_8,
+                fixture: VIETNAMESE_TEXT,
+            },
+            RankCase {
+                intermediate: WINDOWS_1253,
+                original: UTF_8,
+                fixture: GREEK_TEXT,
+            },
+        ];
+        assert_eq!(
+            cases.len(),
+            REPAIR_PAIRS.len() - KNOWN_UNREACHABLE_PAIRS,
+            "one RankCase per REPAIR_PAIRS entry, except the entries listed in \
+             KNOWN_UNREACHABLE_PAIRS's doc comment -- update both together"
+        );
+        for case in &cases {
+            assert_ranks_first(case);
+        }
     }
 }
