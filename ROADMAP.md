@@ -34,7 +34,7 @@ contributors.
 
 ### Track A — bug fixes
 
-- [ ] A1 (#329, P2): the search match the cursor jumps to is
+- [x] A1 (#329, P2): the search match the cursor jumps to is
   unreadable — the issue's original two hypotheses (selection-layer
   stacking, `--bg-selection` opacity) were falsified in pre-cycle
   review. `.cm-searchMatch.cm-searchMatch-selected` in
