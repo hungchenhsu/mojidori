@@ -44,8 +44,52 @@ faster for text files, or is it IDE creep?*
 codename used before the rename; do not use it in new outward-facing
 material.
 
-## 2. Current state (2026-07-27)
+## 2. Current state (2026-07-28)
 
+- **v0.9 cycle complete** (planned 2026-07-27 under the standing
+  overnight delegation, adversarially reviewed before start
+  (AGREE-WITH-CHANGES, all seven required changes adopted), PRs
+  #331–#335 + #340 plus close-out, tag `v0.9.0-alpha.1`): #329
+  (unreadable jumped-to search match) fixed after its issue's original
+  two hypotheses were falsified in pre-cycle review — the real defect
+  (a real WKWebView user report) was a fully opaque background on the
+  jumped-to match, fixed across three superseded attempts (each caught
+  by a further Codex round) by making the background transparent
+  (relying on the existing translucent selection fill) and forcing the
+  match's foreground to the plain document text color so it stays
+  legible inside dim syntax-highlighted text too, with a fail-first
+  regression test; #330 (update-check error message)
+  split three ways (network / no-update-info / other) and pinned
+  against the upstream `tauri-plugin-updater` error string; mojibake
+  `REPAIR_PAIRS` expanded 15→18 (windows-1256/1258/1253 × UTF-8) behind
+  a three-gate admission process, independently re-derived and
+  critic-reviewed before merge, incidentally surfacing an unrelated
+  dead entry (#336); #292 (replace-in-selection skipping
+  normalization-only matches) closed in two PRs — a NFKD precise-gating
+  replace engine ported from CodeMirror's own `SearchCursor` automaton,
+  merge-gated on a 13,500-case differential property sweep against the
+  real upstream implementation (which also surfaced and fixed a
+  pre-existing synchronous infinite loop and a regression-test time
+  budget that had been silently counting esbuild bundling overhead,
+  #320), plus a follow-up (C2) disclosing replaced/skipped-match
+  counts, where a second Codex review round caught and fixed a
+  duplicate-dialog defect on repeated single-step Replace before merge;
+  #280 (rename-event watch) escalated to P2 after a two-platform CI
+  probe showed the old-path watch does not survive a rename on either
+  macOS or Windows; two research findings posted for the maintainer
+  (#314 CSP nonce feasibility, #303 trim-on-save contract proposal).
+  New issues filed: #336, #337 (NFKD scan performance on large
+  selections), #338 (a recurring mojibake false-positive category),
+  #339 (a Linux-only glib advisory, Tier 2).
+  Full record: ROADMAP.md's v0.9 completed-cycle entry and
+  [docs/archive/roadmap-completed-cycles.md](docs/archive/roadmap-completed-cycles.md).
+  Publishing stays user-held: the new `v0.9.0-alpha.1` draft release
+  sits alongside the still-unpublished `v0.8.0-alpha.1` draft (see
+  §3/D2 — publishing is also what activates the updater feed #330's
+  error message currently reports as absent) — **the pending user
+  checklist is: decide whether/when to publish either draft, and rule
+  on the #303 trim-on-save contract proposal and #314 CSP-nonce
+  research posted to their issues.**
 - **v0.8 cycle + issue sweep complete** (2026-07-23 cycle, PRs
   #307–#312, tag `v0.8.0-alpha.1` — drafted but not published; then a
   2026-07-26→27 delegated issue sweep, PRs #313–#328): D1 naming

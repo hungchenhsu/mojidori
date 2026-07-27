@@ -6,6 +6,59 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 Mojidori is pre-1.0 (alpha); version numbers do not yet carry strict
 Semantic Versioning compatibility guarantees.
 
+## [v0.9.0-alpha.1] - 2026-07-28
+
+### Added
+
+- Mojibake repair wizard: three new repair pairs (repair table 15 → 18
+  candidates): windows-1256 (Arabic), windows-1258 (Vietnamese), and
+  windows-1253 (Greek), each misread as UTF-8 — admitted only after the
+  same reachability, reverse-hypothesis, and aggregate ranking-regression
+  gates as every existing pair, independently re-derived by a separate
+  harness plus a critic review before merge (#335).
+- Replace in Selection / Replace All in Selection now disclose when a
+  normalization-equivalent match was skipped rather than replaced: a
+  dialog reports the replaced and skipped counts. A one-shot Replace
+  All reports immediately whenever anything was skipped; a single-step
+  Replace only reports once that step can no longer replace anything
+  further, so stepping through repeated matches one at a time no
+  longer pops the dialog on every click (a duplicate-disclosure defect
+  caught by review before merge) (#292 follow-up).
+
+### Fixed
+
+- Update-check errors now split into three buckets in all four
+  locales — a network-layer problem, "no update information is
+  currently available" (covers a 404 or any other non-2xx response,
+  which previously and incorrectly surfaced as a network-connectivity
+  message), and a generic fallback — pinned by a Rust-side test against
+  the upstream error string so an unpinned `tauri-plugin-updater` bump
+  cannot silently regress the classification (#332, fixes #330).
+- The search match the cursor jumps to is readable again: the previous
+  fully opaque highlight (reported by a WKWebView user as making the
+  matched text completely invisible) is now transparent, relying on
+  the same translucent selection fill every ordinary text selection
+  already uses, with the match's own foreground color forced to the
+  plain document text color so it stays legible even when the match
+  lands inside dim syntax-highlighted text such as a comment (#333,
+  refs #329; visual acceptance on both WebViews stays with the user).
+- Replace in Selection and Replace All in Selection now apply to
+  matches that only exist under Unicode normalization (previously
+  skipped by design) — ported from CodeMirror's own `SearchCursor`
+  precise-match automaton and merge-gated on a differential property
+  sweep against the real upstream implementation (closes #292).
+  Incidental fixes bundled with the same change: a pre-existing
+  synchronous infinite loop in one of the replace paths, and a
+  regression-test time budget that had been silently counting esbuild
+  bundling overhead against its limit, causing an intermittent flake
+  that had once misfired against unrelated Windows CI (#320).
+
+### Known limitations
+
+- #333's fix is verified structurally and by unit test only; visual
+  confirmation on both WebViews (WKWebView / WebView2) across all four
+  themes is deferred to the user's next hands-on session.
+
 ## [v0.8.0-alpha.1] - 2026-07-24
 
 ### Added
@@ -429,7 +482,8 @@ Semantic Versioning compatibility guarantees.
 - Read-only preview mode for files over 10 MB, avoiding WebView freezes
   and accidental overwrites of huge files.
 
-[Unreleased]: https://github.com/hungchenhsu/mojidori/compare/v0.8.0-alpha.1...HEAD
+[Unreleased]: https://github.com/hungchenhsu/mojidori/compare/v0.9.0-alpha.1...HEAD
+[v0.9.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.8.0-alpha.1...v0.9.0-alpha.1
 [v0.8.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.7.0-alpha.1...v0.8.0-alpha.1
 [v0.7.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.6.0-alpha.1...v0.7.0-alpha.1
 [v0.6.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.5.0-alpha.2...v0.6.0-alpha.1

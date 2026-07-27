@@ -2104,3 +2104,193 @@ here were issues, not PRs).
 - [x] #328: the save path's several ad hoc atomic-write helpers
   converged onto a single durable, provenance-bound atomic-commit
   primitive — one code path now backs every save-family write.
+
+## v0.9 — trust deepening + issue closure (delegated, 2026-07-27)
+
+Planned 2026-07-27 under the user's standing overnight delegation;
+adversarially reviewed before start (AGREE-WITH-CHANGES — all seven
+required changes adopted, notably: #329's initial two hypotheses
+(selection-layer stacking, `--bg-selection` opacity) were falsified
+and the investigation was reopened onto the search-match theme rule
+with a strengthened, fail-first regression-test requirement rather
+than a settled root cause; #330 rescoped to the error split the
+upstream updater plugin can actually deliver; a third aggregate-ranking
+gate added to the mojibake batch; and a planned docs sweep was replaced
+by the #280 rename-event probe after the sweep was verified to be a
+no-op). Theme: no invented scope — every item traces to a filed issue
+or an established recurring program. Cycle constraints: no GUI launch,
+no release publishing, no visibility changes; good-first-issue items
+(#278, #304, #236, #89) were deliberately left for community
+contributors. PRs merged 2026-07-27→28: #331, #332, #333, #334, #335,
+#340, plus this close-out PR.
+
+**Track A — bug fixes**
+
+- [x] #329 (P2, PR #333): the search match the cursor jumps to was
+  unreadable — the issue's original two hypotheses (selection-layer
+  stacking, `--bg-selection` opacity) were falsified in pre-cycle
+  review, since `.cm-searchMatch.cm-searchMatch-selected` in
+  `src/editor-theme.ts` already paired a background with an explicit
+  foreground. The actual defect, from a real WKWebView user report:
+  that pairing was a fully **opaque** `backgroundColor: var(--accent)`
+  + `color: var(--accent-fg)`, and on that WebView the matched text
+  rendered as completely hidden (headless Chromium testing alone did
+  not reproduce it). Three fix attempts were superseded within the
+  same PR, each caught by a further Codex review round: (1) a second,
+  new translucent token layered on top of `.cm-selectionBackground` —
+  worse, because CM6 always paints both classes on the exact same
+  range at once, so the two same-hue translucent layers compounded to
+  ~0.6-0.7 effective opacity, tanking contrast for muted syntax colors
+  (e.g. `--syn-comment`) to ~1.0-1.7:1, worse than the original opaque
+  background; (2) omitting `backgroundColor` entirely to rely purely on
+  `.cm-selectionBackground` — still wrong, because CM6 renders both
+  `cm-searchMatch` and `cm-searchMatch-selected` on the same span, so
+  the plain `.cm-searchMatch` rule's own `backgroundColor:
+  var(--accent-soft)` still cascaded in (an unset property on the more
+  specific rule does not cancel a value set by a different, less
+  specific rule on the same element); (3) `backgroundColor:
+  "transparent"` alone — correct as far as it went (explicit, so its
+  higher specificity actually cancels the inherited fill, leaving only
+  `.cm-selectionBackground`), but with no forced foreground, so a match
+  landing inside dim syntax-highlighted text (e.g. a comment) could
+  still be unreadable against that single translucent layer. The
+  landed fix keeps `backgroundColor: "transparent"` and adds a second,
+  wider rule forcing `color: var(--fg) !important` on the match and
+  any nested descendant (`--fg` verified >=5.6:1 against
+  `--bg-selection` in all four themes, vs. 1.6-2.1:1 for the
+  previously-used `--accent-fg`), plus a bolder 2px outline (vs. 1px
+  for a plain match) as an independent "current match" cue. No new
+  CSS custom property; `src/styles.css` untouched. Regression test
+  (`editor-theme.test.ts`, asserting `editorBaseThemeSpec`'s raw rule
+  values, never `getComputedStyle` since jsdom doesn't resolve `var()`)
+  was written to fail against the pre-fix revision first, then pass
+  only once the real rule changed, and was updated in step with each
+  superseded attempt; real-machine (headless Chromium) `getComputedStyle`
+  spot-checks independently confirmed the final background and
+  foreground. `npm test` at merge: 53 files / 1227 tests passed. Visual
+  acceptance on both WebViews across all four themes stays with the
+  user; the PR references, not closes, #329.
+- [x] #330 (P3, PR #332): update-check error handling split into
+  network-layer / "no update information available" (the
+  `Error::ReleaseNotFound` bucket, which the upstream
+  `tauri-plugin-updater` 2.10.1 collapses every non-2xx HTTP status
+  into, verified against its source) / other errors, in all four
+  locales. A Rust-side test (`updater_errors.rs`) pins the upstream
+  error's `Display` string the frontend's `classifyUpdateCheckError`
+  matches on, so an unpinned `tauri-plugin-updater` bump can't silently
+  regress the classification — the only test that goes red on a
+  version-string change. `npm test`: 1231 passed (9 new
+  `updaterErrors.test.ts` cases + 3 new `updater.test.ts` cases);
+  `cargo test`: 650 passed.
+
+**Track B — encoding trust**
+
+- [x] B1 (PR #335): mojibake `REPAIR_PAIRS` expansion batch, 15 → 18
+  pairs: `(windows-1256, UTF-8)` Arabic, `(windows-1258, UTF-8)`
+  Vietnamese, `(windows-1253, UTF-8)` Greek (batch capped at 3, as
+  planned). windows-1255 deferred to a future batch purely on the cap;
+  windows-1254 deprioritized as a low-marginal-value duplicate of the
+  existing `(windows-1252, UTF-8)` pair; windows-1257 rejected
+  (chardetng's own README calls its detection inaccurate, and its gap
+  bytes land in the UTF-8 continuation-byte range). All three admission
+  gates satisfied, including the new aggregate ranking-regression
+  assertion (proven against the pre-batch 15 pairs first, then
+  re-proven at 18); `fuzz_roundtrip.rs` pools/match arms synced in the
+  same PR — confirmed the sync requirement is still a real, executable
+  dead end by reproducing the unsynced-arm panic before fixing it (see
+  judgment overlay). Independently re-verified before merge: adversarial
+  harness re-derivation by a separate agent, plus a critic review
+  (APPROVE-WITH-NOTES — four doc/test precision fixes applied), on top
+  of Codex CI review. `cargo test`: 663 passed (666 running, 3
+  ignored); `npm test`: 1221 passed, frontend untouched. Incidentally
+  surfaced a pre-existing, unrelated dead entry, `(windows-1252,
+  gb18030)` — chardetng has no distinct GB18030 detection candidate
+  (its `Gbk` candidate's `encoding()` always returns `GBK`), so
+  `detect_mojibake` can never confirm it — filed as issue #336, left
+  unfixed as out of scope for this batch.
+
+**Track C — filed-issue closure**
+
+- [x] C1 (#292, PR #334): replace-in-selection now applies NFKD
+  normalized matching with CM6's own precise-match gating, ported from
+  `SearchCursor`'s per-code-point automaton (non-precise matches are
+  skipped, exactly like upstream `replaceAll`; the upstream
+  canonical-reordering limitation is inherited by design and pinned by
+  test). Merge-gated on a differential property sweep against the real
+  `SearchCursor` (12,000 single-range + 1,500 multi-range cases, mutation
+  tested — 9/10 reachable mutations caught, the tenth structurally
+  unreachable and documented as such) plus pre-merge adversarial review.
+  Two fixes bundled into the same PR because the sweep surfaced them
+  directly: a pre-existing synchronous infinite loop reachable from this
+  module's contract (guarded with the same out-of-process,
+  `execFileSync`-with-timeout termination test #320/#327 established,
+  since a real sync infinite loop defeats vitest's own timeout), and a
+  correction to #320/#327's own regression-test time budget, which had
+  been silently counting esbuild bundling overhead against its limit —
+  moved the bundle step outside the timed section. `npm test` at merge:
+  52 files / 1239 tests passed (74 in `replacescope.test.ts` alone).
+  Feasibility investigation posted to the issue 2026-07-27.
+- [x] C2 (#292 follow-up, PR #340): scoped-replace result message —
+  `replacescope.ts`'s scan now also reports `skippedNonPrecise` (always
+  0 in regexp mode, since `RegExpCursor` never normalizes), plumbed end
+  to end from `replaceAllInSelection`/`replaceInSelection` through
+  `editor.ts`'s `dispatchScopedReplace` and `main.ts`'s
+  `runLineOperation` (generalized to `<T>(action: () => T): T |
+  undefined`) to the menu handler. UX choice, deliberately narrower
+  than the feasibility investigation's "always report both counts"
+  suggestion: a `messageDialog` appears only when at least one match
+  was skipped, via a pure `buildReplaceScopeResultMessage` (two new
+  keys, `dialog.replaceScopeResultTitle`/`Message`, in all four
+  locales). Two-round Codex review: round 1 landed the feature;
+  round 2 caught a real defect before merge — repeatedly invoking
+  single-step Replace against a selection with a persistent
+  non-precise match (e.g. stepping through "f f ﬁ") re-popped the
+  disclosure dialog on every click, turning normal one-at-a-time
+  replacement into a barrage of interruptions. Fixed with a second pure
+  function, `shouldShowReplaceScopeResult(mode, replaced,
+  skippedNonPrecise)`: Replace All (a one-shot bulk operation) still
+  reports the instant anything is skipped, but single-step Replace
+  defers until a step replaces nothing further (`replaced === 0`) —
+  only then is the skip count actually the reason nothing happened,
+  rather than noise that a later step will still walk past normally.
+  Both pure functions are vitest-covered, including a differential
+  sweep against the real `SearchCursor`'s imprecise-match count and an
+  integration test that replays the "f f ﬁ" repeated-click scenario
+  against real `replaceInSelection` calls; C1's differential sweep and
+  all prior tests are untouched. Full test suite at merge: 1269
+  passed.
+- [x] C3 (#280): watcher rename-event probe run on macOS + Windows CI
+  (production-identical `notify::recommended_watcher` +
+  `RecursiveMode::NonRecursive` configuration, plus a watch-parent-
+  directory control group; Linux not measured, no CI runner available)
+  — results posted to the issue; the old-path watch does not survive a
+  rename on either platform, so the issue was escalated from P3 to P2
+  per the pre-registered criterion. The probe branch was discarded
+  (does not earn its keep as a permanent regression test, per plan).
+
+**Track D — research & decision prep (no code)**
+
+- [x] D1 (#314): CSP-nonce feasibility research posted to the issue
+  (conditionally feasible via a placeholder `<style>` nonce carrier +
+  `EditorView.cspNonce`; deferred until a real-machine verification
+  window).
+- [x] D2 (#303): decision-ready trim-on-save contract proposal posted
+  to the issue for the maintainer's ruling (ties in PR #288's pending
+  undo-semantics sign-off).
+
+**Close-out**
+
+- [x] E1: version bump to 0.9.0 across `tauri.conf.json` /
+  `package.json` / `Cargo.toml` (+ both lockfiles), `CHANGELOG.md`'s
+  `[v0.9.0-alpha.1]` section written, this section archived, DIRECTION
+  §2 refreshed, three lessons written back to the judgment overlay, tag
+  `v0.9.0-alpha.1` created (pre-release authority). Publishing stays
+  user-held: the new draft release sits alongside the still-unpublished
+  `v0.8.0-alpha.1` draft.
+
+New issues filed during the cycle (beyond #280's P2 escalation):
+#336 (mojibake dead entry, `(windows-1252, gb18030)`), #337 (NFKD scan
+performance on large selections, ~10–19 MB/s, P3), #338 (a recurring
+mojibake false-positive category affecting multiple pairs, P3), #339
+(a Dependabot glib 0.18 unsoundness advisory, Linux Tier-2-only
+exposure, P3).
