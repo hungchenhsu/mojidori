@@ -1,4 +1,4 @@
-# Judgment Overlay — plume（最後查證日期：2026-07-24）
+# Judgment Overlay — plume（最後查證日期：2026-07-27）
 
 依全域 skill `judgment-rubrics` 的 overlay 規格建立，由 repo 根目錄 CLAUDE.md 正式引用。內容更新時同步上方查證日期；若本檔與 CLAUDE.md 衝突，以 CLAUDE.md 為準並更新本檔。
 
@@ -10,7 +10,7 @@ plume 是本機文字編輯器，「使用者檔案的資料完整性」等同�
 - 編碼/換行/BOM 的 decode–encode round-trip；decode error 必須呈現給使用者，絕不默默當正常文字渲染（ARCHITECTURE.md 硬約束）。
 - IPC 邊界：所有磁碟 I/O 只在 Rust core，raw bytes 不得跨 IPC（ARCHITECTURE.md 硬約束）。
 - large-file mode 的 offset 計算：CM6 的 chars 與檔案 bytes 是兩種單位，絕不可混用（2026-06 開發期真實教訓）。
-- Release／tag／發佈：對外動作，一律先問（R3）。
+- Release／tag／發佈：pre-release tag＋draft release 依 2026-07-15 使用者委任可自主；正式 publish、yank、刪除 tag 仍為對外動作，一律先問（R3）。
 
 ## 2. 驗證指令表（R5 用）
 
