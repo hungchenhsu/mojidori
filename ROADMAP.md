@@ -81,13 +81,19 @@ contributors.
 
 ### Track C — filed-issue closure
 
-- [ ] C1 (#292): NFKD position-mapping feasibility investigation —
-  findings-only, written up on the issue; implementing the mapping
-  is explicitly out of scope this cycle.
-- [ ] C2 (#292 mitigation): replace-in-selection reports how many
-  normalized-equivalent matches it skipped (the issue's own second
-  option) — the silent part of the bug dies without touching replace
-  semantics; vitest-covered.
+- [x] C1 (#292): replace-in-selection now applies NFKD normalized
+  matching with CM6's own precise-match gating, ported from
+  SearchCursor's per-code-point automaton (non-precise matches are
+  skipped, exactly like upstream replaceAll; the upstream
+  canonical-reordering limitation is inherited by design and pinned
+  by test). Merge-gated on a differential property sweep against the
+  real SearchCursor plus pre-merge adversarial review. (Feasibility
+  investigation posted to the issue 2026-07-27.)
+- [ ] C2 (#292 follow-up, optional this cycle): scoped-replace result
+  message (replaced + skipped-non-precise counts) — requires building
+  result reporting for replace-in-selection from scratch
+  (replacescope → editor → main + four locales); dropped without
+  prejudice if the clock runs out.
 - [ ] C3 (#280): watcher rename-event probe run on macOS + Windows
   CI to measure notify's `event.paths` behavior (including whether
   the old-path watch survives at all) — findings recorded on the
