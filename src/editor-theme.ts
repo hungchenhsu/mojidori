@@ -80,25 +80,38 @@ export const editorBaseThemeSpec = {
     outline: "1px solid var(--accent)",
   },
   // Issue #329: pressing Enter in the search panel moves CM6's actual
-  // selection onto this match, so this rule and `.cm-selectionBackground`
-  // above both paint the same range at once. This used to be
-  // `backgroundColor: var(--accent)` (fully opaque) plus an explicit
+  // selection onto this match — @codemirror/search only ever adds the
+  // "-selected" class when `view.state.selection.ranges.some(r => r.from
+  // == from && r.to == to)` (see node_modules/@codemirror/search's match
+  // decoration builder), so `.cm-selectionBackground` above is *always*
+  // painted for this exact range too, every time this rule applies. This
+  // used to be `backgroundColor: var(--accent)` (fully opaque) plus
   // `color: var(--accent-fg)` to keep the text legible on top of it — a
-  // real user report (opaque block, text fully hidden) plus a headless
-  // Chromium repro of this exact rule showed the opaque+forced-foreground
-  // approach is not robust in every WebView: the underlying text's own
-  // legibility should not depend on this rule getting a specific
-  // foreground color exactly right. Using a translucent background
-  // instead — the same fix already applied to `--bg-selection` for
-  // ordinary text selection, see that token's comment in styles.css — lets
-  // the document's own text color always show through, so it stays
-  // readable regardless. `--bg-search-selected` is deliberately a
-  // stronger/more opaque wash than both `--accent-soft` (plain matches)
-  // and `--bg-selection` (plain selection) so the current match still
-  // reads as more prominent than either; the doubled outline is a second,
-  // independent cue for the same "this one is current" distinction.
+  // real user report (opaque block, text fully hidden) showed that isn't
+  // robust in every WebView.
+  //
+  // The first fix attempted here added a second translucent layer
+  // (`--bg-search-selected`) on top of `.cm-selectionBackground` instead
+  // of an opaque one. That is *worse*, not better: because both layers
+  // share the accent hue, they compound to an effective opacity of
+  // roughly 0.6-0.7, which pulls contrast for ordinary `--fg` text down to
+  // ~4.2:1 in Dark and ~3.3:1 in Dusk, and syntax colors are far worse
+  // (e.g. `--syn-comment`, already a deliberately muted color, drops to
+  // ~1.0-1.7:1 against the compounded wash in every theme — effectively
+  // invisible). A forced foreground color doesn't rescue this either:
+  // `--accent-fg` was tuned to pair with a fully opaque `--accent`, and
+  // checked against the actual compounded background it lands at
+  // 1.9-3.6:1 across all four themes, still short of AA.
+  //
+  // So this rule adds no background of its own at all. It relies
+  // entirely on `.cm-selectionBackground`'s existing, already-shipped
+  // translucent fill (the exact same one every ordinary text selection
+  // uses) for the highlight — this is what makes the reliance on CM6
+  // always pairing "-selected" with an actual selection range load-bearing
+  // rather than incidental. Only an outline is added, bolder than the
+  // plain match's (2px vs 1px), as an independent "this one is current"
+  // cue that doesn't touch background/foreground contrast at all.
   ".cm-searchMatch.cm-searchMatch-selected": {
-    backgroundColor: "var(--bg-search-selected)",
     outline: "2px solid var(--accent)",
   },
   ".cm-panels": {

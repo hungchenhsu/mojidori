@@ -40,18 +40,6 @@
      description for the WebKit/CodeMirror drawSelection() investigation
      that led to splitting this out. */
   --bg-selection: rgba(87, 87, 209, 0.32);
-  /* The currently-selected search match only (src/editor-theme.ts
-     `.cm-searchMatch.cm-searchMatch-selected`; issue #329). Pressing Enter
-     in search moves the real selection onto this match, so this token and
-     --bg-selection above both paint the same range — a stronger alpha than
-     --bg-selection so the "current match" still reads as more prominent
-     than a plain selection, but translucent for the same reason
-     --bg-selection is: the match's own text must stay legible without
-     depending on a separately-tuned foreground color. Deliberately a fixed
-     0.45 alpha in every theme below (contrast against --fg checked at that
-     alpha for all four themes) rather than following --bg-selection's
-     per-theme 0.32/0.38 split, which was tuned for a different purpose. */
-  --bg-search-selected: rgba(87, 87, 209, 0.45);
   --warning: #b35900;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
@@ -2044,7 +2032,6 @@ select:focus-visible {
     --accent-fg: #1e1f24;
     --accent-soft: rgba(140, 140, 240, 0.16);
     --bg-selection: rgba(140, 140, 240, 0.38);
-    --bg-search-selected: rgba(140, 140, 240, 0.45);
     --warning: #ffb454;
     --warning-soft: rgba(255, 180, 84, 0.16);
     --danger: #e5484d;
@@ -2073,7 +2060,6 @@ html[data-theme="light"] {
   --accent-fg: #ffffff;
   --accent-soft: rgba(87, 87, 209, 0.14);
   --bg-selection: rgba(87, 87, 209, 0.32);
-  --bg-search-selected: rgba(87, 87, 209, 0.45);
   --warning: #b35900;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
@@ -2104,7 +2090,6 @@ html[data-theme="dark"] {
   --accent-fg: #1e1f24;
   --accent-soft: rgba(140, 140, 240, 0.16);
   --bg-selection: rgba(140, 140, 240, 0.38);
-  --bg-search-selected: rgba(140, 140, 240, 0.45);
   --warning: #ffb454;
   --warning-soft: rgba(255, 180, 84, 0.16);
   --danger: #e5484d;
@@ -2144,7 +2129,6 @@ html[data-theme="paper"] {
   --accent-fg: #ffffff;
   --accent-soft: rgba(62, 106, 89, 0.14);
   --bg-selection: rgba(62, 106, 89, 0.32);
-  --bg-search-selected: rgba(62, 106, 89, 0.45);
   --warning: #b35900;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
@@ -2181,7 +2165,6 @@ html[data-theme="dusk"] {
   --accent-fg: #232634;
   --accent-soft: rgba(155, 163, 245, 0.16);
   --bg-selection: rgba(155, 163, 245, 0.38);
-  --bg-search-selected: rgba(155, 163, 245, 0.45);
   --warning: #f5b461;
   --warning-soft: rgba(245, 180, 97, 0.16);
   --danger: #e5484d;
