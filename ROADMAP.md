@@ -139,7 +139,10 @@ Item counts below are shipped `[x]` items per cycle.
   repair wizard, batch encoding/line-ending conversion, side-by-side
   encoding preview); Track B large-file streaming find/replace +
   line-offset index; Track C code folding/line operations/indent guides;
-  Track D issue templates + ja/zh-CN i18n — D1/D2 remain open, see above.
+  Track D issue templates + ja/zh-CN i18n — D1/D2 (naming, signing +
+  auto-update) were carried forward and subsequently delivered in the
+  v0.8 cycle (see the v0.8 entry below); Windows signing remains open,
+  see DIRECTION.md §3/D2.
 - **v0.4 — character-level trust** (26 items, planned 2026-07-14,
   delegated, tag `v0.4.0-alpha.1`): character inspector,
   suspicious-character audit, full/half-width conversion, Unicode
