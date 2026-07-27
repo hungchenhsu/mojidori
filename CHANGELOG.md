@@ -10,13 +10,20 @@ Semantic Versioning compatibility guarantees.
 
 ### Added
 
-- Mojibake repair wizard: three new repair pairs (repair table 18 → 21
-  candidates once counting the v0.7 batch's high-water mark of 15):
-  windows-1256 (Arabic), windows-1258 (Vietnamese), and windows-1253
-  (Greek), each misread as UTF-8 — admitted only after the same
-  reachability, reverse-hypothesis, and aggregate ranking-regression
+- Mojibake repair wizard: three new repair pairs (repair table 15 → 18
+  candidates): windows-1256 (Arabic), windows-1258 (Vietnamese), and
+  windows-1253 (Greek), each misread as UTF-8 — admitted only after the
+  same reachability, reverse-hypothesis, and aggregate ranking-regression
   gates as every existing pair, independently re-derived by a separate
   harness plus a critic review before merge (#335).
+- Replace in Selection / Replace All in Selection now disclose when a
+  normalization-equivalent match was skipped rather than replaced: a
+  dialog reports the replaced and skipped counts. A one-shot Replace
+  All reports immediately whenever anything was skipped; a single-step
+  Replace only reports once that step can no longer replace anything
+  further, so stepping through repeated matches one at a time no
+  longer pops the dialog on every click (a duplicate-disclosure defect
+  caught by review before merge) (#292 follow-up).
 
 ### Fixed
 

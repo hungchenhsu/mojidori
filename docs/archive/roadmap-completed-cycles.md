@@ -2122,8 +2122,7 @@ or an established recurring program. Cycle constraints: no GUI launch,
 no release publishing, no visibility changes; good-first-issue items
 (#278, #304, #236, #89) were deliberately left for community
 contributors. PRs merged 2026-07-27→28: #331, #332, #333, #334, #335,
-plus this close-out PR (#340, C2, remained open past close-out — see
-Track C below).
+#340, plus this close-out PR.
 
 **Track A — bug fixes**
 
@@ -2206,14 +2205,34 @@ Track C below).
   moved the bundle step outside the timed section. `npm test` at merge:
   52 files / 1239 tests passed (74 in `replacescope.test.ts` alone).
   Feasibility investigation posted to the issue 2026-07-27.
-- [ ] C2 (#292 follow-up, PR #340): scoped-replace result message
-  (replaced + skipped-non-precise counts), built from scratch
-  (replacescope → editor → main + four locales), merge-gated the same
-  way as C1 (fail-first regression test, differential sweep, Codex
-  review). **Still open at close-out time**: CI green (macOS + Windows)
-  and a clean Codex review landed 2026-07-27 17:30 UTC, but the PR had
-  not been merged as of this cycle's close-out; it carries forward into
-  the next cycle rather than being folded into v0.9.0-alpha.1.
+- [x] C2 (#292 follow-up, PR #340): scoped-replace result message —
+  `replacescope.ts`'s scan now also reports `skippedNonPrecise` (always
+  0 in regexp mode, since `RegExpCursor` never normalizes), plumbed end
+  to end from `replaceAllInSelection`/`replaceInSelection` through
+  `editor.ts`'s `dispatchScopedReplace` and `main.ts`'s
+  `runLineOperation` (generalized to `<T>(action: () => T): T |
+  undefined`) to the menu handler. UX choice, deliberately narrower
+  than the feasibility investigation's "always report both counts"
+  suggestion: a `messageDialog` appears only when at least one match
+  was skipped, via a pure `buildReplaceScopeResultMessage` (four new
+  locale keys). Two-round Codex review: round 1 landed the feature;
+  round 2 caught a real defect before merge — repeatedly invoking
+  single-step Replace against a selection with a persistent
+  non-precise match (e.g. stepping through "f f ﬁ") re-popped the
+  disclosure dialog on every click, turning normal one-at-a-time
+  replacement into a barrage of interruptions. Fixed with a second pure
+  function, `shouldShowReplaceScopeResult(mode, replaced,
+  skippedNonPrecise)`: Replace All (a one-shot bulk operation) still
+  reports the instant anything is skipped, but single-step Replace
+  defers until a step replaces nothing further (`replaced === 0`) —
+  only then is the skip count actually the reason nothing happened,
+  rather than noise that a later step will still walk past normally.
+  Both pure functions are vitest-covered, including a differential
+  sweep against the real `SearchCursor`'s imprecise-match count and an
+  integration test that replays the "f f ﬁ" repeated-click scenario
+  against real `replaceInSelection` calls; C1's differential sweep and
+  all prior tests are untouched. Full test suite at merge: 1269
+  passed.
 - [x] C3 (#280): watcher rename-event probe run on macOS + Windows CI
   (production-identical `notify::recommended_watcher` +
   `RecursiveMode::NonRecursive` configuration, plus a watch-parent-

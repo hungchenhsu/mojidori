@@ -124,28 +124,30 @@ D2 (signing + auto-update) is delivered for macOS, with the Windows
 signing sub-decision still open — see the v0.8 entry above and
 DIRECTION §3/D2.
 - **v0.9 — trust deepening + issue closure** (delegated, planned
-  2026-07-27, PRs #331–#335 plus close-out; tag `v0.9.0-alpha.1`):
-  #329 unreadable jumped-to search match fixed with a fail-first
-  regression test after the issue's original two hypotheses were
-  falsified in pre-cycle review; #330 update-check error message split
-  three ways and pinned against the upstream error string; mojibake
-  `REPAIR_PAIRS` 15→18 (windows-1256/1258/1253 × UTF-8) behind a
-  three-gate admission process (reachability + reverse-hypothesis +
-  aggregate ranking-regression), independently re-derived by a separate
-  harness and critic-reviewed before merge; #292 closed with a NFKD
-  normalized-match replace engine ported from CodeMirror's own
-  `SearchCursor` automaton, merge-gated on a 13,500-case differential
-  property sweep against the real upstream implementation, which also
-  surfaced and fixed a pre-existing synchronous infinite loop and a
-  regression-test time budget that had been silently counting esbuild
-  bundling overhead; #280 rename-watch probe escalated the issue to P2
-  after CI measurement on both Tier-1 platforms; two decision-prep
-  research findings posted (#314 CSP nonce, #303 trim-on-save
-  contract). #292's follow-up (C2, result-message counts, PR #340)
-  remained open past this cycle's close-out and carries forward. New
-  issues filed: #336 (mojibake dead entry), #337 (NFKD scan
-  performance), #338 (mojibake false-positive category), #339 (glib
-  advisory, Linux Tier-2-only). Full record: see the v0.9 entry in
+  2026-07-27, PRs #331–#335 + #340 plus close-out; tag
+  `v0.9.0-alpha.1`): #329 unreadable jumped-to search match fixed with
+  a fail-first regression test after the issue's original two
+  hypotheses were falsified in pre-cycle review; #330 update-check
+  error message split three ways and pinned against the upstream error
+  string; mojibake `REPAIR_PAIRS` 15→18 (windows-1256/1258/1253 ×
+  UTF-8) behind a three-gate admission process (reachability +
+  reverse-hypothesis + aggregate ranking-regression), independently
+  re-derived by a separate harness and critic-reviewed before merge;
+  #292 closed in two PRs — a NFKD normalized-match replace engine
+  ported from CodeMirror's own `SearchCursor` automaton, merge-gated on
+  a 13,500-case differential property sweep against the real upstream
+  implementation (which also surfaced and fixed a pre-existing
+  synchronous infinite loop and a regression-test time budget that had
+  been silently counting esbuild bundling overhead), plus a follow-up
+  (C2) disclosing replaced/skipped counts, where a second Codex review
+  round caught and fixed a duplicate-dialog defect on repeated
+  single-step Replace before merge; #280 rename-watch probe escalated
+  the issue to P2 after CI measurement on both Tier-1 platforms; two
+  decision-prep research findings posted (#314 CSP nonce, #303
+  trim-on-save contract). New issues filed: #336 (mojibake dead entry),
+  #337 (NFKD scan performance), #338 (mojibake false-positive
+  category), #339 (glib advisory, Linux Tier-2-only). Full record: see
+  the v0.9 entry in
   [docs/archive/roadmap-completed-cycles.md](docs/archive/roadmap-completed-cycles.md).
 
 ## Explicit non-goals
