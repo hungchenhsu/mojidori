@@ -1991,10 +1991,11 @@ the good-first-issue surface.
 
 ## v0.8 — Mojidori rename + release pipeline (delegated, 2026-07-23)
 
-Closes the two decision-gate items (D1 official naming, D2 signing +
-notarization + auto-update) carried over from v0.3 Track D and left
-open through v0.4–v0.7. Five PRs, all merged 2026-07-23: #307, #308,
-#309, #311, #312.
+Closes D1 (official naming) and delivers the macOS + auto-update
+portion of D2 (signing, notarization, auto-update) — both carried over
+from v0.3 Track D and left open through v0.4–v0.7. D2's Windows-signing
+sub-decision remains undecided (see DIRECTION §3/D2). Five PRs, all
+merged 2026-07-23: #307, #308, #309, #311, #312.
 
 **D1 — official naming**
 
@@ -2065,10 +2066,10 @@ open through v0.4–v0.7. Five PRs, all merged 2026-07-23: #307, #308,
 
 Not a checkbox cycle — a delegated pass clearing a backlog of filed
 bugs and one security hardening item, all fixed under the existing
-Definition of Done rather than planned as a ROADMAP track. Fourteen
-PRs merged 2026-07-26 through 2026-07-27: #313, #315, #316, #317,
-#318, #319, #326, #327, #328 (PR numbers in the #313–#328 range not
-listed here were issues, not PRs).
+Definition of Done rather than planned as a ROADMAP track. Nine PRs
+merged 2026-07-26 through 2026-07-27: #313, #315, #316, #317, #318,
+#319, #326, #327, #328 (PR numbers in the #313–#328 range not listed
+here were issues, not PRs).
 
 - [x] #313: third-party GitHub Actions in the release workflow pinned
   to commit SHA instead of a floating tag, and their permissions

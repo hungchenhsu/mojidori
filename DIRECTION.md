@@ -144,10 +144,11 @@ material.
   confirmed the earlier visibility flip was deliberate (public repos get
   free Actions CI, and "it's about time"), overriding the original
   keep-private-until-named gate. Consequence: D3 is now *partially*
-  entered out of order — the remaining hygiene item (macOS signing; D1
-  naming resolved 2026-07-23, see §3/D1; the archive purge and README
-  pass are done) is outstanding **post-publication** work, tracked in
-  §3/D3. The positioning red
+  entered out of order — D1 naming resolved 2026-07-23 (see §3/D1) and
+  macOS signing shipped in the v0.8 cycle (see §3/D2); the archive
+  purge and README pass are done too. The remaining hygiene item is
+  Windows signing, still undecided (§3/D2), outstanding
+  **post-publication** work tracked in §3/D3. The positioning red
   lines (§5-S13) apply with full force now that every file is
   outward-facing. Actions billing on the account remains unfixed but
   moot while public.
@@ -263,7 +264,9 @@ record but are now **post-publication work items**, not gates:
    (2026-07-15); README rewritten with an Install section and accuracy
    pass (v0.5 H1); screenshots still owner-pending (agents must not
    launch the GUI).
-3. macOS signing — pending (D2, user-held; planned 2026-07-22).
+3. macOS signing — **done** (D2, shipped in the v0.8 cycle,
+   2026-07-23: signed + notarized release pipeline). Windows signing
+   remains undecided (D2), not required for this item.
 4. A tagged build in daily use — ongoing (alpha pre-releases are
    published; the §7 versioning policy's original "first public tag is
    v0.1.0-beta.1" plan was overtaken by events: the repo went public
