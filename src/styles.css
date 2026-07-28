@@ -1911,6 +1911,17 @@ select:focus-visible {
   border-radius: var(--radius-md);
 }
 
+.prefs-row-with-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.prefs-row-hint {
+  color: var(--fg-muted);
+  font-size: calc(var(--font-ui) - 1px);
+}
+
 .prefs-ext-section {
   display: flex;
   flex-direction: column;

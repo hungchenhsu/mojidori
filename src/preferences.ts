@@ -242,14 +242,30 @@ export async function initPreferences(editor: EditorHandle): Promise<void> {
   });
 }
 
-function row(label: string, control: HTMLElement): HTMLElement {
+/** `caption`, when given, renders as a muted line below the label/control
+ *  pair — same visual idiom as extensionTable()'s `.prefs-ext-hint` below,
+ *  reused here for a preference whose effect has a scope limit worth
+ *  surfacing up front rather than only in docs (see
+ *  preferences.trimTrailingWhitespaceOnSaveHint's call site). Omitting it
+ *  returns exactly the old single `<label>` element, so every other
+ *  caller is unaffected. */
+function row(label: string, control: HTMLElement, caption?: string): HTMLElement {
   const wrapper = document.createElement("label");
   wrapper.className = "prefs-row";
   const text = document.createElement("span");
   text.textContent = label;
   wrapper.appendChild(text);
   wrapper.appendChild(control);
-  return wrapper;
+  if (caption === undefined) return wrapper;
+
+  const withCaption = document.createElement("div");
+  withCaption.className = "prefs-row-with-caption";
+  withCaption.appendChild(wrapper);
+  const hint = document.createElement("div");
+  hint.className = "prefs-row-hint";
+  hint.textContent = caption;
+  withCaption.appendChild(hint);
+  return withCaption;
 }
 
 /** `group` is optional and unused by themeChoices()/languageChoices() (they
@@ -420,7 +436,11 @@ export function showPreferencesDialog(): void {
   trimTrailingWhitespaceOnSave.type = "checkbox";
   trimTrailingWhitespaceOnSave.checked = current.trimTrailingWhitespaceOnSave;
   dialog.appendChild(
-    row(t("preferences.trimTrailingWhitespaceOnSave"), trimTrailingWhitespaceOnSave),
+    row(
+      t("preferences.trimTrailingWhitespaceOnSave"),
+      trimTrailingWhitespaceOnSave,
+      t("preferences.trimTrailingWhitespaceOnSaveHint"),
+    ),
   );
 
   const extensions = extensionTable(current.extensionEncodings);

@@ -157,6 +157,20 @@ describe("showPreferencesDialog Save button", () => {
   // ROADMAP.md v0.7 Track C "trim trailing whitespace on save": the
   // Preferences dialog's own checkbox for the opt-in preference.
   describe("trim-trailing-whitespace-on-save checkbox", () => {
+    // #303: the checkbox's documented scope limit (only active-tab saves
+    // are trimmed, src/trimonsave.ts) must be visible in the dialog, not
+    // just in code comments/docs.
+    it("renders the scope-limit caption below the checkbox", async () => {
+      showPreferencesDialog();
+      const hint = document.querySelector(".prefs-row-hint");
+      expect(hint).not.toBeNull();
+      expect(hint!.textContent).toBe(
+        "Only applies if the document is still the active tab at the moment " +
+          "this save captures its content, not necessarily when the write to " +
+          "disk finishes.",
+      );
+    });
+
     it("initializes unchecked, reflecting the default (false) preference", async () => {
       showPreferencesDialog();
       const checkbox = document.querySelector<HTMLInputElement>(
