@@ -165,8 +165,9 @@ describe("showPreferencesDialog Save button", () => {
       const hint = document.querySelector(".prefs-row-hint");
       expect(hint).not.toBeNull();
       expect(hint!.textContent).toBe(
-        "Only applies to a save whose document is still the active tab at the " +
-          "moment of saving.",
+        "Only applies if the document is still the active tab at the moment " +
+          "this save captures its content, not necessarily when the write to " +
+          "disk finishes.",
       );
     });
 

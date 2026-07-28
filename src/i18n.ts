@@ -727,8 +727,9 @@ const en: Messages = {
   "preferences.encodingForNewFiles": "Encoding for new files",
   "preferences.trimTrailingWhitespaceOnSave": "Trim trailing whitespace on save",
   "preferences.trimTrailingWhitespaceOnSaveHint":
-    "Only applies to a save whose document is still the active tab at the " +
-    "moment of saving.",
+    "Only applies if the document is still the active tab at the moment " +
+    "this save captures its content, not necessarily when the write to " +
+    "disk finishes.",
   "preferences.extHeading": "Per-extension encodings",
   "preferences.extHint":
     "Files with these extensions open with the given encoding; a BOM, " +
@@ -1164,7 +1165,8 @@ const zhTW: Messages = {
   "preferences.language": "語言",
   "preferences.encodingForNewFiles": "新檔案的編碼",
   "preferences.trimTrailingWhitespaceOnSave": "儲存時移除行尾空白",
-  "preferences.trimTrailingWhitespaceOnSaveHint": "僅套用於儲存當下仍為作用中分頁的存檔。",
+  "preferences.trimTrailingWhitespaceOnSaveHint":
+    "僅在此次存檔擷取內容的當下，該分頁仍為作用中分頁時才會套用，不代表寫入磁碟完成的當下。",
   "preferences.extHeading": "副檔名編碼對應",
   "preferences.extHint":
     "符合這些副檔名的檔案會以指定編碼開啟；BOM、有效的 UTF-8 文字，" +
@@ -1565,7 +1567,8 @@ const ja: Messages = {
   "preferences.encodingForNewFiles": "新規ファイルのエンコーディング",
   "preferences.trimTrailingWhitespaceOnSave": "保存時に行末の空白を削除",
   "preferences.trimTrailingWhitespaceOnSaveHint":
-    "保存の時点でアクティブなタブになっている文書にのみ適用されます。",
+    "この保存が内容を取得する時点でそのタブがアクティブな場合にのみ適用され" +
+    "ます。ディスクへの書き込みが完了する時点とは限りません。",
   "preferences.extHeading": "拡張子ごとのエンコーディング",
   "preferences.extHint":
     "これらの拡張子のファイルは指定したエンコーディングで開かれます。ただし BOM、" +
@@ -1993,7 +1996,8 @@ const zhCN: Messages = {
   "preferences.language": "语言",
   "preferences.encodingForNewFiles": "新建文件的编码",
   "preferences.trimTrailingWhitespaceOnSave": "保存时删除行尾空白",
-  "preferences.trimTrailingWhitespaceOnSaveHint": "仅适用于保存时仍为当前活动标签页的文档。",
+  "preferences.trimTrailingWhitespaceOnSaveHint":
+    "仅在此次保存捕获内容的那一刻，该标签页仍为活动标签页时才会应用，不代表磁盘写入完成的那一刻。",
   "preferences.extHeading": "按扩展名设置编码",
   "preferences.extHint":
     "符合这些扩展名的文件会以指定编码打开；若检测到 BOM、有效的 UTF-8 文本，" +

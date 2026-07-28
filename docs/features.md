@@ -256,12 +256,14 @@ before a save writes its content to disk.
 
 - **Trigger:** Preferences… (`Cmd/Ctrl+,`) → "Trim trailing whitespace on
   save" checkbox.
-- **Limits:** only applies to a save whose document is still the active
-  tab at the moment the save actually writes. A save that completes while
-  its tab is no longer active — the Save As dialog stayed open while you
-  switched tabs, or the save was queued behind another in-flight
-  save/reload for the same document — writes the content as-is,
-  untrimmed.
+- **Limits:** whichever tab is active at the moment this save captures
+  its content decides the outcome — right after any Save As dialog, or a
+  wait behind another in-flight save/reload for the same document — not
+  whichever tab is active once the write to disk actually finishes. A
+  save that reaches that capture point while its tab is already inactive
+  writes the content as-is, untrimmed; switching tabs afterward, while
+  the write itself is still in flight, doesn't change the outcome either
+  way.
 
 ## Keyboard shortcuts
 
