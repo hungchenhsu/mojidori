@@ -249,6 +249,20 @@ Replace (`Cmd/Ctrl+F`), a fuzzy-searchable Command Palette
 menu. All live in the Edit and View menus, or search by name in the
 Command Palette.
 
+### Trim trailing whitespace on save
+
+An opt-in preference that strips trailing whitespace from every line
+before a save writes its content to disk.
+
+- **Trigger:** Preferences… (`Cmd/Ctrl+,`) → "Trim trailing whitespace on
+  save" checkbox.
+- **Limits:** only applies to a save whose document is still the active
+  tab at the moment the save actually writes. A save that completes while
+  its tab is no longer active — the Save As dialog stayed open while you
+  switched tabs, or the save was queued behind another in-flight
+  save/reload for the same document — writes the content as-is,
+  untrimmed.
+
 ## Keyboard shortcuts
 
 A single reference table for every bound shortcut in the app, grouped to
