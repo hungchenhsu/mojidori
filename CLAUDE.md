@@ -8,17 +8,15 @@ them before making changes.
 Agent judgment specifics — danger domains, verification matrix, permission
 tiers, known dead ends — live in
 [.claude/judgment-overlay.md](.claude/judgment-overlay.md); on conflict,
-this file wins and the overlay gets updated.
+this file wins and the overlay gets updated. The recurring version-cycle
+close-out workflow lives in the `release-cycle` skill
+(`.claude/skills/release-cycle/SKILL.md`).
 
 ## Commands
 
-```sh
-npm run tauri dev    # run the app
-npm run build        # typecheck + bundle frontend
-npm test             # frontend unit tests (vitest, jsdom)
-cd src-tauri && cargo test                                   # Rust tests
-cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
-```
+Dev/build/test commands are the standard `package.json` scripts
+(`npm run tauri dev` runs the app) plus the cargo gates listed under
+"Definition of done" below.
 
 Note: on a fresh clone, run `npm install && npm run build` before any cargo
 command — `tauri::generate_context!` requires `dist/` to exist.
@@ -37,15 +35,11 @@ A change is complete only when all of these pass locally:
 ## Workflow
 
 - Never commit to `main`. Feature branch → PR → CI green → squash merge.
-- **Immediately after every merge, clean up all working artifacts: the
-  local branch, the remote branch, and any worktree.**
-  `gh pr merge --squash --delete-branch` handles both branches; if a
-  worktree kept the local branch alive, `git worktree remove <path>`
-  first, then `git branch -D <branch>`. Before ending a work session,
-  verify `git ls-remote --heads origin` lists only `main` and
-  `git worktree list` shows only the main checkout — stale branches and
-  worktrees accumulate fast once several people (or agents) work in
-  parallel.
+- **Immediately after every merge, clean up the local branch, the remote
+  branch, and any worktree.** Before ending a work session, verify
+  `git ls-remote --heads origin` lists only `main` and `git worktree list`
+  shows only the main checkout. The worktree pitfall that motivates this
+  is recorded in the judgment overlay's known dead ends.
 - One ROADMAP item (or one coherent fix) per PR.
 - Commit messages and PR titles in Traditional Chinese (zh-TW); code,
   comments, and docs in English.

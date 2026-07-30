@@ -1,4 +1,4 @@
-# Judgment Overlay — plume（最後查證日期：2026-07-28）
+# Judgment Overlay — Mojidori（最後查證日期：2026-07-30）
 
 依全域 skill `judgment-rubrics` 的 overlay 規格建立，由 repo 根目錄 CLAUDE.md 正式引用。內容更新時同步上方查證日期；若本檔與 CLAUDE.md 衝突，以 CLAUDE.md 為準並更新本檔。
 
@@ -14,15 +14,16 @@ plume 是本機文字編輯器，「使用者檔案的資料完整性」等同�
 
 ## 2. 驗證指令表（R5 用）
 
-| 變更觸及 | 最低驗證指令 | 真相來源 |
-| --- | --- | --- |
-| 前端 `src/`（TS） | `npm run build`（tsc strict＋vite）＋ `npm test`（vitest） | CLAUDE.md「Definition of done」 |
-| `src-tauri/`（Rust） | `cd src-tauri && cargo test` ＋ `cargo fmt --check && cargo clippy --all-targets -- -D warnings` | CLAUDE.md「Definition of done」 |
-| encoding 行為 | 上列 Rust 全套，且必含 round-trip 測試（新增或更新） | CLAUDE.md「Definition of done」#3 |
-| 不需 WebView 的前端邏輯（tab store、pure helpers） | 對應 `src/*.test.ts` vitest 單元測試存在且通過 | CLAUDE.md「Definition of done」#3 |
-| 任何 PR | 對應 ROADMAP.md checkbox 同 PR 更新 | CLAUDE.md「Definition of done」#4 |
+真相來源是 CLAUDE.md「Definition of done」#1–#4（該檔每 session 常駐，指令不在此復述）：
 
-環境細節：fresh clone 先 `npm install && npm run build` 再跑任何 cargo 指令（`tauri::generate_context!` 需要 `dist/` 存在）——cargo 指令莫名失敗時先檢查這個，不是程式碼的錯。
+| 變更觸及 | 最低驗證 |
+| --- | --- |
+| 任何程式碼變更 | DoD #1（前端）＋ #2（Rust）全套 |
+| encoding 行為 | 另必含 round-trip 測試，新增或更新（DoD #3） |
+| 不需 WebView 的前端邏輯（tab store、pure helpers） | 對應 `src/*.test.ts` 單元測試（DoD #3） |
+| 任何 PR | ROADMAP.md checkbox 同 PR 更新（DoD #4） |
+
+環境細節：cargo 指令莫名失敗時，先檢查 CLAUDE.md Commands 註記的 fresh-clone `dist/` gotcha，不是程式碼的錯。
 
 ## 3. 檔案權限增補（R6 用）
 
