@@ -820,7 +820,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         )
         .separator()
         // No accelerator: CM6's own `foldKeymap` (bundled into editor.ts's
-        // `basicSetup`) already binds Mod-Alt-[ / Mod-Alt-] inside the
+        // `basicSetup`) already binds the literal Ctrl-Alt-[ / Ctrl-Alt-]
+        // (no `mac:` override, so Control — not Cmd — on macOS) inside the
         // editor. A native menu accelerator on the same keys would give the
         // shortcut two owners, same pitfall this module's header comment
         // warns about for the file shortcuts.
