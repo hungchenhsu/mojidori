@@ -307,13 +307,14 @@ export interface EditorHandle {
    */
   setLanguage(filename: string | null, stillWanted: () => boolean): Promise<void>;
   /** Fold every top-level foldable range (CM6's `foldAll` command, also
-   *  bound to Mod-Alt-[ by `foldKeymap` — see the View menu's "Fold All").
+   *  bound to the literal Ctrl-Alt-[ by `foldKeymap` — no `mac:` override,
+   *  so ⌃⌥[ on macOS too — see the View menu's "Fold All").
    *  A safe no-op when the live buffer has no syntax tree to fold from,
    *  e.g. plain text or a truncated large-file buffer (see `setLanguage`
    *  and the `basicSetup` comment above `createEditor`'s `extensions`). */
   foldAll(): void;
-  /** Unfold every folded range (CM6's `unfoldAll` command, Mod-Alt-] —
-   *  View menu's "Unfold All"). */
+  /** Unfold every folded range (CM6's `unfoldAll` command, the literal
+   *  Ctrl-Alt-] — View menu's "Unfold All"). */
   unfoldAll(): void;
   /**
    * Move the current line — or, with a multi-line selection, every
