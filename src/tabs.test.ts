@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { EditorBuffer } from "./editor";
+import { createSessionPersister } from "./sessionpersist";
 import {
   canMutateDocument,
   closeSequentially,
@@ -261,6 +262,26 @@ describe("TabStore", () => {
     expect(store.activeId).toBe(1);
     store.cycle(-1);
     expect(store.activeId).toBe(3);
+  });
+
+  it("persisting right after a cycle snapshots the post-cycle active id", async () => {
+    // The contract main.ts's cycleTab relies on (issue #304): persist()
+    // collects synchronously at call time, so a persist fired after
+    // tabs.cycle must capture the new active tab, not the pre-cycle one.
+    const { store } = makeStore();
+    store.add(makeDoc(1));
+    store.add(makeDoc(2));
+    const saved: Array<number | null> = [];
+    const persister = createSessionPersister({
+      collect: () => store.activeId,
+      save: (activeId) => {
+        saved.push(activeId);
+        return Promise.resolve();
+      },
+    });
+    store.cycle(1);
+    await persister.persist();
+    expect(saved).toEqual([1]);
   });
 
   it("finds docs by path", () => {

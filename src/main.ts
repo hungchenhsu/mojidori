@@ -750,6 +750,7 @@ function cycleTab(offset: number): void {
   stashActive();
   tabs.cycle(offset);
   showActive();
+  persistSession();
 }
 
 /** An empty, never-edited, never-saved tab that can be silently replaced. */
