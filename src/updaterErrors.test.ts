@@ -24,7 +24,23 @@ describe("classifyUpdateCheckError", () => {
       classifyUpdateCheckError("error sending request for url (https://example.com/latest.json)"),
     ).toBe("network");
     expect(classifyUpdateCheckError("builder error")).toBe("network");
-    expect(classifyUpdateCheckError("error decoding response body")).toBe("network");
+    expect(classifyUpdateCheckError("request or response body error")).toBe("network");
+  });
+
+  it("classifies a reqwest Decode error (malformed release JSON body) as other, not network (issue #345)", () => {
+    // Exact production shape: a successful HTTP response whose body is
+    // syntactically invalid JSON makes updater.rs's `res.json().await?`
+    // fail with reqwest Kind::Decode, whose Display is
+    // "error decoding response body" plus the url suffix
+    // (reqwest-0.13.4 src/error.rs:242,279-281 and
+    // src/async_impl/response.rs:269-273). Telling the user to check
+    // their connection here misdiagnoses a feed-content problem.
+    expect(
+      classifyUpdateCheckError(
+        "error decoding response body for url (https://github.com/hungchenhsu/mojidori/releases/latest/download/latest.json)",
+      ),
+    ).toBe("other");
+    expect(classifyUpdateCheckError("error decoding response body")).toBe("other");
   });
 
   it("classifies an io::Error-shaped OS error as network", () => {

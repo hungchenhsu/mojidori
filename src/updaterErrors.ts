@@ -56,12 +56,24 @@ const RELEASE_NOT_FOUND_ERROR_TEXT = "Could not fetch a valid release JSON from 
  * underlying OS/DNS text is never part of the string — matching these
  * fixed prefixes is exhaustive for this crate's pinned reqwest version,
  * not a guess at arbitrary OS error text.
+ *
+ * `Kind::Decode`'s "error decoding response body" is deliberately *not*
+ * listed (issue #345): `Updater::check`'s success path calls
+ * `res.json().await?` (updater.rs:503-506), so a fully-received but
+ * syntactically invalid JSON body surfaces as Decode — that's a
+ * feed-content problem the network dialog would actively misdiagnose
+ * ("check your connection"). The trade-off: reqwest also wraps a
+ * transport failure *while reading the body* as Decode
+ * (response.rs:430-437, `do_bytes` maps `BodyExt::collect` errors through
+ * `error::decode`), so that rare case now falls to "other" too — accepted
+ * because the generic message is accurate for both sub-cases, the feed is
+ * a few hundred bytes (mid-body drops are edge-of-edge), and the string
+ * gives no way to tell them apart.
  */
 const NETWORK_ERROR_MARKERS = [
   "error sending request", // reqwest Kind::Request — connect/DNS/timeout
   "builder error", // reqwest Kind::Builder
   "request or response body error", // reqwest Kind::Body
-  "error decoding response body", // reqwest Kind::Decode
   "error following redirect", // reqwest Kind::Redirect
   "error upgrading connection", // reqwest Kind::Upgrade
   "(os error ", // std::io::Error's OS-error Display suffix (Error::Io)
