@@ -1,10 +1,10 @@
-# Judgment Overlay — Mojidori（最後查證日期：2026-07-30）
+# Judgment Overlay — Mojidori（最後查證日期：2026-08-06）
 
 依全域 skill `judgment-rubrics` 的 overlay 規格建立，由 repo 根目錄 CLAUDE.md 正式引用。內容更新時同步上方查證日期；若本檔與 CLAUDE.md 衝突，以 CLAUDE.md 為準並更新本檔。
 
 ## 1. 危險域清單（R1 用）
 
-plume 是本機文字編輯器，「使用者檔案的資料完整性」等同其他專案的金流——默默毀損內容是最貴的錯誤：
+Mojidori 是本機文字編輯器，「使用者檔案的資料完整性」等同其他專案的金流——默默毀損內容是最貴的錯誤：
 
 - 儲存路徑：原子寫入（暫存檔＋rename）、hot exit 的備份/還原邏輯。
 - 編碼/換行/BOM 的 decode–encode round-trip；decode error 必須呈現給使用者，絕不默默當正常文字渲染（ARCHITECTURE.md 硬約束）。
@@ -35,7 +35,7 @@ plume 是本機文字編輯器，「使用者檔案的資料完整性」等同�
 
 - repo 專屬 ops 規則／死路 → 本檔對應節。
 - 專案狀態交接、個人偏好 → auto-memory 目錄（現有：`plume-session-1-status`、`plume-positioning-constraints`、`gh-pr-checks-watch-race`）。
-- 技術債 → plume 無獨立 register，記入 ROADMAP.md 相應區塊。
+- 技術債 → Mojidori 無獨立 register，記入 ROADMAP.md 相應區塊。
 
 已知死路（動手前先讀）：
 
