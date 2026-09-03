@@ -1,6 +1,6 @@
 # Judgment Overlay — Mojidori（最後查證日期：2026-08-06）
 
-依全域 skill `judgment-rubrics` 的 overlay 規格建立，由 repo 根目錄 CLAUDE.md 正式引用。內容更新時同步上方查證日期；若本檔與 CLAUDE.md 衝突，以 CLAUDE.md 為準並更新本檔。
+本 repo 專屬判準（危險域、驗證指令、權限特例、教訓寫回），由 repo 根目錄 CLAUDE.md 正式引用；通用規則見全域 `~/.claude/CLAUDE.md`。內容更新時同步上方查證日期；若本檔與 CLAUDE.md 衝突，以 CLAUDE.md 為準並更新本檔。
 
 ## 1. 危險域清單（R1 用）
 
