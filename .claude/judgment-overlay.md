@@ -2,7 +2,7 @@
 
 本 repo 專屬判準（危險域、驗證指令、權限特例、教訓寫回），由 repo 根目錄 CLAUDE.md 正式引用；通用規則見全域 `~/.claude/CLAUDE.md`。內容更新時同步上方查證日期；若本檔與 CLAUDE.md 衝突，以 CLAUDE.md 為準並更新本檔。
 
-## 1. 危險域清單（R1 用）
+## 1. 危險域清單
 
 Mojidori 是本機文字編輯器，「使用者檔案的資料完整性」等同其他專案的金流——默默毀損內容是最貴的錯誤：
 
@@ -10,9 +10,9 @@ Mojidori 是本機文字編輯器，「使用者檔案的資料完整性」等�
 - 編碼/換行/BOM 的 decode–encode round-trip；decode error 必須呈現給使用者，絕不默默當正常文字渲染（ARCHITECTURE.md 硬約束）。
 - IPC 邊界：所有磁碟 I/O 只在 Rust core，raw bytes 不得跨 IPC（ARCHITECTURE.md 硬約束）。
 - large-file mode 的 offset 計算：CM6 的 chars 與檔案 bytes 是兩種單位，絕不可混用（2026-06 開發期真實教訓）。
-- Release／tag／發佈：pre-release tag＋draft release 依 2026-07-15 使用者委任可自主；正式 publish、yank、刪除 tag 仍為對外動作，一律先問（R3）。
+- Release／tag／發佈：pre-release tag＋draft release 依 2026-07-15 使用者委任可自主；正式 publish、yank、刪除 tag 仍為對外動作，一律先問。
 
-## 2. 驗證指令表（R5 用）
+## 2. 驗證指令表
 
 真相來源是 CLAUDE.md「Definition of done」#1–#4（該檔每 session 常駐，指令不在此復述）：
 
@@ -25,13 +25,13 @@ Mojidori 是本機文字編輯器，「使用者檔案的資料完整性」等�
 
 環境細節：cargo 指令莫名失敗時，先檢查 CLAUDE.md Commands 註記的 fresh-clone `dist/` gotcha，不是程式碼的錯。
 
-## 3. 檔案權限增補（R6 用）
+## 3. 檔案權限增補
 
 - Green：`src/`、`src-tauri/` 範圍內 code＋tests（feature branch）；同 PR 勾 ROADMAP.md checkbox；本檔（judgment-overlay.md）的教訓寫回。
 - Yellow（先提案）：ARCHITECTURE.md（硬約束文件）；新增任何 runtime dependency（CLAUDE.md 明定需強理由）；DIRECTION.md 的方向性內容（決策關卡、階段計畫——2026-07-08 應使用者要求建立，內含完整策略、情境對策與 session 交接協定；把 §6 backlog 項目升級進 ROADMAP 需使用者簽核）。
 - Red：發佈 release／刪 tag；改變 repo visibility（**2026-07-15 起使用者裁示為 public**——CI 免費＋時機認可；再改回 private 或任何 visibility 變更都要使用者當次明示）；在任何對外文字提及 Notepad++（定位紅線——repo 已公開，全檔案皆對外，此線更嚴，不因改名解除）；正式命名（D1）已於 2026-07-23 定案為「Mojidori」，可對外使用；「Plume」自此僅為歷史開發代號，新對外文字不應再用它自稱產品。
 
-## 4. 教訓寫回目標（R7 用）
+## 4. 教訓寫回目標
 
 - repo 專屬 ops 規則／死路 → 本檔對應節。
 - 專案狀態交接、個人偏好 → auto-memory 目錄（現有：`plume-session-1-status`、`plume-positioning-constraints`、`gh-pr-checks-watch-race`）。
