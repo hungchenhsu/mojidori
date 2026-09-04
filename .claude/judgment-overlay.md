@@ -55,3 +55,4 @@ Mojidori 是本機文字編輯器，「使用者檔案的資料完整性」等�
 - chardetng 的候選模型完全沒有 GB18030（只有 GBK；`Gbk` 候選的 `encoding()` 永遠回傳 `GBK`）——任何要求 chardetng 確認某假說為 GB18030 的邏輯結構上不可能通過，與既有 KOI8-R 死路同形（issue #336，v0.9 B1 ranking 閘門實測，2026-07-27）。
 - out-of-process hang 回歸測試（`execFileSync` 帶 timeout）的時限不得把 esbuild bundling 等建置開銷算進計時段——bundle 一次的耗時要移出計時區間，否則會以 flake 形式誤殺不相干的 CI（曾誤殺 #331 的 Windows CI）（#334 修正，2026-07-27）。
 - auto-mode 權限分類器可能隨機擋下 `gh pr merge`（subagent 與主對話皆可能中）：處置是拆掉複合指令後單獨重試一次，再被擋就停下回報，絕不繞路（v0.9 #335 實例，2026-07-27）。
+- CI 用 `dtolnay/rust-toolchain@stable`，Rust 工具鏈會在兩次合併之間靜默升級，新版 clippy lint 在 `-D warnings` 下直接讓 main 紅燈——PR 紅燈（尤其純文件 PR）先查 `gh run list --branch main --limit 3`：若 main 最近一次 run 也紅、失敗步驟是 Rust lint，就是工具鏈漂移，另開 fix PR 先修 main，再對原 PR `gh pr update-branch` 重跑。本機 rustc 通常落後 CI 一至兩版，本機 clippy 全綠不代表 CI 會過（1.98 的 `chunks_exact_to_as_chunks` 擋下 #356，#357 修正，2026-09-04）。
