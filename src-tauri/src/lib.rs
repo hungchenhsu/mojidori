@@ -230,8 +230,11 @@ fn preview_slice(bytes: &[u8], max: usize, utf16: Option<encoding::Utf16Variant>
         encoding::Utf16Variant::Le => (b'\n', 0u8),
         encoding::Utf16Variant::Be => (0u8, b'\n'),
     };
+    // `window` is even-length, so the `as_chunks` remainder is always empty.
     let cut = window
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .rposition(|pair| pair[0] == b0 && pair[1] == b1)
         .map(|i| (i + 1) * 2);
     let mut end = cut.unwrap_or(even);
