@@ -1316,6 +1316,24 @@ export function joinLinesSpanInDoc(
   return { from: firstLine.from, to: doc.line(firstLine.number + 1).to };
 }
 
+// 逐次取代的進度屬於目前的 buffer；外部編輯、選取或查詢變動會使它失效。
+interface ScopedReplaceProgress {
+  readonly resumeFrom: number;
+  readonly exhausted: boolean;
+}
+const setScopedReplaceProgress = StateEffect.define<ScopedReplaceProgress | null>();
+const scopedReplaceProgress = StateField.define<ScopedReplaceProgress | null>({
+  create: () => null,
+  update: (progress, tr) => {
+    for (const effect of tr.effects) {
+      if (effect.is(setScopedReplaceProgress)) return effect.value;
+    }
+    if (tr.docChanged || tr.selection ||
+        !getSearchQuery(tr.startState).eq(getSearchQuery(tr.state))) return null;
+    return progress;
+  },
+});
+
 export function createEditor(
   parent: Element,
   onDocChanged: () => void,
@@ -1369,6 +1387,7 @@ export function createEditor(
     basicSetup,
     editorTheme,
     bookmarkLinesField,
+    scopedReplaceProgress,
     bookmarkGutter,
     language.of([]),
     wrapping.of([]),
@@ -1426,9 +1445,8 @@ export function createEditor(
    * real, empty attempt was made).
    *
    * `result.edits.length === 0` (nothing matched, or every selection range
-   * was empty) dispatches nothing — same no-op-dispatches-nothing contract
-   * as `transformLines`/`transformSelection`/`joinLines` above, so an
-   * unproductive invocation never creates a spurious undo step. The new
+   * was empty) only updates progression metadata, never document content
+   * or undo history. The new
    * selection is built from `result.ranges` (post-edit coordinates, one
    * per original range — see `ReplaceScopeResult.ranges`'s doc comment)
    * with the original selection's `mainIndex` preserved, so whichever
@@ -1448,11 +1466,15 @@ export function createEditor(
       docText: string,
       ranges: readonly ReplaceRange[],
       query: ReplaceScopeQuery,
+      resumeFrom?: number,
     ) => ReplaceScopeResult,
     userEvent: string,
   ): ScopedReplaceResult | undefined {
     const query = getSearchQuery(view.state);
-    if (!query.valid) return undefined;
+    if (!query.valid || view.state.readOnly) return undefined;
+    const single = core === coreReplaceInSelection;
+    const progress = single ? view.state.field(scopedReplaceProgress) : null;
+    if (progress?.exhausted) return { replaced: 0, skippedNonPrecise: 0 };
     const { ranges: liveRanges, mainIndex } = view.state.selection;
     const ranges: ReplaceRange[] = liveRanges.map((r) => ({ from: r.from, to: r.to }));
     const result = core(view.state.doc.toString(), ranges, {
@@ -1467,10 +1489,16 @@ export function createEditor(
       regexp: query.regexp,
       caseSensitive: query.caseSensitive,
       wholeWord: query.wholeWord,
-    });
+    }, progress?.resumeFrom);
+    const edit = result.edits[0];
+    const effects = setScopedReplaceProgress.of(single ? {
+      resumeFrom: edit ? edit.from + edit.insert.length : progress?.resumeFrom ?? 0,
+      exhausted: !edit,
+    } : null);
     if (result.edits.length > 0) {
       view.dispatch({
         changes: result.edits,
+        effects,
         selection: EditorSelection.create(
           result.ranges.map((r) => EditorSelection.range(r.from, r.to)),
           mainIndex,
@@ -1478,6 +1506,7 @@ export function createEditor(
         userEvent,
       });
     }
+    if (result.edits.length === 0) view.dispatch({ effects });
     return { replaced: result.edits.length, skippedNonPrecise: result.skippedNonPrecise };
   }
 
@@ -1487,6 +1516,7 @@ export function createEditor(
       view.setState(buffer);
       view.dispatch({
         effects: [
+          setScopedReplaceProgress.of(null),
           wrapping.reconfigure(currentWrapping),
           invisibles.reconfigure(currentInvisibles),
           indentGuides.reconfigure(currentIndentGuides),

@@ -1173,31 +1173,15 @@ export function replaceAllInSelection(
  * "Replace in Selection"). Every other range is left untouched apart from
  * the position shift the one replacement's length change gives it (see
  * `ReplaceScopeResult.ranges`'s doc comment) — a following invocation with
- * the returned `ranges` as the new selection finds the *next* match in
- * document order, so repeated "Replace in Selection" steps through a
- * selection's matches one at a time, the same way @codemirror/search's own
- * (whole-document) Replace button steps through the document.
+ * the returned `ranges` as the new selection preserves the scope. The
+ * binding must also pass `resumeFrom` (the previous replacement's end in
+ * post-edit coordinates) to advance past newly inserted text. A resumed
+ * scan excludes an empty match exactly at that position, so zero-length
+ * patterns cannot repeatedly insert at the same boundary. Omitting
+ * `resumeFrom` starts a fresh operation, retaining the stateless contract.
  *
  * Same empty-range and empty/invalid-query no-op rules as
- * `replaceAllInSelection` above; when no range contains any match at all,
- * this returns zero edits and `ranges` unchanged.
- *
- * A pattern that matches zero-length at *every* position (e.g. `x*` with
- * no literal `x` anywhere in the document) is a known corner case where
- * "steps through matches one at a time" does not mean "advances to a new
- * offset each call": `mapRangeEndpoints`'s ownership-aware mapping
- * deliberately keeps a zero-length match's own position inside the range
- * that owns it (the one whose scan actually found it) rather than shifting
- * past it, so a range whose only available match sits at its own start
- * re-finds that same offset on the next call too, repeatedly inserting
- * there. This is not a divergence introduced by this module — driving
- * CM6's own live `replaceNext` command repeatedly against the same
- * document and query produces the identical "stuck at the same offset"
- * behavior (`RegExpQuery.nextMatch` builds a fresh `RegExpCursor` per call,
- * whose zero-length-match dedup state never carries over — verified in
- * replacescope.test.ts), so matching it is what this function's own "the
- * same way @codemirror/search's own... Replace button steps through the
- * document" contract (above) requires.
+ * `replaceAllInSelection` above; no match returns zero edits.
  *
  * Exactly one range ever owns the single edit this function produces (the
  * one range whose own `matchesInRange` call found `first`) — every other
@@ -1220,6 +1204,7 @@ export function replaceInSelection(
   docText: string,
   ranges: readonly ReplaceRange[],
   query: ReplaceScopeQuery,
+  resumeFrom?: number,
 ): ReplaceScopeResult {
   if (query.search === "") return { edits: [], ranges: [...ranges], skippedNonPrecise: 0 };
   const compiled = query.regexp ? buildRegExp(query) : null;
@@ -1234,7 +1219,14 @@ export function replaceInSelection(
       compiled,
     );
     skippedNonPrecise += rangeSkipped;
-    const [first] = matches;
+    // 從進度位置重新掃描，避免跨越進度的舊候選吞掉下一個合法 match。
+    const remaining = resumeFrom !== undefined && resumeFrom > range.from
+      ? resumeFrom <= range.to
+        ? matchesInRange(docText, { from: resumeFrom, to: range.to }, query, compiled, resumeFrom).matches
+        : []
+      : matches;
+    const first = remaining.find((match) => resumeFrom === undefined ||
+      (match.from >= resumeFrom && (match.from !== match.to || match.from > resumeFrom)));
     if (!first) continue;
     const edits: ReplaceEdit[] = [
       { from: first.from, to: first.to, insert: expandReplacement(query, first) },
@@ -1280,7 +1272,7 @@ export type ScopedReplaceMode = "single" | "all";
  *   review found that "single" is normally invoked *repeatedly* to step
  *   through a selection's matches one at a time (mirrors CM6's own Replace
  *   button; see this file's `replaceInSelection` doc comment), and an
- *   imprecise match sitting elsewhere in the (shrinking, but still live)
+ *   imprecise match sitting elsewhere in the (mapped, but still live)
  *   selection is found by every one of those repeated scans, not just the
  *   last one. Showing the dialog unconditionally would interrupt *every*
  *   click while that leftover persists — e.g. replacing "f" one at a time

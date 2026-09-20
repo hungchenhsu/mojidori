@@ -150,6 +150,61 @@ DIRECTION §3/D2.
   the v0.9 entry in
   [docs/archive/roadmap-completed-cycles.md](docs/archive/roadmap-completed-cycles.md).
 
+## Current repair pass (2026-09-20)
+
+The user asked to resume the project plan and reported a selection jump
+when copying with macOS Command+C. Prioritize this daily-use regression,
+then the existing P2 correctness queue; keep each fix independently reviewable.
+
+- [ ] Diagnose and fix Command+C expanding/jumping the selection.
+  **Not reproduced; not fixed.** The user clarified the trigger as a
+  double-click selecting a word, immediately followed by Command+C, possibly
+  in Markdown or JSON. Ordinary small files are affected; clipboard contents
+  during the original failure remain unknown. On 2026-09-20 the user
+  explicitly authorized GUI testing, overriding DIRECTION's no-GUI limit
+  for this investigation. An isolated debug app (separate identifier/config,
+  native WKWebView at `tauri://localhost`, 1080x720) exercised temporary txt,
+  md, and json fixtures with CJK/English/emoji, syntax highlighting, long
+  wrapped lines, and mid-document/bottom-of-viewport selection. No selection
+  expansion or copy-induced scroll jump was observed. Double-click cases
+  included Markdown bold/inline code and JSON property names/string values.
+  Pasting the txt keyboard-selected range and Markdown double-clicked word
+  into scratch tabs returned the expected 150 and 14 characters respectively.
+  A temporary in-memory event trace also showed a txt Copy event with equal
+  editor/native selected text (`ABC`). Automated drag gestures failed to
+  establish a range (observed mouse events had `buttons: 0`), so they are
+  not drag-selection acceptance evidence. Windows remains untested.
+  Follow-up: a user-nominated 141,457-byte, 99-record JSONL file was
+  copied to a temporary path and opened through the app's existing drop
+  event in DevTools (the native open panel left Open disabled for that
+  suffix). Double-click/Copy at line 1's field name and three wrapped-line
+  positions, plus line 50's field name, did not reproduce the expansion.
+  The last copied field name pasted as the expected 10 characters. JSONL
+  currently has no language-data extension mapping, unlike JSON. No file
+  contents/contact details were recorded here. The original and temporary
+  copy matched byte-for-byte at cleanup; the copy was removed and the
+  isolated app quit. This is non-reproduction evidence, not a resolved bug.
+  No speculative clipboard patch was made. Next recurrence should retain
+  the exact file/word, copy-before/after selection, and pasted text; reproduce
+  on a temporary copy of that file before changing the handler.
+- [x] Fix #344: repeated Replace in Selection must advance past inserted
+  text, including identical/self-containing replacements, and disclose
+  skipped non-precise matches once at exhaustion. Preserve scope and
+  multi-range ownership; reset progress on query/selection/document changes
+  and tab switches. Zero-length regex and Unicode boundaries are covered.
+  Local validation: build, 1,286 frontend tests, cargo fmt/clippy, and
+  664 Rust tests passed (3 ignored). The first Rust run hit sandbox socket
+  restrictions; the full rerun with local sockets enabled passed.
+  Native WKWebView/WebView2 manual acceptance remains outstanding.
+- [ ] Next: #343 updater feed publication ordering race; inspect and test
+  ordering before changing the release workflow.
+- [ ] Then: #346 reconcile current release/feed statements in authority
+  docs against live release metadata. Historical cycle notes stay historical.
+
+The release/feed statements earlier in this file and DIRECTION.md describe
+older snapshots; #346 records evidence that v0.8/v0.9 were subsequently
+published. They must not be used as evidence of today's publication state.
+
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:

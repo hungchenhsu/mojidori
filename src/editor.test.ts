@@ -7,8 +7,10 @@ import { history, moveLineDown as cmMoveLineDown, undo, undoDepth } from "@codem
 import { Compartment, EditorSelection, EditorState, Text, Transaction } from "@codemirror/state";
 import { EditorView, highlightSpecialChars } from "@codemirror/view";
 import { basicSetup } from "codemirror";
+import { SearchQuery, setSearchQuery } from "@codemirror/search";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createEditor,
   characterBeforeCursor,
   detectIndentationOf,
   eolMarkPositions,
@@ -969,5 +971,105 @@ describe("trimTrailingWhitespaceOf", () => {
       expect(trimmed).toBe(edited); // no transaction dispatched at all
       expect(undoDepth(trimmed)).toBe(1);
     });
+  });
+});
+
+describe("scoped Replace progression (#344)", () => {
+  function setup(doc: string, replacement: string, regexp = false, search = "f") {
+    const parent = document.createElement("div");
+    const editor = createEditor(parent, () => {}, () => {}, () => {}, () => {});
+    editor.swap(editor.newBuffer(doc).update({
+      selection: EditorSelection.range(0, doc.length),
+    }).state);
+    const view = EditorView.findFromDOM(parent.querySelector(".cm-editor")!)!;
+    editor.openSearch();
+    view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search, replace: replacement, regexp })) });
+    return { editor, view };
+  }
+
+  it.each(["f", "ff", "", "xyz"])("advances past replacement %j and discloses once", (replacement) => {
+    const { editor, view } = setup("f f ﬁ", replacement);
+    try {
+      expect(editor.replaceInSelection()?.replaced).toBe(1);
+      expect(view.state.doc.toString()).toBe(`${replacement} f ﬁ`);
+      expect(editor.replaceInSelection()?.replaced).toBe(1);
+      expect(view.state.doc.toString()).toBe(`${replacement} ${replacement} ﬁ`);
+      expect(view.state.selection.main.to).toBe(view.state.doc.length);
+      expect(editor.replaceInSelection()).toEqual({ replaced: 0, skippedNonPrecise: 1 });
+      expect(editor.replaceInSelection()).toEqual({ replaced: 0, skippedNonPrecise: 0 });
+    } finally { view.destroy(); }
+  });
+
+  it("advances through zero-length matches without splitting astral characters", () => {
+    const { editor, view } = setup("😀a", "_", true, "(?=.)");
+    try {
+      expect(editor.replaceInSelection()?.replaced).toBe(1);
+      expect(editor.replaceInSelection()?.replaced).toBe(1);
+      expect(editor.replaceInSelection()?.replaced).toBe(0);
+      expect(view.state.doc.toString()).toBe("_😀_a");
+    } finally { view.destroy(); }
+  });
+
+  it("resumes scanning at the boundary even when a match crosses it", () => {
+    const { editor, view } = setup("aaaaaa", "a", false, "aa");
+    try {
+      editor.replaceInSelection();
+      editor.replaceInSelection();
+      expect(editor.replaceInSelection()?.replaced).toBe(1);
+      expect(view.state.doc.toString()).toBe("aaa");
+      expect(editor.replaceInSelection()?.replaced).toBe(0);
+    } finally { view.destroy(); }
+  });
+
+  it("progresses across multiple touching ranges with one boundary owner", () => {
+    const { editor, view } = setup("ab", "_", true, "$|(?=b)");
+    try {
+      view.dispatch({ selection: EditorSelection.create([
+        EditorSelection.range(0, 1), EditorSelection.range(1, 2),
+      ], 1) });
+      editor.replaceInSelection();
+      expect(view.state.selection.mainIndex).toBe(1);
+      editor.replaceInSelection();
+      expect(view.state.doc.toString()).toBe("a_b_");
+      expect(editor.replaceInSelection()?.replaced).toBe(0);
+    } finally { view.destroy(); }
+  });
+
+  it("Replace All starts a fresh pass and read-only buffers reject replacements", () => {
+    const { editor, view } = setup("f f", "ff");
+    try {
+      editor.replaceInSelection();
+      expect(editor.replaceAllInSelection()?.replaced).toBe(3);
+      expect(editor.replaceInSelection()?.replaced).toBe(1);
+      editor.setReadOnly(true);
+      const before = view.state.doc;
+      expect(editor.replaceInSelection()).toBeUndefined();
+      expect(editor.replaceAllInSelection()).toBeUndefined();
+      expect(view.state.doc).toBe(before);
+    } finally { view.destroy(); }
+  });
+
+  it("resets after manual selection, query changes, edits, undo, and tab switches", () => {
+    const { editor, view } = setup("f f", "ff");
+    try {
+      editor.replaceInSelection();
+      view.dispatch({ selection: EditorSelection.range(0, view.state.doc.length) });
+      editor.replaceInSelection();
+      expect(view.state.doc.toString()).toBe("fff f");
+      view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: "f", replace: "x" })) });
+      editor.replaceInSelection();
+      expect(view.state.doc.toString()).toBe("xff f");
+      view.dispatch({ changes: { from: 0, to: 1, insert: "f" } });
+      editor.replaceInSelection();
+      expect(view.state.doc.toString()).toBe("xff f");
+      undo(view);
+      editor.replaceInSelection();
+      expect(view.state.doc.toString()).toBe("xff f");
+      const buffer = view.state;
+      editor.swap(editor.newBuffer("other"));
+      editor.swap(buffer);
+      editor.replaceInSelection();
+      expect(view.state.doc.toString()).toBe("xxf f");
+    } finally { view.destroy(); }
   });
 });
