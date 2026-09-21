@@ -20,6 +20,10 @@ name: Publish updater feed
 # A queued run that the concurrency group cancels loses nothing — the run
 # that survives computes the same result.
 #
+# The guard also means a deliberate rollback (unpublishing a bad release)
+# never moves the feed back on its own; the maintainer must replace
+# updater/latest.json by hand.
+#
 # If no published release has a latest.json, or the newest one is already
 # what the feed serves (e.g. the triggering release is a manually created
 # one outside release.yml's pipeline), this ends successfully without
@@ -58,22 +62,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release list --exclude-drafts --limit 100 \
+          gh release list --exclude-drafts --limit 1000 \
             --json tagName,isDraft > "$RUNNER_TEMP/releases.json"
+          # Written to a file first: a failure inside `for ... in $(...)`
+          # would not trip `bash -e`, silently yielding zero candidates.
+          node scripts/updater-feed.mjs order-tags "$RUNNER_TEMP/releases.json" \
+            > "$RUNNER_TEMP/tags.txt"
           mkdir -p "$RUNNER_TEMP/candidate"
           # Presence is checked explicitly so that only a genuinely absent
           # latest.json falls through to an older release; a failed lookup
           # or download of an existing one fails the run instead.
-          for tag in $(node scripts/updater-feed.mjs order-tags "$RUNNER_TEMP/releases.json"); do
-            assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          while read -r tag; do
+            # </dev/null: nothing in the loop body may consume tags.txt.
+            assets=$(gh release view "$tag" --json assets \
+              --jq '.assets[].name' < /dev/null)
             if grep -qx latest.json <<< "$assets"; then
               gh release download "$tag" --pattern latest.json \
-                --dir "$RUNNER_TEMP/candidate" --clobber
+                --dir "$RUNNER_TEMP/candidate" --clobber < /dev/null
               echo "Candidate: $tag"
               echo "found=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-          done
+          done < "$RUNNER_TEMP/tags.txt"
           echo "No published release has a latest.json; nothing to publish."
 
       - name: Ensure the rolling "updater" release exists
