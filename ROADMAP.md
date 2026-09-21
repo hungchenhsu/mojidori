@@ -196,8 +196,21 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   664 Rust tests passed (3 ignored). The first Rust run hit sandbox socket
   restrictions; the full rerun with local sockets enabled passed.
   Native WKWebView/WebView2 manual acceptance remains outstanding.
-- [ ] Next: #343 updater feed publication ordering race; inspect and test
-  ordering before changing the release workflow.
+- [x] Fix #343: updater feed publication ordering race. `updater-json.yml`
+  now serializes runs in a `concurrency` group, syncs the feed to the
+  newest published release (by tag semver) that carries a latest.json
+  rather than to the triggering release, and refuses any replacement that
+  is not strictly newer (version, then `pub_date` for same-version
+  alphas) via `scripts/updater-feed.mjs`. A cancelled queued run loses
+  nothing because the surviving run computes the same result. Tests cover
+  both completion orders, both publish orders, the guard alone under
+  pre-fix trigger-only selection (mutation-checked), and a release without
+  latest.json. A read-only dry run against live release metadata selected
+  `v0.9.0-alpha.1` and skipped (feed already serves 0.9.0). The workflow
+  itself only runs on a real publish, so it is not exercised end to end here.
+  Scope limit (critic review): GitHub runs the workflow file from the
+  published tag's commit, so only tags cut after this fix are protected;
+  re-publishing a pre-fix tag (v0.8/v0.9) runs the old unguarded workflow.
 - [ ] Then: #346 reconcile current release/feed statements in authority
   docs against live release metadata. Historical cycle notes stay historical.
 

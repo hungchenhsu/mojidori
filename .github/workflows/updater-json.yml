@@ -11,8 +11,29 @@ name: Publish updater feed
 # never on release.yml's own draft creation, keeping "release is
 # user-gated" intact.
 #
-# If the published release has no latest.json (a manually created release
-# outside release.yml's pipeline), this ends successfully without
+# Ordering (issue #343): each published event starts its own run, and a
+# run's completion order says nothing about release order. So a run never
+# just forwards "the release that triggered me": the concurrency group
+# serializes runs, each run syncs the feed to the newest published release
+# (by tag semver) that carries a latest.json, and scripts/updater-feed.mjs
+# refuses to replace the current feed with anything not strictly newer.
+# A queued run that the concurrency group cancels loses nothing — the run
+# that survives computes the same result.
+#
+# Scope: GitHub runs the copy of THIS file found at the published tag's
+# commit. Only tags cut after this ordering fix carry it; re-publishing an
+# older tag (e.g. v0.8.0-alpha.1, back to draft and published again) runs
+# the old, unguarded workflow, which clobbers the feed unconditionally and
+# isn't in the concurrency group. Don't re-publish pre-fix tags; if it
+# happens, the next post-fix publish repairs the feed.
+#
+# The guard also means a deliberate rollback (unpublishing a bad release)
+# never moves the feed back on its own; the maintainer must replace
+# updater/latest.json by hand.
+#
+# If no published release has a latest.json, or the newest one is already
+# what the feed serves (e.g. the triggering release is a manually created
+# one outside release.yml's pipeline), this ends successfully without
 # publishing anything — that's not an error, just nothing to do.
 
 on:
@@ -23,29 +44,59 @@ permissions: {}
 
 jobs:
   publish-updater-json:
-    # Guards against the "updater" rolling release's own publish event
-    # (created below, `--latest=false` but still a real, non-draft
-    # release, so it fires `published` too) re-triggering this workflow.
+    # The rolling "updater" release is not a version to publish. Its
+    # creation below uses GITHUB_TOKEN, whose events don't trigger
+    # workflows, but a maintainer re-creating it by hand would.
     if: github.event.release.tag_name != 'updater'
+    # Job-level, not workflow-level, so a run skipped by the `if` above
+    # never joins the group and can't displace a real pending run.
+    concurrency:
+      group: updater-feed
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     # Scoped to this job, not the workflow: this is the only job here,
     # and it needs write access to download from and upload to releases.
     permissions:
       contents: write
     steps:
+      # The default branch, not the triggering tag, so every run uses the
+      # current selection/guard logic (scripts/updater-feed.mjs) even when
+      # it was published from an older post-fix tag.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
-      - name: Download latest.json from the published release, if present
-        id: download
-        continue-on-error: true
+      - name: Find the newest published release with a latest.json
+        id: candidate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release download "${{ github.event.release.tag_name }}" \
-            --pattern latest.json --dir "$RUNNER_TEMP" --clobber
+          gh release list --exclude-drafts --limit 1000 \
+            --json tagName,isDraft > "$RUNNER_TEMP/releases.json"
+          # Written to a file first: a failure inside `for ... in $(...)`
+          # would not trip `bash -e`, silently yielding zero candidates.
+          node scripts/updater-feed.mjs order-tags "$RUNNER_TEMP/releases.json" \
+            > "$RUNNER_TEMP/tags.txt"
+          mkdir -p "$RUNNER_TEMP/candidate"
+          # Presence is checked explicitly so that only a genuinely absent
+          # latest.json falls through to an older release; a failed lookup
+          # or download of an existing one fails the run instead.
+          while read -r tag; do
+            # </dev/null: nothing in the loop body may consume tags.txt.
+            assets=$(gh release view "$tag" --json assets \
+              --jq '.assets[].name' < /dev/null)
+            if grep -qx latest.json <<< "$assets"; then
+              gh release download "$tag" --pattern latest.json \
+                --dir "$RUNNER_TEMP/candidate" --clobber < /dev/null
+              echo "Candidate: $tag"
+              echo "found=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done < "$RUNNER_TEMP/tags.txt"
+          echo "No published release has a latest.json; nothing to publish."
 
       - name: Ensure the rolling "updater" release exists
-        if: steps.download.outcome == 'success'
+        if: steps.candidate.outputs.found == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -54,8 +105,33 @@ jobs:
             --notes "Rolling latest.json for the in-app updater. Do not delete." \
             --latest=false
 
-      - name: Publish latest.json to the rolling "updater" release
-        if: steps.download.outcome == 'success'
+      - name: Refuse to move the feed backwards
+        id: guard
+        if: steps.candidate.outputs.found == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload updater "$RUNNER_TEMP/latest.json" --clobber
+        run: |
+          mkdir -p "$RUNNER_TEMP/current"
+          # No asset just means there's no feed yet (the guard treats an
+          # absent file as "publish"); an existing one must download.
+          assets=$(gh release view updater --json assets --jq '.assets[].name')
+          if grep -qx latest.json <<< "$assets"; then
+            gh release download updater --pattern latest.json \
+              --dir "$RUNNER_TEMP/current" --clobber
+          fi
+          set +e
+          node scripts/updater-feed.mjs should-publish \
+            "$RUNNER_TEMP/current/latest.json" "$RUNNER_TEMP/candidate/latest.json"
+          status=$?
+          set -e
+          case "$status" in
+            0) echo "publish=true" >> "$GITHUB_OUTPUT" ;;
+            10) echo "publish=false" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: Publish latest.json to the rolling "updater" release
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload updater "$RUNNER_TEMP/candidate/latest.json" --clobber
