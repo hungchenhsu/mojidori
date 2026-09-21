@@ -208,6 +208,9 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   latest.json. A read-only dry run against live release metadata selected
   `v0.9.0-alpha.1` and skipped (feed already serves 0.9.0). The workflow
   itself only runs on a real publish, so it is not exercised end to end here.
+  Scope limit (critic review): GitHub runs the workflow file from the
+  published tag's commit, so only tags cut after this fix are protected;
+  re-publishing a pre-fix tag (v0.8/v0.9) runs the old unguarded workflow.
 - [ ] Then: #346 reconcile current release/feed statements in authority
   docs against live release metadata. Historical cycle notes stay historical.
 

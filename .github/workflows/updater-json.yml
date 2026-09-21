@@ -20,6 +20,13 @@ name: Publish updater feed
 # A queued run that the concurrency group cancels loses nothing — the run
 # that survives computes the same result.
 #
+# Scope: GitHub runs the copy of THIS file found at the published tag's
+# commit. Only tags cut after this ordering fix carry it; re-publishing an
+# older tag (e.g. v0.8.0-alpha.1, back to draft and published again) runs
+# the old, unguarded workflow, which clobbers the feed unconditionally and
+# isn't in the concurrency group. Don't re-publish pre-fix tags; if it
+# happens, the next post-fix publish repairs the feed.
+#
 # The guard also means a deliberate rollback (unpublishing a bad release)
 # never moves the feed back on its own; the maintainer must replace
 # updater/latest.json by hand.
@@ -35,24 +42,26 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: updater-feed
-  cancel-in-progress: false
-
 jobs:
   publish-updater-json:
-    # Guards against the "updater" rolling release's own publish event
-    # (created below, `--latest=false` but still a real, non-draft
-    # release, so it fires `published` too) re-triggering this workflow.
+    # The rolling "updater" release is not a version to publish. Its
+    # creation below uses GITHUB_TOKEN, whose events don't trigger
+    # workflows, but a maintainer re-creating it by hand would.
     if: github.event.release.tag_name != 'updater'
+    # Job-level, not workflow-level, so a run skipped by the `if` above
+    # never joins the group and can't displace a real pending run.
+    concurrency:
+      group: updater-feed
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     # Scoped to this job, not the workflow: this is the only job here,
     # and it needs write access to download from and upload to releases.
     permissions:
       contents: write
     steps:
-      # The default branch, not the triggering tag: older tags predate
-      # scripts/updater-feed.mjs, and the guard must be the current one.
+      # The default branch, not the triggering tag, so every run uses the
+      # current selection/guard logic (scripts/updater-feed.mjs) even when
+      # it was published from an older post-fix tag.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.repository.default_branch }}

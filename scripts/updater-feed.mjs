@@ -19,6 +19,11 @@
 //      `pub_date` for two builds sharing a version — see release.yml's note
 //      on alphas sharing one plain semver). The feed can never go backwards.
 //
+// Compatibility: the workflow YAML runs from the published tag's commit,
+// but this script is checked out from the default branch. Every post-fix
+// tag's YAML calls this CLI, so its subcommands, arguments, and exit codes
+// (0 publish / 10 skip / other = error) must stay backward compatible.
+//
 // Usage:
 //   node scripts/updater-feed.mjs order-tags <releases.json>
 //     <releases.json> is `gh release list --json tagName,isDraft` output.
