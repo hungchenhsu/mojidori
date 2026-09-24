@@ -605,9 +605,9 @@ Decision tree for any future working session opening this repo:
 5. **Otherwise, routine health:** dependency cadence due (§7)? CI still
    green on a fresh clone?
 6. **Otherwise: stop.** Present the open decision list (§3) to the user.
-   Do not invent scope — that lesson is already paid for
-   (2026-06-13: autonomous value was exhausted; everything after that
-   point is user-decision-driven).
+   Do not invent scope: new work enters only as a user-approved backlog
+   (§4 P3), or under a delegation the user has explicitly given for the
+   work at hand — a past delegation does not carry over to new scope.
 
 And always: commit on feature branches only, zh-TW commit messages,
 English docs, danger domains get tests before code.
