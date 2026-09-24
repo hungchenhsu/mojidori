@@ -1,4 +1,4 @@
-# Judgment Overlay — Mojidori（最後查證日期：2026-09-04）
+# Judgment Overlay — Mojidori（最後查證日期：2026-09-24）
 
 本 repo 專屬判準（危險域、驗證指令、權限特例、教訓寫回），由 repo 根目錄 CLAUDE.md 正式引用；通用規則見全域 `~/.claude/CLAUDE.md`。內容更新時同步上方查證日期；若本檔與 repo 根目錄 CLAUDE.md 衝突，以該檔為準並更新本檔。
 
@@ -28,13 +28,13 @@ Mojidori 是本機文字編輯器，「使用者檔案的資料完整性」等�
 ## 3. 檔案權限增補
 
 - Green：`src/`、`src-tauri/` 範圍內 code＋tests（feature branch）；同 PR 勾 ROADMAP.md checkbox；本檔（judgment-overlay.md）的教訓寫回。
-- Yellow（先提案）：ARCHITECTURE.md（硬約束文件）；新增任何 runtime dependency（CLAUDE.md 明定需強理由）；DIRECTION.md 的方向性內容（決策關卡、階段計畫——2026-07-08 應使用者要求建立，內含完整策略、情境對策與 session 交接協定；把 §6 backlog 項目升級進 ROADMAP 需使用者簽核）。
-- Red：發佈 release／刪 tag；改變 repo visibility（**2026-07-15 起使用者裁示為 public**——CI 免費＋時機認可；再改回 private 或任何 visibility 變更都要使用者當次明示）；在任何對外文字提及 Notepad++（定位紅線——repo 已公開，全檔案皆對外，此線更嚴，不因改名解除）；正式命名（D1）已於 2026-07-23 定案為「Mojidori」，可對外使用；「Plume」自此僅為歷史開發代號，新對外文字不應再用它自稱產品。
+- Yellow（先提案）：ARCHITECTURE.md（硬約束文件）；新增任何 runtime dependency（CLAUDE.md 明定需強理由）；DIRECTION.md 的方向性內容（決策關卡、階段計畫、情境對策、session 交接協定；把 §6 backlog 項目升級進 ROADMAP 需使用者簽核）。
+- Red：發佈 release／刪 tag；改變 repo visibility（**2026-07-15 起使用者裁示為 public**——CI 免費＋時機認可；再改回 private 或任何 visibility 變更都要使用者當次明示）；在任何對外文字提及 Notepad++（定位紅線——repo 已公開，全檔案皆對外，此線更嚴，不因改名解除）；在對外文字中以「Plume」自稱產品（產品名為 Mojidori，Plume 只是開發代號）。
 
 ## 4. 教訓寫回目標
 
 - repo 專屬 ops 規則／死路 → 本檔對應節。
-- 專案狀態交接、個人偏好 → auto-memory 目錄（現有：`plume-session-1-status`、`plume-positioning-constraints`、`gh-pr-checks-watch-race`）。
+- 專案狀態交接、個人偏好 → auto-memory 目錄（索引為該目錄的 `MEMORY.md`，每 session 自動載入）。
 - 技術債 → Mojidori 無獨立 register，記入 ROADMAP.md 相應區塊。
 
 已知死路（動手前先讀）：
