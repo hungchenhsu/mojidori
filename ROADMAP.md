@@ -233,6 +233,13 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   complete-input candidate/apply invariant; exact-limit rejection and
   UTF-8 round trips around the sample limit complement the existing large
   Big5 sampling regression. No disk-write or apply behavior changes.
+- [x] Fix #89: provide all 24 CodeMirror search/fold phrases for Japanese
+  and Simplified Chinese, including accessible labels and count/line
+  announcements. A typed shared table preserves the existing zh-TW keys;
+  English uses upstream defaults. Tests cover placeholder preservation,
+  the real phrase API, and an open search panel switching languages while
+  retaining its search/replacement query. Native visual acceptance remains
+  separate from these jsdom checks.
 - [x] Fix #336: remove the structurally unreachable
   `(windows-1252, GB18030)` detection hypothesis. The canonical ranking
   regression now requires a real fixture for every admitted pair, with no
