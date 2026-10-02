@@ -20,6 +20,10 @@ mod platform {
         fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     }
 
+    pub fn open(path: &Path) -> io::Result<File> {
+        File::open(path)
+    }
+
     pub fn path(file: &File) -> io::Result<PathBuf> {
         // Darwin sys/fcntl.h: F_GETPATH = 50; buffer size is MAXPATHLEN.
         let mut buffer = [0 as c_char; 1024];
@@ -43,6 +47,7 @@ mod platform {
     use super::*;
     use std::ffi::{c_void, OsString};
     use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
 
     #[repr(C)]
@@ -50,6 +55,15 @@ mod platform {
     struct FileIdInfo {
         volume_serial_number: u64,
         file_id: [u8; 16],
+    }
+
+    pub fn open(path: &Path) -> io::Result<File> {
+        // Metadata-only access: retaining GENERIC_READ can prevent a parent
+        // directory rename even with FILE_SHARE_DELETE (see control below).
+        std::fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode(1 | 2 | 4)
+            .open(path)
     }
 
     #[link(name = "kernel32")]
@@ -116,7 +130,7 @@ mod platform {
 
 fn verified_path(file: &File) -> Option<PathBuf> {
     let path = platform::path(file).ok()?;
-    let candidate = File::open(&path).ok()?;
+    let candidate = platform::open(&path).ok()?;
     platform::same(file, &candidate).ok()?.then_some(path)
 }
 
@@ -137,7 +151,7 @@ impl Fixture {
     fn file(&self, name: &str) -> (PathBuf, File) {
         let path = self.0.join(name);
         fs::write(&path, b"original").unwrap();
-        let file = File::open(&path).unwrap();
+        let file = platform::open(&path).unwrap();
         (path, file)
     }
 }
@@ -182,6 +196,26 @@ fn follows_cross_directory_and_parent_directory_rename() {
     let renamed_parent = fixture.0.join("renamed-parent");
     fs::rename(parent, &renamed_parent).unwrap();
     assert_resolves(&file, &renamed_parent.join("after.txt"));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn ordinary_read_handle_blocks_parent_rename_until_closed() {
+    let fixture = Fixture::new();
+    let parent = fixture.0.join("parent");
+    fs::create_dir(&parent).unwrap();
+    let path = parent.join("document.txt");
+    fs::write(&path, b"original").unwrap();
+    let read_handle = File::open(&path).unwrap();
+    let destination = fixture.0.join("renamed-parent");
+    assert_eq!(
+        fs::rename(&parent, &destination)
+            .unwrap_err()
+            .raw_os_error(),
+        Some(5)
+    );
+    drop(read_handle);
+    fs::rename(parent, destination).unwrap();
 }
 
 #[test]
