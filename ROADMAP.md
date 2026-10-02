@@ -218,6 +218,15 @@ The release/feed statements earlier in this file and DIRECTION.md describe
 older snapshots; #346 records evidence that v0.8/v0.9 were subsequently
 published. They must not be used as evidence of today's publication state.
 
+## Autonomous correctness pass (2026-10-03)
+
+- [x] Fix #362: only tolerate an incomplete recovered byte tail when the
+  detection sample is actually shorter than the document. Complete inputs
+  use the same strict decode as apply, eliminating guaranteed-to-fail
+  candidates such as `café` → `caf`. A fail-first regression pins the
+  complete-input candidate/apply invariant; exact-limit rejection and
+  UTF-8 round trips around the sample limit complement the existing large
+  Big5 sampling regression. No disk-write or apply behavior changes.
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:
