@@ -39,6 +39,8 @@ mod store;
 mod streamcodec;
 mod streamconvert;
 mod streamreplace;
+#[cfg(test)]
+mod testutil;
 // Test-only pin against tauri_plugin_updater's Error Display strings — see
 // its own module doc comment.
 #[cfg(test)]
@@ -1662,7 +1664,7 @@ mod tests {
 
     #[test]
     fn atomic_write_replaces_content_and_leaves_no_temp_files() {
-        let dir = std::env::temp_dir().join("mojidori-atomic-test");
+        let dir = crate::testutil::temp_path("mojidori-atomic-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -2554,7 +2556,7 @@ mod tests {
     #[test]
     fn atomic_write_preserves_unix_permissions() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join("mojidori-atomic-perms");
+        let dir = crate::testutil::temp_path("mojidori-atomic-perms");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("script.sh");
@@ -2569,8 +2571,7 @@ mod tests {
 
     #[test]
     fn atomic_write_fails_cleanly_on_missing_directory() {
-        let target = std::env::temp_dir()
-            .join("mojidori-no-such-dir")
+        let target = crate::testutil::temp_path("mojidori-no-such-dir")
             .join("nested")
             .join("doc.txt");
         assert!(atomic_write(&target, b"x").is_err());
@@ -2600,7 +2601,7 @@ mod tests {
     fn atomic_write_refuses_preplanted_symlink_at_predictable_tmp_path() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-attack");
+        let dir = crate::testutil::temp_path("mojidori-atomic-symlink-attack");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -2645,7 +2646,7 @@ mod tests {
     fn tmp_file_creation_refuses_preexisting_symlink() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join("mojidori-open-exclusive-symlink");
+        let dir = crate::testutil::temp_path("mojidori-open-exclusive-symlink");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -2677,7 +2678,7 @@ mod tests {
     /// anything that already exists.
     #[test]
     fn tmp_candidates_are_unique() {
-        let dir = std::env::temp_dir().join("mojidori-tmp-candidate-uniqueness");
+        let dir = crate::testutil::temp_path("mojidori-tmp-candidate-uniqueness");
         let first = tmp_candidate_path(&dir, "doc.txt");
         let second = tmp_candidate_path(&dir, "doc.txt");
         assert_ne!(
@@ -2837,7 +2838,7 @@ mod tests {
 
     #[test]
     fn filters_args_to_existing_files() {
-        let file = std::env::temp_dir().join("mojidori-args-test.txt");
+        let file = crate::testutil::temp_path("mojidori-args-test.txt");
         std::fs::write(&file, "x").unwrap();
         let args = vec![
             "mojidori".to_string(),
@@ -2860,7 +2861,7 @@ mod tests {
     /// finds the right file regardless of this process's own cwd.
     #[test]
     fn existing_paths_from_args_in_resolves_relative_paths_against_given_cwd() {
-        let dir = std::env::temp_dir().join("mojidori-cwd-resolve-test");
+        let dir = crate::testutil::temp_path("mojidori-cwd-resolve-test");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("relative-target.txt");
         std::fs::write(&file, "x").unwrap();
@@ -2995,7 +2996,7 @@ mod tests {
         let bytes = [0xEF, 0xBB, 0xBF, b'h', b'i'];
         assert_explain_matches_open(&bytes, "mojidori-explain-utf8-bom");
 
-        let dir = std::env::temp_dir().join("mojidori-explain-utf8-bom-evidence");
+        let dir = crate::testutil::temp_path("mojidori-explain-utf8-bom-evidence");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
@@ -3017,7 +3018,7 @@ mod tests {
         let bytes = b"hello world, this is plain ascii text with no accents";
         assert_explain_matches_open(bytes, "mojidori-explain-ascii");
 
-        let dir = std::env::temp_dir().join("mojidori-explain-ascii-evidence");
+        let dir = crate::testutil::temp_path("mojidori-explain-ascii-evidence");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
@@ -3041,7 +3042,7 @@ mod tests {
     fn explain_detection_agrees_with_open_empty_file() {
         assert_explain_matches_open(&[], "mojidori-explain-empty");
 
-        let dir = std::env::temp_dir().join("mojidori-explain-empty-evidence");
+        let dir = crate::testutil::temp_path("mojidori-explain-empty-evidence");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
@@ -3054,8 +3055,7 @@ mod tests {
 
     #[test]
     fn explain_detection_reports_missing_file_as_error() {
-        let path = std::env::temp_dir()
-            .join("mojidori-explain-does-not-exist.txt")
+        let path = crate::testutil::temp_path("mojidori-explain-does-not-exist.txt")
             .to_string_lossy()
             .into_owned();
         assert!(explain_detection(path, None).is_err());
@@ -3119,7 +3119,7 @@ mod tests {
         let (original_bytes, unmappable) = crate::encoding::encode(text, "Big5", false).unwrap();
         assert!(!unmappable);
 
-        let dir = std::env::temp_dir().join("mojidori-ext-roundtrip-big5");
+        let dir = crate::testutil::temp_path("mojidori-ext-roundtrip-big5");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
@@ -3164,7 +3164,7 @@ mod tests {
         let text = "中文編碼偵測測試，這是繁體中文範例文字。\n";
         let original_bytes = text.as_bytes().to_vec();
 
-        let dir = std::env::temp_dir().join("mojidori-ext-roundtrip-utf8-mismatch");
+        let dir = crate::testutil::temp_path("mojidori-ext-roundtrip-utf8-mismatch");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
@@ -3205,7 +3205,7 @@ mod tests {
     /// return value.
     #[test]
     fn save_document_refuses_lossy_write_without_consent() {
-        let dir = std::env::temp_dir().join("mojidori-save-lossy-refuse");
+        let dir = crate::testutil::temp_path("mojidori-save-lossy-refuse");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -3270,7 +3270,7 @@ mod tests {
     /// correct implementation must still report `line: 2`.
     #[test]
     fn save_document_lossy_report_uses_lf_buffer_positions_regardless_of_line_ending() {
-        let dir = std::env::temp_dir().join("mojidori-save-lossy-cr-position");
+        let dir = crate::testutil::temp_path("mojidori-save-lossy-cr-position");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -3316,7 +3316,7 @@ mod tests {
     /// true.
     #[test]
     fn save_document_stale_rejection_has_no_lossy_report() {
-        let dir = std::env::temp_dir().join("mojidori-save-lossy-stale-no-report");
+        let dir = crate::testutil::temp_path("mojidori-save-lossy-stale-no-report");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -3355,7 +3355,7 @@ mod tests {
     /// should never spuriously populate outside the one rejection branch.
     #[test]
     fn save_document_successful_utf8_save_has_no_lossy_report() {
-        let dir = std::env::temp_dir().join("mojidori-save-lossy-utf8-happy-path");
+        let dir = crate::testutil::temp_path("mojidori-save-lossy-utf8-happy-path");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -3385,7 +3385,7 @@ mod tests {
     /// the lossy Big5 encoding of the content.
     #[test]
     fn save_document_writes_lossy_with_consent() {
-        let dir = std::env::temp_dir().join("mojidori-save-lossy-consent");
+        let dir = crate::testutil::temp_path("mojidori-save-lossy-consent");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -3434,7 +3434,7 @@ mod tests {
     /// `matches_path_false_after_size_change`).
     #[test]
     fn save_document_rejects_stale_fingerprint_and_preserves_external_write() {
-        let dir = std::env::temp_dir().join("mojidori-save-stale-fingerprint-reject");
+        let dir = crate::testutil::temp_path("mojidori-save-stale-fingerprint-reject");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -3483,7 +3483,7 @@ mod tests {
     /// use as the next save's baseline.
     #[test]
     fn save_document_succeeds_when_fingerprint_matches() {
-        let dir = std::env::temp_dir().join("mojidori-save-fingerprint-matches");
+        let dir = crate::testutil::temp_path("mojidori-save-fingerprint-matches");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -3617,7 +3617,7 @@ mod tests {
     /// the caller's explicit choice to overwrite must go through.
     #[test]
     fn save_document_force_overwrites_despite_stale_fingerprint() {
-        let dir = std::env::temp_dir().join("mojidori-save-force-overwrite");
+        let dir = crate::testutil::temp_path("mojidori-save-force-overwrite");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -3660,7 +3660,7 @@ mod tests {
     /// never a real mismatch.
     #[test]
     fn save_document_skips_check_when_no_expected_fingerprint() {
-        let dir = std::env::temp_dir().join("mojidori-save-no-expected-fingerprint");
+        let dir = crate::testutil::temp_path("mojidori-save-no-expected-fingerprint");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("new-doc.txt");
@@ -4331,7 +4331,7 @@ mod tests {
     /// genuinely broken file.
     #[test]
     fn open_document_large_explicit_utf8_interior_malformed_still_reported() {
-        let dir = std::env::temp_dir().join("mojidori-large-explicit-utf8-interior-malformed");
+        let dir = crate::testutil::temp_path("mojidori-large-explicit-utf8-interior-malformed");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("interior-malformed.txt");
@@ -4479,7 +4479,7 @@ mod tests {
     /// about the #165 fix may mask a genuinely broken file.
     #[test]
     fn open_document_large_big5_interior_malformed_still_reported() {
-        let dir = std::env::temp_dir().join("mojidori-large-big5-interior-malformed");
+        let dir = crate::testutil::temp_path("mojidori-large-big5-interior-malformed");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("interior-malformed.txt");
@@ -4635,7 +4635,7 @@ mod tests {
     /// `malformed == true` either way.
     #[test]
     fn open_document_large_windows1252_singleline_explicit_reopen_unaffected_by_legacy_gate() {
-        let dir = std::env::temp_dir().join("mojidori-large-windows1252-singleline");
+        let dir = crate::testutil::temp_path("mojidori-large-windows1252-singleline");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("windows-1252.txt");

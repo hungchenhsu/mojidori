@@ -2068,7 +2068,7 @@ mod tests {
     /// even open must fail the whole command closed instead.
     #[test]
     fn scan_fails_closed_when_root_directory_does_not_exist() {
-        let dir = std::env::temp_dir().join("mojidori-batch-does-not-exist-at-all");
+        let dir = crate::testutil::temp_path("mojidori-batch-does-not-exist-at-all");
         std::fs::remove_dir_all(&dir).ok();
         assert!(!dir.exists(), "fixture precondition: path must not exist");
 

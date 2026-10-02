@@ -402,9 +402,9 @@ mod tests {
     /// an `Err`, not the `Ok(skipped: true)` asserted here.
     #[test]
     fn unicode_encodings_are_skipped_without_touching_disk() {
-        let unreadable = std::env::temp_dir()
-            .join("mojidori-bytedrift-unicode-should-not-be-read")
-            .join("doc.txt");
+        let unreadable =
+            crate::testutil::temp_path("mojidori-bytedrift-unicode-should-not-be-read")
+                .join("doc.txt");
         for label in ["UTF-8", "UTF-16LE", "UTF-16BE"] {
             let report = detect_byte_drift(&unreadable.to_string_lossy(), label, false).unwrap();
             assert_eq!(
