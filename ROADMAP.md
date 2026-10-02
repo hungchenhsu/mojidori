@@ -227,6 +227,13 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   complete-input candidate/apply invariant; exact-limit rejection and
   UTF-8 round trips around the sample limit complement the existing large
   Big5 sampling regression. No disk-write or apply behavior changes.
+- [x] Fix #336: remove the structurally unreachable
+  `(windows-1252, GB18030)` detection hypothesis. The canonical ranking
+  regression now requires a real fixture for every admitted pair, with no
+  unreachable-pair exemption; the reversibility fuzz pool stays in sync.
+  Explicit GB18030 apply remains unchanged and has a four-byte-character
+  round-trip regression. No detector gate is relaxed.
+
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:
