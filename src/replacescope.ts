@@ -418,9 +418,22 @@ function isWordBoundaryOk(text: string, from: number, to: number): boolean {
  * unconditionally, the same reasoning `buildRegExp` applies to the `u` flag.
  */
 function nfkdNormalizerFor(caseSensitive: boolean): (text: string) => string {
-  return caseSensitive
-    ? (text: string) => text.normalize("NFKD")
-    : (text: string) => text.normalize("NFKD").toLowerCase();
+  // Each document code point passes through this function. ASCII has an
+  // identity NFKD mapping, and only A–Z change under lowercase, so avoid
+  // calling the Unicode normalizer for these single-code-unit inputs.
+  // Queries with multiple units and all non-ASCII text retain upstream's
+  // whole-string NFKD-then-lowercase order.
+  if (caseSensitive) {
+    return (text: string) =>
+      text.length === 1 && text.charCodeAt(0) < 128 ? text : text.normalize("NFKD");
+  }
+  return (text: string) => {
+    const code = text.charCodeAt(0);
+    if (text.length === 1 && code < 128) {
+      return code >= 65 && code <= 90 ? String.fromCharCode(code + 32) : text;
+    }
+    return text.normalize("NFKD").toLowerCase();
+  };
 }
 
 /** One in-flight partial match inside `stringMatchesInRange`'s automaton,
