@@ -113,6 +113,34 @@ describe("issue #337 ASCII normalization fast path", () => {
   });
 });
 
+describe("issue #337 BMP unified-CJK normalization fast path", () => {
+  it("exhaustively preserves NFKD and lowercase for the admitted block", () => {
+    const chars = Array.from({ length: 0x9fff - 0x4e00 + 1 }, (_, i) => String.fromCharCode(0x4e00 + i));
+    const exceptions = chars.filter((char) => char.normalize("NFKD") !== char || char.toLowerCase() !== char);
+    expect(exceptions).toEqual([]);
+    // A whole-block query exercises the actual document scan for every
+    // admitted code point, with a whole-string-normalized query as oracle.
+    const docText = chars.join("");
+    for (const caseSensitive of [true, false]) {
+      const query = { search: docText, replace: "R", regexp: false, caseSensitive };
+      const result = replaceAllInSelection(docText, wholeDoc(docText), query);
+      expect(result.edits).toEqual([{ from: 0, to: docText.length, insert: "R" }]);
+      expect(result.skippedNonPrecise).toBe(0);
+    }
+  });
+
+  it("agrees with CodeMirror across block edges, compatibility forms, and mixed scripts", () => {
+    const docText = "一 鿿 \u4dff \ua000 豈 豈 é ᴬ 𠀀 一豈 鿿é 一\u0301";
+    for (const searchText of ["一", "鿿", "\u4dff", "\ua000", "豈", "豈", "é", "a", "𠀀", "一豈", "鿿é"]) {
+      for (const caseSensitive of [true, false]) {
+        const query = { search: searchText, replace: "R", regexp: false, caseSensitive };
+        const result = replaceAllInSelection(docText, wholeDoc(docText), query);
+        expect(applyEdits(docText, result.edits)).toBe(cm6ReplaceAllWholeDoc(docText, query));
+      }
+    }
+  });
+});
+
 /**
  * Bundles `src/replacescope.ts` to a plain CommonJS file, **once per test
  * file run**, and returns the path. Memoized deliberately: bundling is by
