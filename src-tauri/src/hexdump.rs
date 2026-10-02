@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn read_hex_dump_reports_empty_file() {
-        let path = std::env::temp_dir().join("mojidori-hexdump-empty.txt");
+        let path = crate::testutil::temp_path("mojidori-hexdump-empty.txt");
         std::fs::write(&path, []).unwrap();
         let result = read_hex_dump(path.to_string_lossy().into_owned(), 65536).unwrap();
         assert_eq!(result.text, "");
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn read_hex_dump_caps_at_64kb_even_when_more_is_requested() {
-        let path = std::env::temp_dir().join("mojidori-hexdump-large.bin");
+        let path = crate::testutil::temp_path("mojidori-hexdump-large.bin");
         let data = vec![0xabu8; MAX_HEX_BYTES + 10_000];
         std::fs::write(&path, &data).unwrap();
 
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn read_hex_dump_also_caps_when_caller_asks_for_more_than_the_hard_cap() {
-        let path = std::env::temp_dir().join("mojidori-hexdump-cap-request.bin");
+        let path = crate::testutil::temp_path("mojidori-hexdump-cap-request.bin");
         std::fs::write(&path, vec![0x00u8; 100]).unwrap();
 
         // Caller asks for way more than MAX_HEX_BYTES; min() must still win.

@@ -220,6 +220,12 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
 
 ## Autonomous correctness pass (2026-10-03)
 
+- [x] Fix #236: isolate the remaining 69 literal temp paths and two
+  separately composed paths with a test-only PID + atomic-counter helper.
+  Existing PID-scoped helpers and production socket/config paths remain
+  unchanged. Fixtures still own creation/cleanup, including missing-path
+  error cases. A same-name parallel-thread regression and two concurrent
+  full Rust test processes pass without sharing fixture files.
 - [x] Fix #362: only tolerate an incomplete recovered byte tail when the
   detection sample is actually shorter than the document. Complete inputs
   use the same strict decode as apply, eliminating guaranteed-to-fail

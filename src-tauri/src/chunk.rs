@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn pages_through_a_large_file_losslessly() {
-        let path = std::env::temp_dir().join("mojidori-chunk-test.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-test.txt");
         let mut original = String::new();
         for i in 0..120_000 {
             original.push_str(&format!("line {i:07} with some padding text\n"));
@@ -553,7 +553,7 @@ mod tests {
     fn goto_offset_on_lone_cr_line_start_is_not_misaligned() {
         let mut content = vec![b'a'; CHUNK_BYTES - 1];
         content.extend_from_slice(b"\rBBB\nCCC\rDDD");
-        let path = std::env::temp_dir().join("mojidori-chunk-goto-lonecr.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-goto-lonecr.txt");
         std::fs::write(&path, &content).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -591,7 +591,7 @@ mod tests {
         let mut content = b"AA\r".to_vec();
         content.extend(vec![b'b'; CHUNK_BYTES - 1]);
         content.extend_from_slice(b"\nCCC");
-        let path = std::env::temp_dir().join("mojidori-chunk-before-lonecr.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-before-lonecr.txt");
         std::fs::write(&path, &content).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -611,7 +611,7 @@ mod tests {
     /// arbitrary CHUNK_BYTES cuts mid-line.
     #[test]
     fn pages_through_cr_only_large_file_line_aligned_and_losslessly() {
-        let path = std::env::temp_dir().join("mojidori-chunk-cr-only.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-cr-only.txt");
         let mut original = String::new();
         for i in 0..120_000 {
             original.push_str(&format!("line {i:07} with some padding text\r"));
@@ -663,7 +663,7 @@ mod tests {
         content.extend_from_slice(b"\r\nzzz\n");
         assert_eq!(content[CHUNK_BYTES - 1], b'\r');
         assert_eq!(content[CHUNK_BYTES], b'\n');
-        let path = std::env::temp_dir().join("mojidori-chunk-crlf-page-split.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-crlf-page-split.txt");
         std::fs::write(&path, &content).unwrap();
 
         let mut assembled = String::new();
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn pages_backward_through_a_large_file_losslessly() {
-        let path = std::env::temp_dir().join("mojidori-chunk-back-test.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-back-test.txt");
         let mut original = String::new();
         for i in 0..120_000 {
             original.push_str(&format!("line {i:07} with some padding text\n"));
@@ -777,7 +777,7 @@ mod tests {
             original.len() > 8 * CHUNK_BYTES,
             "fixture must span several chunks on both sides of the overlong line"
         );
-        let path = std::env::temp_dir().join("mojidori-chunk-overlong-fwd.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-overlong-fwd.txt");
         std::fs::write(&path, &original).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -816,7 +816,7 @@ mod tests {
     #[test]
     fn pages_backward_through_a_line_longer_than_chunk_bytes_losslessly() {
         let original = overlong_line_fixture();
-        let path = std::env::temp_dir().join("mojidori-chunk-overlong-back.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-overlong-back.txt");
         std::fs::write(&path, &original).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -865,7 +865,7 @@ mod tests {
         let mut content = "x".repeat(CHUNK_BYTES + 1000);
         content.push('\n');
         content.push_str("tail\n");
-        let path = std::env::temp_dir().join("mojidori-chunk-backward-degenerate.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-backward-degenerate.txt");
         std::fs::write(&path, &content).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -900,7 +900,7 @@ mod tests {
     #[test]
     fn overlong_line_chunk_offsets_advance_by_whole_characters_mid_line() {
         let original = overlong_multibyte_line_fixture();
-        let path = std::env::temp_dir().join("mojidori-chunk-overlong-offsets.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-overlong-offsets.txt");
         std::fs::write(&path, &original).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -963,7 +963,7 @@ mod tests {
         let overlong = "中".repeat(4_000_000);
         let original = format!("prefix line\n{overlong}");
         assert!(original.len() > 5 * CHUNK_BYTES);
-        let path = std::env::temp_dir().join("mojidori-chunk-overlong-eof.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-overlong-eof.txt");
         std::fs::write(&path, &original).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -1116,7 +1116,7 @@ mod tests {
             bytes.len() > 4 * CHUNK_BYTES,
             "fixture must span several chunks on both sides of the overlong line"
         );
-        let path = std::env::temp_dir().join("mojidori-chunk-overlong-big5-fwd.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-overlong-big5-fwd.txt");
         std::fs::write(&path, &bytes).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -1167,7 +1167,7 @@ mod tests {
     #[test]
     fn pages_backward_through_an_overlong_big5_line_losslessly() {
         let (original_text, bytes) = overlong_big5_line_fixture();
-        let path = std::env::temp_dir().join("mojidori-chunk-overlong-big5-back.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-overlong-big5-back.txt");
         std::fs::write(&path, &bytes).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -1219,7 +1219,7 @@ mod tests {
             bytes.len() > 4 * CHUNK_BYTES,
             "fixture must span several chunks on both sides of the overlong line"
         );
-        let path = std::env::temp_dir().join("mojidori-chunk-overlong-gb18030-fwd.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-overlong-gb18030-fwd.txt");
         std::fs::write(&path, &bytes).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -1265,7 +1265,7 @@ mod tests {
     #[test]
     fn pages_backward_through_an_overlong_gb18030_line_losslessly() {
         let (original_text, bytes) = overlong_gb18030_line_fixture();
-        let path = std::env::temp_dir().join("mojidori-chunk-overlong-gb18030-back.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-overlong-gb18030-back.txt");
         std::fs::write(&path, &bytes).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -1433,7 +1433,7 @@ mod tests {
     #[test]
     fn pages_through_an_ascii_before_cjk_big5_boundary_losslessly() {
         let (original_text, bytes, _p1) = ascii_before_cjk_big5_boundary_fixture();
-        let path = std::env::temp_dir().join("mojidori-chunk-ascii-before-cjk-big5-fwd.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-ascii-before-cjk-big5-fwd.txt");
         std::fs::write(&path, &bytes).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -1484,7 +1484,7 @@ mod tests {
     #[test]
     fn pages_backward_through_an_ascii_before_cjk_big5_boundary_shifts_the_ambiguous_byte() {
         let (original_text, bytes, p1) = ascii_before_cjk_big5_boundary_fixture();
-        let path = std::env::temp_dir().join("mojidori-chunk-ascii-before-cjk-big5-back.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-ascii-before-cjk-big5-back.txt");
         std::fs::write(&path, &bytes).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -1550,7 +1550,7 @@ mod tests {
     #[test]
     fn goto_read_falls_back_to_raw_inside_an_overlong_big5_line() {
         let (_original_text, bytes) = overlong_big5_line_fixture();
-        let path = std::env::temp_dir().join("mojidori-chunk-goto-stale-overlong-big5.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-goto-stale-overlong-big5.txt");
         std::fs::write(&path, &bytes).unwrap();
 
         // "prefix line\n" is 12 bytes, then the single 1-byte ASCII
@@ -1598,7 +1598,7 @@ mod tests {
 
     #[test]
     fn goto_read_realigns_a_stale_mid_line_offset_to_the_next_line_start() {
-        let path = std::env::temp_dir().join("mojidori-chunk-goto-stale-midline.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-goto-stale-midline.txt");
         let mut original = String::new();
         for i in 0..120_000 {
             original.push_str(&format!("line {i:07} with some padding text\n"));
@@ -1628,7 +1628,7 @@ mod tests {
 
     #[test]
     fn goto_read_realigns_a_stale_mid_character_offset_cleanly() {
-        let path = std::env::temp_dir().join("mojidori-chunk-goto-stale-midchar.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-goto-stale-midchar.txt");
         let line = format!("{}\n", "中".repeat(10)); // 31 bytes per line
         let original = line.repeat(200_000);
         std::fs::write(&path, &original).unwrap();
@@ -1667,7 +1667,7 @@ mod tests {
     #[test]
     fn goto_read_falls_back_to_raw_inside_an_overlong_line() {
         let original = overlong_multibyte_line_fixture();
-        let path = std::env::temp_dir().join("mojidori-chunk-goto-stale-overlong.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-goto-stale-overlong.txt");
         std::fs::write(&path, &original).unwrap();
 
         // One byte into a "中" deep inside the 12 MB run: mid-character,
@@ -1708,7 +1708,7 @@ mod tests {
     /// file head and expect an honest U+FFFD window over an empty one.
     #[test]
     fn backward_head_trim_never_consumes_the_entire_window() {
-        let path = std::env::temp_dir().join("mojidori-chunk-before-all-continuation.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-before-all-continuation.txt");
         std::fs::write(&path, b"\x80\x81\nrest of the file\n").unwrap();
 
         let chunk = read_document_chunk_before(
@@ -1735,7 +1735,7 @@ mod tests {
 
     #[test]
     fn stale_fingerprint_returns_stale_marker_not_content() {
-        let path = std::env::temp_dir().join("mojidori-chunk-stale-grown.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-stale-grown.txt");
         std::fs::write(&path, "first version\nsecond line\n").unwrap();
         let fp = Fingerprint::from_path(&path).unwrap();
 
@@ -1761,7 +1761,7 @@ mod tests {
 
     #[test]
     fn matching_fingerprint_reads_normally() {
-        let path = std::env::temp_dir().join("mojidori-chunk-stale-match.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-stale-match.txt");
         std::fs::write(&path, "alpha\nbeta\n").unwrap();
         let fp = Fingerprint::from_path(&path).unwrap();
 
@@ -1784,7 +1784,7 @@ mod tests {
     /// as "end of file".
     #[test]
     fn no_expected_with_offset_past_eof_is_stale() {
-        let path = std::env::temp_dir().join("mojidori-chunk-stale-shrunk.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-stale-shrunk.txt");
         std::fs::write(&path, "short\n").unwrap();
 
         let chunk = read_document_chunk(
@@ -1805,7 +1805,7 @@ mod tests {
 
     #[test]
     fn before_read_stale_on_fingerprint_mismatch() {
-        let path = std::env::temp_dir().join("mojidori-chunk-stale-before.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-stale-before.txt");
         std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
         let fp = Fingerprint::from_path(&path).unwrap();
         std::fs::write(&path, "one\ntwo\nthree\nfour\n").unwrap();
@@ -1831,13 +1831,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn same_size_replace_is_stale_via_inode_identity() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("mojidori-chunk-stale-samesize.txt");
+        let path = crate::testutil::temp_path("mojidori-chunk-stale-samesize.txt");
         std::fs::write(&path, "AAAA\nBBBB\n").unwrap();
         let fp = Fingerprint::from_path(&path).unwrap();
 
         // Same byte count, different content, new inode via atomic rename.
-        let tmp = dir.join("mojidori-chunk-stale-samesize.tmp");
+        let tmp = crate::testutil::temp_path("mojidori-chunk-stale-samesize.tmp");
         std::fs::write(&tmp, "CCCC\nDDDD\n").unwrap();
         std::fs::rename(&tmp, &path).unwrap();
 

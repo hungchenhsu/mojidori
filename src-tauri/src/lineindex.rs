@@ -614,7 +614,7 @@ mod tests {
             "fixture must place LF as the first byte of the second chunk read"
         );
 
-        let path = std::env::temp_dir().join("mojidori-lineindex-crlf-chunk-split.txt");
+        let path = crate::testutil::temp_path("mojidori-lineindex-crlf-chunk-split.txt");
         std::fs::write(&path, &content).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -657,7 +657,7 @@ mod tests {
             "fixture must place a non-newline byte right after the CR, at the next chunk's start"
         );
 
-        let path = std::env::temp_dir().join("mojidori-lineindex-lonecr-chunk-split.txt");
+        let path = crate::testutil::temp_path("mojidori-lineindex-lonecr-chunk-split.txt");
         std::fs::write(&path, &content).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 

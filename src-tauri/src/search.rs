@@ -501,7 +501,7 @@ mod tests {
     /// anywhere").
     #[test]
     fn nonexistent_root_fails_closed() {
-        let dir = std::env::temp_dir().join("mojidori-search-nonexistent-does-not-exist");
+        let dir = crate::testutil::temp_path("mojidori-search-nonexistent-does-not-exist");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!dir.exists(), "fixture precondition: path must not exist");
 
