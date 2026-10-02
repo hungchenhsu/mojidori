@@ -6,6 +6,33 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 Mojidori is pre-1.0 (alpha); version numbers do not yet carry strict
 Semantic Versioning compatibility guarantees.
 
+## [Unreleased]
+
+### Fixed
+
+- 修正 mojibake 偵測：完整文件不再容忍尾端不完整的 byte sequence，
+  避免提出確定無法套用的修復候選；真正截短的取樣仍保留原本處理
+  （#365，修正 #362）。
+- 移除 chardetng 結構上無法確認的 `(windows-1252, GB18030)` 偵測組合，
+  保留明確指定 GB18030 的嚴格修復與 round-trip 驗證（#366，修正 #336）。
+- 補齊 CodeMirror 搜尋／取代及摺疊介面的日文、簡體中文翻譯，
+  語言切換保留搜尋內容（#369，修正 #89）。
+
+### Performance
+
+- 選取範圍內取代對 ASCII 與基本漢字區段 U+4E00..U+9FFF 略過恆等的
+  NFKD normalization，並保留 CodeMirror 比對語意。新增可重現的 CPU
+  benchmark；長 query 與大量 matches 仍為同步處理（#367、#371，部分改善 #337）。
+
+### Maintenance
+
+- 測試暫存路徑加入 process ID 與遞增序號，避免平行測試互相干擾
+  （#368，修正 #236）。
+- 依 GitHub release 與 updater feed 實際狀態修正文檔（#364，修正 #346）。
+- 新增外部改名的跨平台 headless probe。Windows 實測證實持續保留
+  file handle（含 metadata-only）會阻擋父目錄改名，因此未採用該方案；
+  production watcher 與儲存行為未變，#280 仍待修復（#370）。
+
 ## [v0.9.0-alpha.1] - 2026-07-28
 
 ### Added
