@@ -264,6 +264,12 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   mixed scripts; the benchmark now includes 1,024 distinct CJK characters
   to avoid relying only on a small repeated vocabulary. This adds no cache
   or memory growth; long-query and dense-match synchronous limits remain.
+- [x] Investigate #280: add a headless retained-file-handle probe for
+  macOS/Windows, covering renames, parent moves, old-path reuse, deletion,
+  atomic replacement, and alias limitations. The integration tests run in
+  normal CI; [the evidence and design limits](docs/rename-handle-probe.md)
+  separate path discovery from a production fix. #280 remains open; watcher,
+  document-path, and save behavior are unchanged.
 
 ## Explicit non-goals
 
