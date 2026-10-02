@@ -1215,7 +1215,6 @@ mod tests {
 
     struct MojibakePools {
         big5: Vec<char>,
-        gb18030: Vec<char>,
         shift_jis: Vec<char>,
         euc_jp: Vec<char>,
         euc_kr: Vec<char>,
@@ -1227,7 +1226,6 @@ mod tests {
         fn build() -> Self {
             Self {
                 big5: big5_pool(),
-                gb18030: gb18030_pool(),
                 shift_jis: shift_jis_pool(),
                 euc_jp: euc_jp_pool(),
                 euc_kr: euc_kr_pool(),
@@ -1301,7 +1299,6 @@ mod tests {
             let source = match (intermediate_label, original_label) {
                 ("windows-1252", "UTF-8") => TextSource::Universal(&edge),
                 ("windows-1252", "Big5") => TextSource::Pool(&pools.big5),
-                ("windows-1252", "gb18030") => TextSource::Pool(&pools.gb18030),
                 ("windows-1252", "Shift_JIS") => TextSource::Pool(&pools.shift_jis),
                 ("windows-1252", "EUC-JP") => TextSource::Pool(&pools.euc_jp),
                 ("windows-1252", "EUC-KR") => TextSource::Pool(&pools.euc_kr),

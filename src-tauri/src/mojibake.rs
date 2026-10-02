@@ -24,7 +24,7 @@
 
 use chardetng::EncodingDetector;
 use encoding_rs::{
-    Encoding, BIG5, EUC_JP, EUC_KR, GB18030, GBK, KOI8_R, KOI8_U, SHIFT_JIS, UTF_8, WINDOWS_1250,
+    Encoding, BIG5, EUC_JP, EUC_KR, GBK, KOI8_R, KOI8_U, SHIFT_JIS, UTF_8, WINDOWS_1250,
     WINDOWS_1251, WINDOWS_1252, WINDOWS_1253, WINDOWS_1256, WINDOWS_1258,
 };
 use serde::Serialize;
@@ -88,6 +88,15 @@ use serde::Serialize;
 /// an `original: KOI8_R` entry would be permanently unreachable dead code
 /// -- not a working-but-rare hypothesis, a candidate that can *never*
 /// appear.
+///
+/// `(WINDOWS_1252, GB18030)` is also excluded (#336): chardetng
+/// 0.1.17's `InnerCandidate::Gbk::encoding()` returns `GBK`, never
+/// `GB18030`, so gate (c) cannot confirm this hypothesis. Accepting a GBK
+/// guess for GB18030 would relax the quality gate and needs a separate
+/// admission review. Removing this unreachable detection entry does not
+/// change `apply_mojibake_repair`'s strict, label-driven GB18030 support.
+/// Every remaining pair must have a reachable canonical ranking fixture;
+/// the aggregate test has no unreachable-pair exemption.
 ///
 /// ISO-8859-5 hypotheses (`windows-1251`/`KOI8-R` ↔ `ISO-8859-5`) were
 /// evaluated for issue #182 and left out too: ISO-8859-5 is the least
@@ -316,10 +325,9 @@ use serde::Serialize;
 ///
 /// `pub(crate)` so `fuzz_roundtrip.rs`'s reversibility fuzz can iterate
 /// this exact list instead of maintaining a separately-drifting copy.
-pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 18] = [
+pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 17] = [
     (WINDOWS_1252, UTF_8),
     (WINDOWS_1252, BIG5),
-    (WINDOWS_1252, GB18030),
     (WINDOWS_1252, SHIFT_JIS),
     (WINDOWS_1252, EUC_KR),
     // ROADMAP v0.6 E2: see the doc comment above for the two-gate
@@ -1191,6 +1199,25 @@ mod tests {
         let mut detector = EncodingDetector::new();
         detector.feed(&real_bytes, true);
         assert_eq!(detector.guess(None, true).name(), "KOI8-U");
+    }
+
+    #[test]
+    fn gb18030_explicit_repair_still_round_trips_four_byte_characters() {
+        let original = format!("{BIG5_TEXT} 😀 𠀀");
+        let (bytes, _, unmappable) = encoding_rs::GB18030.encode(&original);
+        assert!(!unmappable);
+        let (garbled, malformed) = WINDOWS_1252.decode_without_bom_handling(&bytes);
+        assert!(!malformed);
+        let repaired = apply_mojibake_repair(
+            garbled.into_owned(),
+            "windows-1252".to_string(),
+            "gb18030".to_string(),
+        )
+        .unwrap();
+        assert_eq!(repaired, original);
+        let (restored_bytes, _, unmappable) = encoding_rs::GB18030.encode(&repaired);
+        assert!(!unmappable);
+        assert_eq!(restored_bytes, bytes);
     }
 
     /// Issue #182 evaluation: documents/locks in *why* ISO-8859-5
@@ -2287,10 +2314,9 @@ mod tests {
     // *outranked* once the list has grown this large. `RankCase`/
     // `assert_ranks_first` below assert, for every pair's own canonical
     // fixture (the same fixture its dedicated `repairs_*` test above uses,
-    // or the equivalent construction for the three pairs that only had
-    // fuzz coverage before this test -- (WINDOWS_1252, GB18030),
-    // (WINDOWS_1252, EUC_KR), (GBK, UTF_8)), that `detect_mojibake` ranks
-    // the correct (intermediate, original) candidate strictly first
+    // or the equivalent construction for pairs that only had fuzz
+    // coverage -- (WINDOWS_1252, EUC_KR), (GBK, UTF_8)), that
+    // `detect_mojibake` ranks the correct candidate strictly first
     // (`candidates[0]`), not merely "present somewhere in the
     // `MAX_CANDIDATES`-truncated list". This is deliberately the stricter
     // reading: every fixture here is constructed to trigger only its own
@@ -2303,45 +2329,17 @@ mod tests {
     // exactly the signal that `REPAIR_PAIRS`'s growth introduced new
     // ambiguity.
     //
-    // `cases` is compared against `REPAIR_PAIRS` (minus
-    // `KNOWN_UNREACHABLE_PAIRS`) as a *set* of `(intermediate, original)`
-    // labels, not just a matching length -- a length-only check would
+    // `cases` is compared against all of `REPAIR_PAIRS` as a set of
+    // `(intermediate, original)` labels, not just a matching length --
+    // a length-only check would
     // silently pass if a future edit added a `REPAIR_PAIRS` entry X but
     // only a `RankCase` for some unrelated entry Y (same count, wrong
     // coverage). The set comparison fails loudly on that instead of
     // quietly under-covering the gate.
     //
-    // **Pre-existing dead entry found while building this gate (not
-    // introduced by this batch, out of scope to fix here):**
-    // `(WINDOWS_1252, GB18030)` cannot ever be confirmed by
-    // `detect_mojibake`. Gate (c) requires
-    // `EncodingDetector::guess` to equal `original` exactly, but chardetng
-    // 0.1.17 has no distinct GB18030 candidate at all -- verified directly
-    // against its source: `SINGLE_BYTE_DATA`/the double-byte candidate list
-    // has only a `Gbk` variant, whose `encoding()` method literally
-    // `return`s the `GBK` constant (`chardetng::lib::InnerCandidate::Gbk`'s
-    // match arm), never `GB18030`. So `guess() == GB18030` can never be
-    // true, for any input whatsoever -- the exact same structural-
-    // unreachability shape as the already-documented `(WINDOWS_1251,
-    // KOI8_R)` exclusion in `REPAIR_PAIRS`'s doc comment (chardetng has no
-    // KOI8-R candidate either), just never previously caught because no
-    // test exercised `detect_mojibake` -- as opposed to
-    // `apply_mojibake_repair`, which has no chardetng gate at all -- for
-    // this specific pair before this gate existed. Filed as a known,
-    // non-urgent bug (see PR description) rather than fixed inline: fixing
-    // it (drop the entry, or relax gate (c) for this one pair) is an
-    // encoding-behavior change of its own, needing the same dual-gate
-    // review this repo requires for `mojibake.rs`, not a drive-by edit
-    // bundled into an unrelated batch.
+    // Issue #336 removed the unreachable (WINDOWS_1252, GB18030) entry
+    // and its exemption. Every admitted pair now needs a real fixture.
     // ----------------------------------------------------------------
-
-    /// `REPAIR_PAIRS` entries this gate deliberately excludes because
-    /// `detect_mojibake` can structurally never surface them (see this
-    /// module's discussion above), keyed by `(intermediate.name(),
-    /// original.name())` -- compared against `REPAIR_PAIRS` and `cases` as
-    /// actual sets below, so this documents *why* an entry is missing
-    /// instead of leaving a mysterious gap.
-    const KNOWN_UNREACHABLE_PAIRS: [(&str, &str); 1] = [("windows-1252", "gb18030")];
 
     struct RankCase {
         intermediate: &'static Encoding,
@@ -2412,8 +2410,6 @@ mod tests {
                 original: BIG5,
                 fixture: BIG5_TEXT,
             },
-            // (WINDOWS_1252, GB18030) deliberately omitted -- see
-            // `KNOWN_UNREACHABLE_PAIRS`'s doc comment above.
             RankCase {
                 intermediate: WINDOWS_1252,
                 original: SHIFT_JIS,
@@ -2497,13 +2493,6 @@ mod tests {
             .iter()
             .map(|(i, o)| (i.name(), o.name()))
             .collect();
-        let known_unreachable_set: HashSet<(&str, &str)> =
-            KNOWN_UNREACHABLE_PAIRS.iter().copied().collect();
-        assert!(
-            known_unreachable_set.is_subset(&repair_pairs_set),
-            "KNOWN_UNREACHABLE_PAIRS must only list entries that actually exist in \
-             REPAIR_PAIRS: {known_unreachable_set:?}"
-        );
         let cases_set: HashSet<(&str, &str)> = cases
             .iter()
             .map(|c| (c.intermediate.name(), c.original.name()))
@@ -2513,13 +2502,9 @@ mod tests {
             cases.len(),
             "RankCase list must not contain duplicate (intermediate, original) pairs: {cases_set:?}"
         );
-        let expected_set: HashSet<(&str, &str)> = repair_pairs_set
-            .difference(&known_unreachable_set)
-            .copied()
-            .collect();
         assert_eq!(
-            cases_set, expected_set,
-            "RankCase list must cover exactly REPAIR_PAIRS minus KNOWN_UNREACHABLE_PAIRS, as a \
+            cases_set, repair_pairs_set,
+            "RankCase list must cover exactly REPAIR_PAIRS, as a \
              set -- a matching *count* alone would silently pass if a future edit added a \
              REPAIR_PAIRS entry X but only a RankCase for an unrelated entry Y"
         );
