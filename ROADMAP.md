@@ -269,7 +269,9 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   atomic replacement, and alias limitations. The integration tests run in
   normal CI; [the evidence and design limits](docs/rename-handle-probe.md)
   separate path discovery from a production fix. #280 remains open; watcher,
-  document-path, and save behavior are unchanged.
+  document-path, and save behavior are unchanged. Windows CI disproved the
+  continuously retained-handle approach: even metadata-only access with full
+  sharing blocks parent-directory renames until the handle is closed.
 
 ## Explicit non-goals
 

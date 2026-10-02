@@ -58,8 +58,8 @@ mod platform {
     }
 
     pub fn open(path: &Path) -> io::Result<File> {
-        // Metadata-only access: retaining GENERIC_READ can prevent a parent
-        // directory rename even with FILE_SHARE_DELETE (see control below).
+        // Metadata-only access does NOT avoid Windows' parent-directory
+        // rename restriction; both this and GENERIC_READ are probed below.
         std::fs::OpenOptions::new()
             .access_mode(0)
             .share_mode(1 | 2 | 4)
@@ -185,7 +185,7 @@ fn follows_same_directory_rename_and_rejects_reused_old_path() {
 }
 
 #[test]
-fn follows_cross_directory_and_parent_directory_rename() {
+fn cross_directory_rename_and_parent_directory_rename_constraints() {
     let fixture = Fixture::new();
     let (old, file) = fixture.file("before.txt");
     let parent = fixture.0.join("parent");
@@ -194,8 +194,25 @@ fn follows_cross_directory_and_parent_directory_rename() {
     fs::rename(old, &moved).unwrap();
     assert_resolves(&file, &moved);
     let renamed_parent = fixture.0.join("renamed-parent");
-    fs::rename(parent, &renamed_parent).unwrap();
-    assert_resolves(&file, &renamed_parent.join("after.txt"));
+    #[cfg(target_os = "macos")]
+    {
+        fs::rename(parent, &renamed_parent).unwrap();
+        assert_resolves(&file, &renamed_parent.join("after.txt"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // CI disproved the hypothesis that metadata-only access preserves
+        // parent renames. Pin both the denial and the handle-close control:
+        // retaining this handle would interfere with external file actions.
+        assert_eq!(
+            fs::rename(&parent, &renamed_parent)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(5)
+        );
+        drop(file);
+        fs::rename(parent, &renamed_parent).unwrap();
+    }
 }
 
 #[cfg(target_os = "windows")]
