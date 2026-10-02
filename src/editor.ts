@@ -48,6 +48,7 @@ import {
   selectSelectionMatches as cmSelectSelectionMatches,
 } from "@codemirror/search";
 import { editorTheme } from "./editor-theme";
+import { cm6Phrases } from "./editor-phrases";
 import { nearEnd, nearStart } from "./chunkpolicy";
 import { detectIndentation, type IndentInfo } from "./indentdetect";
 import type { Locale } from "./i18n";
@@ -75,52 +76,6 @@ import {
 } from "./textstats";
 import { scanSuspiciousChars, SUSPICIOUS_CHARS_PATTERN, suspiciousCharFor } from "./suspiciouschars";
 import { isNfcChunked } from "./normalize";
-
-/**
- * Traditional-Chinese phrases for CM6's own translatable UI strings, keyed
- * by the exact English source phrases CM6 looks up via `EditorState.phrases`
- * (see @codemirror/search's and @codemirror/language's own
- * `phrase(view, "...")` calls) — this is CM6's own built-in translation
- * mechanism, not a new dependency. English needs no entries: it is CM6's
- * built-in default. Covers two surfaces: the @codemirror/search find/replace
- * panel, and the @codemirror/language fold gutter (the marker tooltip, the
- * "…" placeholder's accessible name/tooltip, and the folded/unfolded-range
- * screen-reader announcement) — every key below was confirmed unique to its
- * one call site by grepping every @codemirror package's dist/index.js, so
- * none of these collides with an unrelated phrase() call elsewhere in CM6
- * (checked across @codemirror/commands, /autocomplete, /lint, /search,
- * /state, and /view).
- */
-const CM6_PHRASES_ZH_TW: Record<string, string> = {
-  Find: "尋找",
-  Replace: "取代",
-  next: "下一個",
-  previous: "上一個",
-  all: "全部",
-  "match case": "區分大小寫",
-  regexp: "正規表示式",
-  "by word": "全字符合",
-  replace: "取代",
-  "replace all": "全部取代",
-  close: "關閉",
-  "Go to line": "跳至行號",
-  go: "前往",
-  "replaced match on line $": "已在第 $ 行取代符合項目",
-  "replaced $ matches": "已取代 $ 筆符合項目",
-  "current match": "目前符合項目",
-  "on line": "位於行",
-  "Fold line": "摺疊此行",
-  "Unfold line": "展開此行",
-  "folded code": "已摺疊的程式碼",
-  unfold: "展開",
-  "Folded lines": "已摺疊行",
-  "Unfolded lines": "已展開行",
-  to: "至",
-};
-
-function cm6Phrases(locale: Locale): Record<string, string> {
-  return locale === "zh-TW" ? CM6_PHRASES_ZH_TW : {};
-}
 
 export type EditorBuffer = EditorState;
 
