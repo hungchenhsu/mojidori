@@ -239,6 +239,15 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   unreachable-pair exemption; the reversibility fuzz pool stays in sync.
   Explicit GB18030 apply remains unchanged and has a four-byte-character
   round-trip regression. No detector gate is relaxed.
+- [x] Mitigate #337: single-ASCII-code-unit normalization bypasses NFKD
+  and uses the equivalent ASCII lowercase mapping. All non-ASCII inputs
+  and multi-unit queries preserve the upstream normalization order.
+  The existing CodeMirror differential sweeps plus all 128 ASCII units
+  beside Unicode cover both case modes and whole-word matching. An
+  informational `scripts/replacescope-bench.mjs` measures four corpora
+  outside bundling/warmup time. #337 remains open for non-ASCII/dense-match
+  synchronous-work limits; this is an ASCII-path optimization, not an
+  asynchronous replacement engine.
 
 ## Explicit non-goals
 

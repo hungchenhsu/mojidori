@@ -76,7 +76,7 @@ const wholeDoc = (text: string): ReplaceRange[] => [{ from: 0, to: text.length }
  *  resulting document text — the ground truth this module's own
  *  whole-document-equivalent output must agree with. */
 function cm6ReplaceAllWholeDoc(
-  docText: string,
+  docText: string | Text,
   query: ConstructorParameters<typeof SearchQuery>[0],
 ): string {
   const state = EditorState.create({ doc: docText, extensions: [search()] });
@@ -87,6 +87,31 @@ function cm6ReplaceAllWholeDoc(
   view.destroy();
   return result;
 }
+
+describe("issue #337 ASCII normalization fast path", () => {
+  it("preserves upstream replacement semantics for every ASCII code unit beside Unicode", () => {
+    for (let code = 0; code < 128; code++) {
+      const char = String.fromCharCode(code);
+      const docText = `ᴀ ᴬ ﬁ é e\u0301 😀 ${char}${char.toUpperCase()} ${char}中`;
+      for (const caseSensitive of [true, false]) {
+        for (const wholeWord of [true, false]) {
+          const query = {
+            search: char === "\\" ? "\\\\" : char,
+            replace: "R",
+            regexp: false,
+            caseSensitive,
+            wholeWord,
+          };
+          const actual = replaceAllInSelection(docText, wholeDoc(docText), query);
+          // A Text value preserves CR as a code unit; EditorState's string
+          // input normalizes it to LF before the reference search starts.
+          const expected = cm6ReplaceAllWholeDoc(Text.of(docText.split("\n")), query);
+          expect(applyEdits(docText, actual.edits), `ASCII ${code}`).toBe(expected);
+        }
+      }
+    }
+  });
+});
 
 /**
  * Bundles `src/replacescope.ts` to a plain CommonJS file, **once per test
