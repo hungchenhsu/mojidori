@@ -44,7 +44,24 @@ faster for text files, or is it IDE creep?*
 codename used before the rename; do not use it in new outward-facing
 material.
 
-## 2. Current state (2026-07-28)
+## 2. Current state (release/feed verified 2026-10-03)
+
+Release metadata and the published feed were checked on 2026-10-03:
+
+- [`v0.8.0-alpha.1`](https://github.com/hungchenhsu/mojidori/releases/tag/v0.8.0-alpha.1)
+  is a published prerelease (published 2026-07-28T14:19:59Z).
+- [`v0.9.0-alpha.1`](https://github.com/hungchenhsu/mojidori/releases/tag/v0.9.0-alpha.1)
+  is a published prerelease (published 2026-07-28T14:20:01Z).
+- The rolling [`updater` release](https://github.com/hungchenhsu/mojidori/releases/tag/updater)
+  is published (2026-07-28T14:20:15Z). Its
+  [`latest.json`](https://github.com/hungchenhsu/mojidori/releases/download/updater/latest.json)
+  serves version `0.9.0`, with all platform URLs pointing to
+  `v0.9.0-alpha.1` assets.
+
+This verifies publication and feed availability, not an installed client's
+end-to-end update acceptance. Future release publication still requires
+user confirmation (§7). The cycle records below retain their historical
+implementation and acceptance context.
 
 - **v0.9 cycle complete** (planned 2026-07-27 under the standing
   overnight delegation, adversarially reviewed before start
@@ -83,24 +100,20 @@ material.
   #339 (a Linux-only glib advisory, Tier 2).
   Full record: ROADMAP.md's v0.9 completed-cycle entry and
   [docs/archive/roadmap-completed-cycles.md](docs/archive/roadmap-completed-cycles.md).
-  Publishing stays user-held: the new `v0.9.0-alpha.1` draft release
-  sits alongside the still-unpublished `v0.8.0-alpha.1` draft (see
-  §3/D2 — publishing is also what activates the updater feed #330's
-  error message currently reports as absent) — **the pending user
-  checklist is: decide whether/when to publish either draft, and rule
-  on the #303 trim-on-save contract proposal and #314 CSP-nonce
-  research posted to their issues.**
+  Both v0.8/v0.9 releases have since been published and the feed is
+  available (verified snapshot above). The remaining user decisions here
+  concern the #303 trim-on-save contract proposal and #314 CSP-nonce
+  research posted to their issues.
 - **v0.8 cycle + issue sweep complete** (2026-07-23 cycle, PRs
-  #307–#312, tag `v0.8.0-alpha.1` — drafted but not published; then a
+  #307–#312, tag `v0.8.0-alpha.1` — initially drafted, published 2026-07-28; then a
   2026-07-26→27 delegated issue sweep, PRs #313–#328): D1 naming
   resolved and applied — product renamed to **Mojidori** (bundle
   identifier, window title, IPC namespace, crate name) with a
   crash-safe one-time config-directory migration; D2 macOS signing +
   notarization + auto-update pipeline implemented
   (`tauri-plugin-updater`, update-time edit-freeze, a rolling
-  `updater` release tag configured to serve the update feed once
-  activated) — not yet operational since that requires a published
-  release (§3/D2, tracks the same gap as #330); Windows signing
+  `updater` release tag serving the published update feed; see the
+  verified snapshot above and §3/D2); Windows signing
   remains undecided (§3/D2). The issue sweep closed a CSP gap
   (`security.csp: null` → explicit policy, #316), added macOS
   single-instance enforcement (#315), fixed a save-to-symlink
@@ -292,16 +305,19 @@ Three independent pieces, cheapest first:
 **Recommended sequencing:** updater keys → auto-update feature behind them
 → macOS signing → (at public release) Windows signing.
 
-**Status (2026-07-27):** steps 1–2 implemented in the v0.8 cycle (PRs
-#307–#312, tag `v0.8.0-alpha.1`) — updater keys, the signed/notarized
-macOS pipeline, and `tauri-plugin-updater` auto-update are all in the
-codebase, but not yet operational: the rolling `updater` release feed
-(`.github/workflows/updater-json.yml`) only publishes on a GitHub
-`release: published` event, and `v0.8.0-alpha.1` is still an
-unpublished draft, so no feed exists yet and update checks currently
-hit the error #330 tracks. Activation awaits the maintainer publishing
-a release. Step 3 (Windows signing) remains undecided; Windows builds
-ship unsigned for now.
+**Status (release/feed verified 2026-10-03):** steps 1–2 implemented in
+the v0.8 cycle (PRs #307–#312) — updater keys, the signed/notarized
+macOS pipeline, and `tauri-plugin-updater` are in the codebase. Both
+`v0.8.0-alpha.1` and `v0.9.0-alpha.1` were published on 2026-07-28;
+the rolling `updater` feed is available and serves `0.9.0` (§2).
+The earlier missing-feed condition behind #330 is historical; feed
+availability alone does not prove a successful installed-client update.
+The feed workflow (`.github/workflows/updater-json.yml`) runs on
+`release: published`; #343 added serialization and monotonic version
+selection in PR #361. Tags cut before that fix still contain the older
+workflow, so re-publishing those tags does not gain the new protection.
+Future publication remains user-held. Step 3 (Windows signing) remains
+undecided; Windows builds ship unsigned for now.
 
 ### D3 — Going public
 
@@ -536,8 +552,9 @@ required, not value.
 
 - **Auto-update** — *implemented in the v0.8 cycle*
   (`tauri-plugin-updater`, silent startup check + manual "Check for
-  Updates"); no longer blocked on D2 step 1. The update feed itself is
-  not yet active pending the maintainer publishing a release (§3/D2).
+  Updates"); no longer blocked on D2 step 1. The published update feed
+  serves `0.9.0` as verified on 2026-10-03 (§2, §3/D2); installed-client
+  update acceptance remains a separate check.
 - **Crash reporting / telemetry** — default stance: **none**. "No
   telemetry" is a feature consistent with the trust pillar; revisit only
   if the user explicitly wants opt-in diagnostics.

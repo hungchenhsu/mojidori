@@ -81,7 +81,7 @@ Item counts below are shipped `[x]` items per cycle.
   docs/features.md. 20 PRs (#229–#249 range), ended at 522 cargo test /
   955 vitest.
 - **v0.8 — official naming + release pipeline** (PRs #307–#312,
-  2026-07-23, tag `v0.8.0-alpha.1`, draft — not published): D1 official
+  2026-07-23, tag `v0.8.0-alpha.1`, draft at cycle close; published 2026-07-28): D1 official
   name decided (**Mojidori**) and applied — bundle identifier, window
   title, IPC event namespace, and crate name renamed across every
   platform, with a crash-safe one-time config-directory migration
@@ -94,9 +94,9 @@ Item counts below are shipped `[x]` items per cycle.
   manual File > Check for Updates, the pre-restart flush funneled
   through one shared mutation guard so no input path can slip a
   change past it, and a rolling `updater` release tag configured to
-  serve the update feed — but not yet doing so, since the feed-publish
-  workflow only runs on a `release: published` event and
-  `v0.8.0-alpha.1` remains an unpublished draft (see DIRECTION §3/D2).
+  serve the update feed — inactive at cycle close because the feed-publish
+  workflow only runs on a `release: published` event. Both v0.8/v0.9
+  were subsequently published; see DIRECTION §2 for the verified snapshot.
   Every tag push opens a draft release for manual publish.
   Follow-up migration hardening landed in the same cycle (#311).
   Then a 2026-07-26→27 issue-clearing sweep (PRs #313–#328, not a
@@ -211,12 +211,12 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   Scope limit (critic review): GitHub runs the workflow file from the
   published tag's commit, so only tags cut after this fix are protected;
   re-publishing a pre-fix tag (v0.8/v0.9) runs the old unguarded workflow.
-- [ ] Then: #346 reconcile current release/feed statements in authority
-  docs against live release metadata. Historical cycle notes stay historical.
-
-The release/feed statements earlier in this file and DIRECTION.md describe
-older snapshots; #346 records evidence that v0.8/v0.9 were subsequently
-published. They must not be used as evidence of today's publication state.
+- [x] Fix #346: reconcile active release/feed statements against GitHub
+  release metadata and the rolling `latest.json` (verified 2026-10-03).
+  v0.8/v0.9 are published prereleases; the feed serves `0.9.0` and points
+  to v0.9 assets. DIRECTION §2/§3/D2/§6 now distinguish published state,
+  future user-held publication policy, and pending client acceptance.
+  Completed-cycle/archive records retain their historical context.
 
 ## Explicit non-goals
 
