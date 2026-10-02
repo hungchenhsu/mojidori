@@ -477,6 +477,7 @@ fn try_repair(
     sample: &str,
     intermediate: &'static Encoding,
     original: &'static Encoding,
+    sample_was_cut: bool,
 ) -> Option<(String, f64)> {
     // Gate (a): `sample` must be exactly representable in `intermediate`.
     // If any character can't be, `sample` cannot possibly be
@@ -495,16 +496,27 @@ fn try_repair(
     // original bytes had genuinely started with one, auto-detection would
     // have caught it long before this content ever became mojibake).
     //
-    // The sample path tolerates a truncated *tail* only: the char-boundary
-    // sample cut lands mid-character in the *recovered* byte stream about
-    // half the time for CJK mojibake (each garbled character re-encodes to
-    // part of a multi-byte sequence), and without this tolerance every
+    // Only an actually shortened sample tolerates a truncated tail. A
+    // complete document must pass the same strict decode as apply, or we
+    // would offer a candidate that is guaranteed to fail (#362).
+    // The char-boundary sample cut lands mid-character in the recovered
+    // byte stream about half the time for CJK mojibake (each garbled
+    // character re-encodes to part of a multi-byte sequence), and without
+    // this tolerance every
     // >SAMPLE_BYTES document would silently detect nothing — an artifact
     // of sampling, not evidence against the hypothesis. Interior damage
     // still rejects: trimming at most 3 bytes (GB18030's longest sequence
     // is 4) must yield a perfectly clean decode. `apply_mojibake_repair`
     // runs the full text with no tolerance at all.
-    let (repaired, clean_len) = decode_tolerating_truncated_tail(&bytes, original)?;
+    let (repaired, clean_len) = if sample_was_cut {
+        decode_tolerating_truncated_tail(&bytes, original)?
+    } else {
+        let (decoded, malformed) = original.decode_without_bom_handling(&bytes);
+        if malformed {
+            return None;
+        }
+        (decoded.into_owned(), bytes.len())
+    };
     // Gate (c): no replacement characters (implied by `!malformed` above,
     // but checked explicitly since it is the actual promise being made to
     // the caller), and chardetng -- fed the same bytes cold, independent
@@ -544,10 +556,12 @@ fn try_repair(
 #[tauri::command]
 pub fn detect_mojibake(content: String) -> Vec<RepairCandidate> {
     let sample = char_boundary_prefix(&content, SAMPLE_BYTES);
+    let sample_was_cut = sample.len() < content.len();
     let mut scored: Vec<(RepairCandidate, f64)> = Vec::new();
 
     for &(intermediate, original) in REPAIR_PAIRS.iter() {
-        let Some((repaired, ratio)) = try_repair(sample, intermediate, original) else {
+        let Some((repaired, ratio)) = try_repair(sample, intermediate, original, sample_was_cut)
+        else {
             continue;
         };
         // Gate (d): no visible change means this pair -- however
@@ -1036,6 +1050,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn complete_samples_never_offer_repairs_that_fail_to_apply() {
+        let mut offered = 0;
+        let mut inputs: Vec<String> = ["café", "Naïve", "Loading…", "Total: 5 €", "Да"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let (bytes, _, unmappable) = BIG5.encode(BIG5_TEXT);
+        assert!(!unmappable);
+        let (mojibake, malformed) = WINDOWS_1252.decode_without_bom_handling(&bytes);
+        assert!(!malformed);
+        inputs.push(mojibake.into_owned());
+
+        for content in inputs {
+            assert!(content.len() <= SAMPLE_BYTES);
+            for candidate in detect_mojibake(content.clone()) {
+                offered += 1;
+                let repaired = apply_mojibake_repair(
+                    content.clone(),
+                    candidate.intermediate.clone(),
+                    candidate.original.clone(),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("complete input {content:?} offered {candidate:?}: {error}")
+                });
+                assert!(repaired.starts_with(&candidate.preview));
+            }
+        }
+        assert!(offered > 0, "genuine mojibake must still offer a repair");
+    }
+
+    #[test]
+    fn complete_sample_at_byte_limit_rejects_a_malformed_recovered_tail() {
+        let content = format!("{}é", "a".repeat(SAMPLE_BYTES - "é".len()));
+        assert_eq!(content.len(), SAMPLE_BYTES);
+        assert!(detect_mojibake(content).is_empty());
+    }
+
+    #[test]
+    fn genuine_utf8_repairs_round_trip_across_the_sample_limit() {
+        let (tail, malformed) = WINDOWS_1252.decode_without_bom_handling("é".as_bytes());
+        assert!(!malformed);
+        for length in [
+            SAMPLE_BYTES - 1,
+            SAMPLE_BYTES,
+            SAMPLE_BYTES + 1,
+            SAMPLE_BYTES + 2,
+        ] {
+            let prefix = "a".repeat(length - tail.len());
+            let content = format!("{prefix}{tail}");
+            let candidate = detect_mojibake(content.clone())
+                .into_iter()
+                .find(|c| c.intermediate == "windows-1252" && c.original == "UTF-8")
+                .expect("the genuine UTF-8 repair must survive the sampling boundary");
+            let repaired =
+                apply_mojibake_repair(content.clone(), candidate.intermediate, candidate.original)
+                    .unwrap();
+            assert_eq!(repaired, format!("{prefix}é"));
+            assert!(repaired.starts_with(&candidate.preview));
+            let (garbled_again, malformed) =
+                WINDOWS_1252.decode_without_bom_handling(repaired.as_bytes());
+            assert!(!malformed);
+            assert_eq!(garbled_again, content);
+        }
+    }
+
     /// Adversarial-review regression: the 64 KiB sample cut lands
     /// mid-character in the *recovered* byte stream about half the time
     /// for CJK mojibake, and gate (b) used to reject the whole hypothesis
@@ -1100,7 +1180,7 @@ mod tests {
         // But try_repair -- which also runs gate (c) -- must still reject
         // it, because chardetng can never guess KOI8_R specifically.
         assert_eq!(
-            try_repair(&mojibake, WINDOWS_1251, KOI8_R),
+            try_repair(&mojibake, WINDOWS_1251, KOI8_R, false),
             None,
             "chardetng cannot confirm KOI8-R as `original`, so this \
              hypothesis must never pass even though the encode/decode \
@@ -1136,14 +1216,14 @@ mod tests {
         let mojibake = mojibake.into_owned();
         assert_ne!(mojibake, RUSSIAN_TEXT, "fixture must actually look garbled");
 
-        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1251, ISO_8859_5)
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1251, ISO_8859_5, false)
             .expect("the correct (windows-1251, ISO-8859-5) hypothesis must pass every gate");
         assert_eq!(
             correct_text, RUSSIAN_TEXT,
             "the correct hypothesis must recover the real text"
         );
 
-        let (wrong_text, _) = try_repair(&mojibake, ISO_8859_5, WINDOWS_1251).expect(
+        let (wrong_text, _) = try_repair(&mojibake, ISO_8859_5, WINDOWS_1251, false).expect(
             "the reversed (ISO-8859-5, windows-1251) hypothesis ALSO passes every \
              gate -- this is exactly the ambiguity that keeps it out of REPAIR_PAIRS",
         );
@@ -1176,7 +1256,7 @@ mod tests {
         let mojibake = mojibake.into_owned();
         assert_ne!(mojibake, EUC_JP_TEXT, "fixture must actually look garbled");
 
-        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1252, EUC_JP)
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1252, EUC_JP, false)
             .expect("the forward (windows-1252, EUC-JP) hypothesis must pass every gate");
         assert_eq!(
             correct_text, EUC_JP_TEXT,
@@ -1184,7 +1264,7 @@ mod tests {
         );
 
         assert_eq!(
-            try_repair(&mojibake, EUC_JP, WINDOWS_1252),
+            try_repair(&mojibake, EUC_JP, WINDOWS_1252, false),
             None,
             "the reversed (EUC_JP, windows-1252) hypothesis must not also pass -- if it \
              ever starts passing, this pair has the same mutual-ambiguity problem that \
@@ -1352,12 +1432,12 @@ mod tests {
         let mojibake = mojibake.into_owned();
         assert_ne!(mojibake, text);
 
-        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1251, UTF_8)
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1251, UTF_8, false)
             .expect("the forward (windows-1251, UTF-8) hypothesis must pass every gate");
         assert_eq!(correct_text, text);
 
         assert_eq!(
-            try_repair(&mojibake, UTF_8, WINDOWS_1251),
+            try_repair(&mojibake, UTF_8, WINDOWS_1251, false),
             None,
             "the reversed (UTF-8, windows-1251) hypothesis must not also pass -- every \
              Unicode string trivially UTF-8-encodes (gate (a) always passes), so this \
@@ -1381,19 +1461,19 @@ mod tests {
             WINDOWS_1251.decode_without_bom_handling(WINDOWS1251_UTF8_RUSSIAN_TEXT.as_bytes());
         let mojibake = mojibake.into_owned();
         assert_eq!(
-            try_repair(&mojibake, WINDOWS_1252, UTF_8),
+            try_repair(&mojibake, WINDOWS_1252, UTF_8, false),
             None,
             "genuine windows-1251 Cyrillic mojibake must not also match (windows-1252, UTF-8)"
         );
         assert_eq!(
-            try_repair(&mojibake, WINDOWS_1250, UTF_8),
+            try_repair(&mojibake, WINDOWS_1250, UTF_8, false),
             None,
             "genuine windows-1251 Cyrillic mojibake must not also match (windows-1250, UTF-8)"
         );
 
         let (m1252, _) = WINDOWS_1252.decode_without_bom_handling(WESTERN_EUROPEAN_TEXT.as_bytes());
         assert_eq!(
-            try_repair(&m1252, WINDOWS_1251, UTF_8),
+            try_repair(&m1252, WINDOWS_1251, UTF_8, false),
             None,
             "genuine windows-1252 Western-European mojibake must not also match \
              (windows-1251, UTF-8)"
@@ -1511,11 +1591,11 @@ mod tests {
         let (mojibake, malformed) = EUC_KR.decode_without_bom_handling(text.as_bytes());
         assert!(!malformed);
         let mojibake = mojibake.into_owned();
-        let (correct, _) = try_repair(&mojibake, EUC_KR, UTF_8)
+        let (correct, _) = try_repair(&mojibake, EUC_KR, UTF_8, false)
             .expect("the forward (EUC-KR, UTF-8) hypothesis must pass every gate");
         assert_eq!(correct, text);
         assert_eq!(
-            try_repair(&mojibake, UTF_8, EUC_KR),
+            try_repair(&mojibake, UTF_8, EUC_KR, false),
             None,
             "the reversed (UTF-8, EUC-KR) hypothesis must not also pass"
         );
@@ -1527,11 +1607,11 @@ mod tests {
         let (mojibake, malformed) = EUC_JP.decode_without_bom_handling(text.as_bytes());
         assert!(!malformed);
         let mojibake = mojibake.into_owned();
-        let (correct, _) = try_repair(&mojibake, EUC_JP, UTF_8)
+        let (correct, _) = try_repair(&mojibake, EUC_JP, UTF_8, false)
             .expect("the forward (EUC-JP, UTF-8) hypothesis must pass every gate");
         assert_eq!(correct, text);
         assert_eq!(
-            try_repair(&mojibake, UTF_8, EUC_JP),
+            try_repair(&mojibake, UTF_8, EUC_JP, false),
             None,
             "the reversed (UTF-8, EUC-JP) hypothesis must not also pass"
         );
@@ -1557,7 +1637,7 @@ mod tests {
             ("EUC-JP", EUC_JP),
         ] {
             assert_eq!(
-                try_repair(&mojibake, enc, UTF_8),
+                try_repair(&mojibake, enc, UTF_8, false),
                 None,
                 "EUC-KR mojibake must not also match ({name}, UTF-8)"
             );
@@ -1572,12 +1652,12 @@ mod tests {
         let (existing_euckr_mojibake, _) =
             WINDOWS_1252.decode_without_bom_handling(&euckr_real_bytes);
         assert_eq!(
-            try_repair(&existing_euckr_mojibake, EUC_KR, UTF_8),
+            try_repair(&existing_euckr_mojibake, EUC_KR, UTF_8, false),
             None,
             "existing (windows-1252, EUC-KR) mojibake must not also match (EUC-KR, UTF-8)"
         );
         assert_eq!(
-            try_repair(&mojibake, WINDOWS_1252, EUC_KR),
+            try_repair(&mojibake, WINDOWS_1252, EUC_KR, false),
             None,
             "new (EUC-KR, UTF-8) mojibake must not also match (windows-1252, EUC-KR)"
         );
@@ -1596,7 +1676,7 @@ mod tests {
             ("EUC-KR", EUC_KR),
         ] {
             assert_eq!(
-                try_repair(&mojibake, enc, UTF_8),
+                try_repair(&mojibake, enc, UTF_8, false),
                 None,
                 "EUC-JP mojibake must not also match ({name}, UTF-8)"
             );
@@ -1609,12 +1689,12 @@ mod tests {
         let (existing_eucjp_mojibake, _) =
             WINDOWS_1252.decode_without_bom_handling(&eucjp_real_bytes);
         assert_eq!(
-            try_repair(&existing_eucjp_mojibake, EUC_JP, UTF_8),
+            try_repair(&existing_eucjp_mojibake, EUC_JP, UTF_8, false),
             None,
             "existing (windows-1252, EUC-JP) mojibake must not also match (EUC-JP, UTF-8)"
         );
         assert_eq!(
-            try_repair(&mojibake, WINDOWS_1252, EUC_JP),
+            try_repair(&mojibake, WINDOWS_1252, EUC_JP, false),
             None,
             "new (EUC-JP, UTF-8) mojibake must not also match (windows-1252, EUC-JP)"
         );
@@ -1681,12 +1761,12 @@ mod tests {
         let mojibake = mojibake.into_owned();
         assert_ne!(mojibake, text);
 
-        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1250, UTF_8)
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1250, UTF_8, false)
             .expect("the forward (windows-1250, UTF-8) hypothesis must pass every gate");
         assert_eq!(correct_text, text);
 
         assert_eq!(
-            try_repair(&mojibake, UTF_8, WINDOWS_1250),
+            try_repair(&mojibake, UTF_8, WINDOWS_1250, false),
             None,
             "the reversed (UTF-8, windows-1250) hypothesis must not also pass"
         );
@@ -1703,19 +1783,19 @@ mod tests {
             WINDOWS_1250.decode_without_bom_handling(WINDOWS1250_UTF8_POLISH_TEXT.as_bytes());
         let mojibake = mojibake.into_owned();
         assert_eq!(
-            try_repair(&mojibake, WINDOWS_1251, UTF_8),
+            try_repair(&mojibake, WINDOWS_1251, UTF_8, false),
             None,
             "genuine windows-1250 Polish mojibake must not also match (windows-1251, UTF-8)"
         );
         assert_eq!(
-            try_repair(&mojibake, WINDOWS_1252, UTF_8),
+            try_repair(&mojibake, WINDOWS_1252, UTF_8, false),
             None,
             "genuine windows-1250 Polish mojibake must not also match (windows-1252, UTF-8)"
         );
 
         let (m1252, _) = WINDOWS_1252.decode_without_bom_handling(WESTERN_EUROPEAN_TEXT.as_bytes());
         assert_eq!(
-            try_repair(&m1252, WINDOWS_1250, UTF_8),
+            try_repair(&m1252, WINDOWS_1250, UTF_8, false),
             None,
             "genuine windows-1252 Western-European mojibake must not also match \
              (windows-1250, UTF-8)"
@@ -1815,12 +1895,12 @@ mod tests {
             assert!(!malformed, "fixture must KOI8-U-decode cleanly: {text}");
             let mojibake = mojibake.into_owned();
 
-            let (correct_text, _) = try_repair(&mojibake, KOI8_U, WINDOWS_1251)
+            let (correct_text, _) = try_repair(&mojibake, KOI8_U, WINDOWS_1251, false)
                 .expect("the forward (KOI8-U, windows-1251) hypothesis must pass every gate");
             assert_eq!(correct_text, text);
 
             assert_eq!(
-                try_repair(&mojibake, WINDOWS_1251, KOI8_U),
+                try_repair(&mojibake, WINDOWS_1251, KOI8_U, false),
                 None,
                 "the reversed (windows-1251, KOI8-U) hypothesis must not also pass \
                  for: {text}"
@@ -1850,7 +1930,7 @@ mod tests {
         assert!(!malformed);
         let ukr_mojibake = ukr_mojibake.into_owned();
         assert_eq!(
-            try_repair(&ukr_mojibake, KOI8_R, WINDOWS_1251),
+            try_repair(&ukr_mojibake, KOI8_R, WINDOWS_1251, false),
             None,
             "genuine Ukrainian-flavored KOI8-U mojibake must not be wrongly matched by the \
              existing (KOI8-R, windows-1251) pair -- KOI8-R has no candidate letters for \
@@ -1862,7 +1942,7 @@ mod tests {
         let (ru_mojibake, malformed) = KOI8_R.decode_without_bom_handling(&real_bytes);
         assert!(!malformed);
         let ru_mojibake = ru_mojibake.into_owned();
-        let koi8u_reading = try_repair(&ru_mojibake, KOI8_U, WINDOWS_1251);
+        let koi8u_reading = try_repair(&ru_mojibake, KOI8_U, WINDOWS_1251, false);
         assert_eq!(
             koi8u_reading.map(|(t, _)| t),
             Some(RUSSIAN_TEXT.to_string()),
@@ -1942,12 +2022,12 @@ mod tests {
         let mojibake = mojibake.into_owned();
         assert_ne!(mojibake, text);
 
-        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1256, UTF_8)
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1256, UTF_8, false)
             .expect("the forward (windows-1256, UTF-8) hypothesis must pass every gate");
         assert_eq!(correct_text, text);
 
         assert_eq!(
-            try_repair(&mojibake, UTF_8, WINDOWS_1256),
+            try_repair(&mojibake, UTF_8, WINDOWS_1256, false),
             None,
             "the reversed (UTF-8, windows-1256) hypothesis must not also pass"
         );
@@ -1969,7 +2049,7 @@ mod tests {
             ("windows-1252", WINDOWS_1252),
         ] {
             assert_eq!(
-                try_repair(&mojibake, enc, UTF_8),
+                try_repair(&mojibake, enc, UTF_8, false),
                 None,
                 "genuine windows-1256 Arabic mojibake must not also match ({name}, UTF-8)"
             );
@@ -1977,7 +2057,7 @@ mod tests {
 
         let (m1252, _) = WINDOWS_1252.decode_without_bom_handling(WESTERN_EUROPEAN_TEXT.as_bytes());
         assert_eq!(
-            try_repair(&m1252, WINDOWS_1256, UTF_8),
+            try_repair(&m1252, WINDOWS_1256, UTF_8, false),
             None,
             "genuine windows-1252 Western-European mojibake must not also match \
              (windows-1256, UTF-8)"
@@ -2033,12 +2113,12 @@ mod tests {
         let mojibake = mojibake.into_owned();
         assert_ne!(mojibake, text);
 
-        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1258, UTF_8)
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1258, UTF_8, false)
             .expect("the forward (windows-1258, UTF-8) hypothesis must pass every gate");
         assert_eq!(correct_text, text);
 
         assert_eq!(
-            try_repair(&mojibake, UTF_8, WINDOWS_1258),
+            try_repair(&mojibake, UTF_8, WINDOWS_1258, false),
             None,
             "the reversed (UTF-8, windows-1258) hypothesis must not also pass"
         );
@@ -2054,7 +2134,7 @@ mod tests {
             ("windows-1252", WINDOWS_1252),
         ] {
             assert_eq!(
-                try_repair(&mojibake, enc, UTF_8),
+                try_repair(&mojibake, enc, UTF_8, false),
                 None,
                 "genuine windows-1258 Vietnamese mojibake must not also match ({name}, UTF-8)"
             );
@@ -2062,7 +2142,7 @@ mod tests {
 
         let (m1252, _) = WINDOWS_1252.decode_without_bom_handling(WESTERN_EUROPEAN_TEXT.as_bytes());
         assert_eq!(
-            try_repair(&m1252, WINDOWS_1258, UTF_8),
+            try_repair(&m1252, WINDOWS_1258, UTF_8, false),
             None,
             "genuine windows-1252 Western-European mojibake must not also match \
              (windows-1258, UTF-8)"
@@ -2122,12 +2202,12 @@ mod tests {
         let mojibake = mojibake.into_owned();
         assert_ne!(mojibake, text);
 
-        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1253, UTF_8)
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1253, UTF_8, false)
             .expect("the forward (windows-1253, UTF-8) hypothesis must pass every gate");
         assert_eq!(correct_text, text);
 
         assert_eq!(
-            try_repair(&mojibake, UTF_8, WINDOWS_1253),
+            try_repair(&mojibake, UTF_8, WINDOWS_1253, false),
             None,
             "the reversed (UTF-8, windows-1253) hypothesis must not also pass"
         );
@@ -2143,7 +2223,7 @@ mod tests {
             ("windows-1252", WINDOWS_1252),
         ] {
             assert_eq!(
-                try_repair(&mojibake, enc, UTF_8),
+                try_repair(&mojibake, enc, UTF_8, false),
                 None,
                 "genuine windows-1253 Greek mojibake must not also match ({name}, UTF-8)"
             );
@@ -2151,7 +2231,7 @@ mod tests {
 
         let (m1252, _) = WINDOWS_1252.decode_without_bom_handling(WESTERN_EUROPEAN_TEXT.as_bytes());
         assert_eq!(
-            try_repair(&m1252, WINDOWS_1253, UTF_8),
+            try_repair(&m1252, WINDOWS_1253, UTF_8, false),
             None,
             "genuine windows-1252 Western-European mojibake must not also match \
              (windows-1253, UTF-8)"
@@ -2173,12 +2253,30 @@ mod tests {
         let (greek_mojibake, _) = WINDOWS_1253.decode_without_bom_handling(GREEK_TEXT.as_bytes());
         let greek_mojibake = greek_mojibake.into_owned();
 
-        assert_eq!(try_repair(&arabic_mojibake, WINDOWS_1258, UTF_8), None);
-        assert_eq!(try_repair(&arabic_mojibake, WINDOWS_1253, UTF_8), None);
-        assert_eq!(try_repair(&vietnamese_mojibake, WINDOWS_1256, UTF_8), None);
-        assert_eq!(try_repair(&vietnamese_mojibake, WINDOWS_1253, UTF_8), None);
-        assert_eq!(try_repair(&greek_mojibake, WINDOWS_1256, UTF_8), None);
-        assert_eq!(try_repair(&greek_mojibake, WINDOWS_1258, UTF_8), None);
+        assert_eq!(
+            try_repair(&arabic_mojibake, WINDOWS_1258, UTF_8, false),
+            None
+        );
+        assert_eq!(
+            try_repair(&arabic_mojibake, WINDOWS_1253, UTF_8, false),
+            None
+        );
+        assert_eq!(
+            try_repair(&vietnamese_mojibake, WINDOWS_1256, UTF_8, false),
+            None
+        );
+        assert_eq!(
+            try_repair(&vietnamese_mojibake, WINDOWS_1253, UTF_8, false),
+            None
+        );
+        assert_eq!(
+            try_repair(&greek_mojibake, WINDOWS_1256, UTF_8, false),
+            None
+        );
+        assert_eq!(
+            try_repair(&greek_mojibake, WINDOWS_1258, UTF_8, false),
+            None
+        );
     }
 
     // ----------------------------------------------------------------
