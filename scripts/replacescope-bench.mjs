@@ -22,6 +22,7 @@ const cases = [
   ["ASCII", "The quick brown fox jumps over the lazy dog.\n", "missing needle"],
   ["Latin", "Café déjà vu naïve e\u0301 ﬁ.\n", "missing needle"],
   ["CJK", "這是一段測試中文與日本語のテスト。\n", "missing needle"],
+  ["CJK diverse", Array.from({ length: 1024 }, (_, i) => String.fromCharCode(0x4e00 + i)).join(""), "missing needle"],
   ["ASCII matches", "Record status=OK. ", "OK"],
 ];
 

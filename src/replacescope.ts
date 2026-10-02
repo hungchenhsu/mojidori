@@ -421,17 +421,24 @@ function nfkdNormalizerFor(caseSensitive: boolean): (text: string) => string {
   // Each document code point passes through this function. ASCII has an
   // identity NFKD mapping, and only A–Z change under lowercase, so avoid
   // calling the Unicode normalizer for these single-code-unit inputs.
-  // Queries with multiple units and all non-ASCII text retain upstream's
-  // whole-string NFKD-then-lowercase order.
+  // The BMP CJK Unified Ideographs block (U+4E00..U+9FFF) also has
+  // identity NFKD and lowercase mappings, exhaustively checked in tests.
+  // Do not extend this to compatibility ideographs (e.g. U+F900), which
+  // do decompose. Multi-unit queries and all other characters retain
+  // upstream's whole-string NFKD-then-lowercase order.
   if (caseSensitive) {
-    return (text: string) =>
-      text.length === 1 && text.charCodeAt(0) < 128 ? text : text.normalize("NFKD");
+    return (text: string) => {
+      const code = text.charCodeAt(0);
+      return text.length === 1 && (code < 128 || (code >= 0x4e00 && code <= 0x9fff))
+        ? text : text.normalize("NFKD");
+    };
   }
   return (text: string) => {
     const code = text.charCodeAt(0);
     if (text.length === 1 && code < 128) {
       return code >= 65 && code <= 90 ? String.fromCharCode(code + 32) : text;
     }
+    if (text.length === 1 && code >= 0x4e00 && code <= 0x9fff) return text;
     return text.normalize("NFKD").toLowerCase();
   };
 }
@@ -636,8 +643,8 @@ function matchNormalizedChar(
  * making the reason explicit rather than incidental.
  *
  * Cost: O(range length x query length) in the worst case, with one
- * `String.prototype.normalize` call per code point scanned. Ordinary prose
- * is roughly 3x the old exact-substring scan (~50ms for a 1 MB selection);
+ * `String.prototype.normalize` call per code point outside the ASCII/BMP
+ * unified-CJK fast paths. These reduce constant costs but not complexity;
  * highly repetitive text with a long query is the bad shape (200k repeats
  * of one character with a 2000-character query takes ~2s). This is CM6's
  * own asymptotic behavior — its whole-document Replace All pays the same

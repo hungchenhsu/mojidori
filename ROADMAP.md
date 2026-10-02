@@ -256,6 +256,15 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   synchronous-work limits; this is an ASCII-path optimization, not an
   asynchronous replacement engine.
 
+- [x] Further mitigate #337: bypass normalization for the BMP CJK Unified
+  Ideographs block (U+4E00..U+9FFF), whose NFKD/lowercase mappings are
+  exhaustively checked for all 20,992 code points. Compatibility ideographs,
+  astral characters, other scripts, and multi-unit queries retain the
+  upstream path. CodeMirror differential fixtures cover block edges and
+  mixed scripts; the benchmark now includes 1,024 distinct CJK characters
+  to avoid relying only on a small repeated vocabulary. This adds no cache
+  or memory growth; long-query and dense-match synchronous limits remain.
+
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:
