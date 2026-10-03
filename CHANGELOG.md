@@ -10,28 +10,37 @@ Semantic Versioning compatibility guarantees.
 
 ### Fixed
 
-- 修正 mojibake 偵測：完整文件不再容忍尾端不完整的 byte sequence，
-  避免提出確定無法套用的修復候選；真正截短的取樣仍保留原本處理
-  （#365，修正 #362）。
-- 移除 chardetng 結構上無法確認的 `(windows-1252, GB18030)` 偵測組合，
-  保留明確指定 GB18030 的嚴格修復與 round-trip 驗證（#366，修正 #336）。
-- 補齊 CodeMirror 搜尋／取代及摺疊介面的日文、簡體中文翻譯，
-  語言切換保留搜尋內容（#369，修正 #89）。
+- Mojibake detection no longer tolerates an incomplete trailing byte
+  sequence in a complete document, so it stops offering repair
+  candidates that can never apply; genuinely truncated samples keep the
+  previous handling (#365, fixes #362).
+- Removed the `(windows-1252, GB18030)` detection pair, which chardetng
+  can structurally never confirm; explicitly chosen GB18030 repair keeps
+  its strict apply path and round-trip verification (#366, fixes #336).
+- Completed the Japanese and Simplified Chinese translations of the
+  CodeMirror search/replace and folding UI; switching languages keeps
+  the current search contents (#369, fixes #89).
 
 ### Performance
 
-- 選取範圍內取代對 ASCII 與基本漢字區段 U+4E00..U+9FFF 略過恆等的
-  NFKD normalization，並保留 CodeMirror 比對語意。新增可重現的 CPU
-  benchmark；長 query 與大量 matches 仍為同步處理（#367、#371，部分改善 #337）。
+- Replace in Selection skips identity NFKD normalization for ASCII and
+  the basic CJK Unified Ideographs block U+4E00..U+9FFF while preserving
+  CodeMirror's matching semantics. Adds a reproducible CPU benchmark;
+  long queries and dense matches are still processed synchronously
+  (#367, #371, partially addresses #337).
 
 ### Maintenance
 
-- 測試暫存路徑加入 process ID 與遞增序號，避免平行測試互相干擾
-  （#368，修正 #236）。
-- 依 GitHub release 與 updater feed 實際狀態修正文檔（#364，修正 #346）。
-- 新增外部改名的跨平台 headless probe。Windows 實測證實持續保留
-  file handle（含 metadata-only）會阻擋父目錄改名，因此未採用該方案；
-  production watcher 與儲存行為未變，#280 仍待修復（#370）。
+- Test temp paths now include the process ID and an incrementing
+  sequence number so parallel tests no longer interfere with each other
+  (#368, fixes #236).
+- Corrected the docs to match the actual GitHub release and updater
+  feed state (#364, fixes #346).
+- Added a cross-platform headless probe for external renames. Windows
+  measurements confirmed that continuously retaining a file handle
+  (including a metadata-only one) blocks renaming the parent directory,
+  so that approach was not adopted; production watcher and save behavior
+  are unchanged and #280 remains open (#370).
 
 ## [v0.9.0-alpha.1] - 2026-07-28
 
