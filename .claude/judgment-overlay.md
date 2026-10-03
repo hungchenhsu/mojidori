@@ -1,4 +1,4 @@
-# Judgment Overlay — Mojidori（最後查證日期：2026-09-24）
+# Judgment Overlay — Mojidori（最後查證日期：2026-10-03）
 
 本 repo 專屬判準（危險域、驗證指令、權限特例、教訓寫回），由 repo 根目錄 CLAUDE.md 正式引用；通用規則見全域 `~/.claude/CLAUDE.md`。內容更新時同步上方查證日期；若本檔與 repo 根目錄 CLAUDE.md 衝突，以該檔為準並更新本檔。
 
@@ -39,6 +39,8 @@ Mojidori 是本機文字編輯器，「使用者檔案的資料完整性」等�
 
 已知死路（動手前先讀）：
 
+- #280 的 retained-handle 路徑追蹤不是無副作用的跨平台方案：Windows CI 實測一般讀取與 metadata-only（desired access = 0、read/write/delete sharing）handle 都會阻擋父目錄改名，關閉 handle 後才成功。macOS 的 `F_GETPATH` 可跟隨父目錄改名，不代表 Windows 也可；保留 handle 前必須量測其對外部 rename/delete/atomic replace 的影響。重現測試與證據見 `src-tauri/tests/rename_handle_probe.rs`、`docs/rename-handle-probe.md`（2026-10-03）。
+- Unicode normalization 效能快取要量測高字元多樣性輸入：本輪 256-entry cache 改善短字彙重複語料，卻讓超過容量的漢字語料退步，故未採用。最後只對已逐碼位驗證恆等映射的 ASCII／BMP unified-CJK 走快速路徑，不能把 compatibility ideographs 一併略過（#367、#371，2026-10-03）。
 - `encoding_rs::Encoding::new_encoder()` 對 UTF-16LE/BE 回傳的其實是 UTF-8 encoder（`output_encoding()` 規則：UTF-16/replacement 的 output encoding 都是 UTF-8）——任何 streaming encode 路徑對 UTF-16 用它會靜默寫出錯誤 bytes；`streamreplace.rs` 因此顯式拒絕 UTF-16，未來新增 streaming-encode 功能前先查這條（streamreplace.rs 模組註解，2026-07-12）。
 - `gh pr checks --watch` 在 PR 剛建立時會誤報通過——先輪詢 check 註冊完成再 watch（memory：gh-pr-checks-watch-race）。
 - 選單建構必須在 Tauri `setup()` 內（PathResolver state 順序）；啟動期 panic 要靠啟動煙霧測試抓，CI 一般測試抓不到（memory：plume-session-1-status）。

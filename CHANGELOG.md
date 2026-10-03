@@ -6,6 +6,42 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 Mojidori is pre-1.0 (alpha); version numbers do not yet carry strict
 Semantic Versioning compatibility guarantees.
 
+## [Unreleased]
+
+### Fixed
+
+- Mojibake detection no longer tolerates an incomplete trailing byte
+  sequence in a complete document, so it stops offering repair
+  candidates that can never apply; genuinely truncated samples keep the
+  previous handling (#365, fixes #362).
+- Removed the `(windows-1252, GB18030)` detection pair, which chardetng
+  can structurally never confirm; explicitly chosen GB18030 repair keeps
+  its strict apply path and round-trip verification (#366, fixes #336).
+- Completed the Japanese and Simplified Chinese translations of the
+  CodeMirror search/replace and folding UI; switching languages keeps
+  the current search contents (#369, fixes #89).
+
+### Performance
+
+- Replace in Selection skips identity NFKD normalization for ASCII and
+  the basic CJK Unified Ideographs block U+4E00..U+9FFF while preserving
+  CodeMirror's matching semantics. Adds a reproducible CPU benchmark;
+  long queries and dense matches are still processed synchronously
+  (#367, #371, partially addresses #337).
+
+### Maintenance
+
+- Test temp paths now include the process ID and an incrementing
+  sequence number so parallel tests no longer interfere with each other
+  (#368, fixes #236).
+- Corrected the docs to match the actual GitHub release and updater
+  feed state (#364, fixes #346).
+- Added a cross-platform headless probe for external renames. Windows
+  measurements confirmed that continuously retaining a file handle
+  (including a metadata-only one) blocks renaming the parent directory,
+  so that approach was not adopted; production watcher and save behavior
+  are unchanged and #280 remains open (#370).
+
 ## [v0.9.0-alpha.1] - 2026-07-28
 
 ### Added

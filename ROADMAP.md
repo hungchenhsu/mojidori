@@ -247,8 +247,9 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   Explicit GB18030 apply remains unchanged and has a four-byte-character
   round-trip regression. No detector gate is relaxed.
 - [x] Mitigate #337: single-ASCII-code-unit normalization bypasses NFKD
-  and uses the equivalent ASCII lowercase mapping. All non-ASCII inputs
-  and multi-unit queries preserve the upstream normalization order.
+  and uses the equivalent ASCII lowercase mapping. At this step all
+  non-ASCII inputs and multi-unit queries preserve the upstream order;
+  the later CJK optimization is recorded below.
   The existing CodeMirror differential sweeps plus all 128 ASCII units
   beside Unicode cover both case modes and whole-word matching. An
   informational `scripts/replacescope-bench.mjs` measures four corpora
@@ -272,6 +273,10 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   document-path, and save behavior are unchanged. Windows CI disproved the
   continuously retained-handle approach: even metadata-only access with full
   sharing blocks parent-directory renames until the handle is closed.
+- [x] Reconcile the pass for handoff: record the delivered changes under
+  CHANGELOG's Unreleased section, update DIRECTION's current source state,
+  and preserve the rejected Windows-handle and normalization-cache
+  approaches in the judgment overlay. Source version remains 0.9.0.
 
 ## Explicit non-goals
 

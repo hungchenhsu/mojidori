@@ -63,6 +63,22 @@ end-to-end update acceptance. Future release publication still requires
 user confirmation (§7). The cycle records below retain their historical
 implementation and acceptance context.
 
+- **2026-10-03 correctness pass** (PRs #364–#371, unreleased): fixed
+  complete-document mojibake candidate/apply disagreement (#362), removed
+  the unreachable GB18030 detection pair (#336), isolated test temp paths
+  (#236), and completed Japanese/Simplified Chinese CodeMirror phrases
+  (#89). Scoped replacement now bypasses identity normalization for ASCII
+  and BMP unified CJK; long-query/dense-match synchronous limits remain
+  (#337). The #280 handle probe rejected continuous handle retention as a
+  cross-platform strategy: Windows denies parent-directory renames even
+  with metadata-only access and full sharing until the handle closes.
+  See [the probe evidence](docs/rename-handle-probe.md) and ROADMAP.md's
+  dated pass record. Integrated verification: 1,314 frontend tests; macOS
+  669 Rust unit tests plus 6 integration probes (3 ignored unit tests).
+  Windows has a different platform-gated unit count and its own 6 probes.
+  #280, #337, #338, #314 and #339 remain open; #329 still awaits the user's
+  dual-WebView visual acceptance. App version remains 0.9.0; the published
+  release/feed snapshot above is unchanged by these source changes.
 - **v0.9 cycle complete** (planned 2026-07-27 under the standing
   overnight delegation, adversarially reviewed before start
   (AGREE-WITH-CHANGES, all seven required changes adopted), PRs
