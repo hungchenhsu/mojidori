@@ -14,6 +14,7 @@
 // document and the panel closes; zero matches or a failed run show their
 // result inline and leave the panel open so the user can adjust and retry
 // without losing their input.
+import { installModal } from "./modal";
 import { message as messageDialog } from "@tauri-apps/plugin-dialog";
 import { t } from "./i18n";
 import { streamReplaceInFile } from "./ipc";
@@ -207,6 +208,7 @@ export function showStreamReplace(
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  installModal(overlay, panel, { label: t("modal.replaceInFile") });
   searchInput.focus();
   setTimeout(() => {
     document.addEventListener("mousedown", onAway);

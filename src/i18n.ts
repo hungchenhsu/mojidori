@@ -19,8 +19,19 @@ export interface Messages {
   "app.untitled": string;
   "app.untitledNumbered": (n: number) => string;
 
+  // Accessible names for modal panels that have no visible title (see
+  // modal.ts installModal).
+  "modal.goToLine": string;
+  "modal.quickOpen": string;
+  "modal.commandPalette": string;
+  "modal.findInFiles": string;
+  "modal.replaceInFile": string;
+  "modal.compareEncodings": string;
+
   "tabs.closeAria": (title: string) => string;
   "tabs.newTabAria": string;
+  "tabs.listAria": string;
+  "tabs.unsavedAria": (title: string) => string;
 
   // Tab-strip right-click menu (ROADMAP.md Track C "Tab context menu");
   // see main.ts's showTabContextMenu. Reveal has two platform-variant
@@ -35,6 +46,7 @@ export interface Messages {
 
   "statusbar.noFile": string;
   "statusbar.cursor": (line: number, column: number) => string;
+  "statusbar.goToLineTitle": string;
   "statusbar.encodingWithBom": (encoding: string) => string;
   "statusbar.readonlyPreview": (size: string) => string;
   "statusbar.userReadOnly": string;
@@ -200,6 +212,12 @@ export interface Messages {
   "findInFiles.replaceFailuresHeading": (count: number) => string;
 
   "goto.placeholder": string;
+  /** Hint under the Go to Line field: where the cursor is now, and the
+   *  document's line count when it's known (not for a large file whose
+   *  line index is still being built). */
+  "goto.hintWithTotal": (line: number, total: number) => string;
+  "goto.hint": (line: number) => string;
+  "goto.invalid": string;
 
   "quickOpen.searchPlaceholder": string;
   "quickOpen.noRecent": string;
@@ -572,9 +590,17 @@ export interface Messages {
 const en: Messages = {
   "app.untitled": "Untitled",
   "app.untitledNumbered": (n) => `Untitled-${n}`,
+  "modal.goToLine": "Go to Line",
+  "modal.quickOpen": "Open Recent",
+  "modal.commandPalette": "Command Palette",
+  "modal.findInFiles": "Find in Files",
+  "modal.replaceInFile": "Replace in File",
+  "modal.compareEncodings": "Compare Encodings",
 
   "tabs.closeAria": (title) => `Close ${title}`,
   "tabs.newTabAria": "New tab",
+  "tabs.listAria": "Open files",
+  "tabs.unsavedAria": (title) => `${title}, unsaved changes`,
 
   "tabs.closeOthers": "Close Others",
   "tabs.closeTabsToRight": "Close Tabs to the Right",
@@ -584,6 +610,7 @@ const en: Messages = {
 
   "statusbar.noFile": "No file",
   "statusbar.cursor": (line, column) => `Ln ${line}, Col ${column}`,
+  "statusbar.goToLineTitle": "Go to Line…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `Read-only preview of ${size} file`,
   "statusbar.userReadOnly": "🔒 Read-only",
@@ -713,6 +740,9 @@ const en: Messages = {
     `${count} file${count === 1 ? "" : "s"} could not be replaced:`,
 
   "goto.placeholder": "Go to line:column…",
+  "goto.hintWithTotal": (line, total) => `Current line ${line} of ${total}. Type a line, or line:column.`,
+  "goto.hint": (line) => `Current line ${line}. Type a line, or line:column.`,
+  "goto.invalid": "Enter a line number, or line:column (e.g. 120:4).",
 
   "quickOpen.searchPlaceholder": "Search recent files…",
   "quickOpen.noRecent": "No recent files",
@@ -1025,9 +1055,17 @@ const en: Messages = {
 const zhTW: Messages = {
   "app.untitled": "未命名",
   "app.untitledNumbered": (n) => `未命名-${n}`,
+  "modal.goToLine": "跳至行號",
+  "modal.quickOpen": "開啟最近使用的檔案",
+  "modal.commandPalette": "命令選擇區",
+  "modal.findInFiles": "在檔案中尋找",
+  "modal.replaceInFile": "在檔案中取代",
+  "modal.compareEncodings": "比較編碼",
 
   "tabs.closeAria": (title) => `關閉 ${title}`,
   "tabs.newTabAria": "新增分頁",
+  "tabs.listAria": "已開啟的檔案",
+  "tabs.unsavedAria": (title) => `${title}，有未儲存的變更`,
 
   "tabs.closeOthers": "關閉其他分頁",
   "tabs.closeTabsToRight": "關閉右側分頁",
@@ -1037,6 +1075,7 @@ const zhTW: Messages = {
 
   "statusbar.noFile": "無檔案",
   "statusbar.cursor": (line, column) => `第 ${line} 行，第 ${column} 欄`,
+  "statusbar.goToLineTitle": "跳至行號…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `唯讀預覽（檔案大小 ${size}）`,
   "statusbar.userReadOnly": "🔒 唯讀",
@@ -1155,6 +1194,9 @@ const zhTW: Messages = {
   "findInFiles.replaceFailuresHeading": (count) => `${count} 個檔案未變更：`,
 
   "goto.placeholder": "跳至行:欄…",
+  "goto.hintWithTotal": (line, total) => `目前在第 ${line} 行，共 ${total} 行。輸入行號，或「行:欄」。`,
+  "goto.hint": (line) => `目前在第 ${line} 行。輸入行號，或「行:欄」。`,
+  "goto.invalid": "請輸入行號，或「行:欄」（例如 120:4）。",
 
   "quickOpen.searchPlaceholder": "搜尋最近的檔案…",
   "quickOpen.noRecent": "沒有最近的檔案",
@@ -1429,9 +1471,17 @@ const zhTW: Messages = {
 const ja: Messages = {
   "app.untitled": "無題",
   "app.untitledNumbered": (n) => `無題-${n}`,
+  "modal.goToLine": "行へ移動",
+  "modal.quickOpen": "最近使ったファイルを開く",
+  "modal.commandPalette": "コマンドパレット",
+  "modal.findInFiles": "ファイルを横断して検索",
+  "modal.replaceInFile": "ファイル内で置換",
+  "modal.compareEncodings": "エンコーディングを比較",
 
   "tabs.closeAria": (title) => `${title} を閉じる`,
   "tabs.newTabAria": "新しいタブ",
+  "tabs.listAria": "開いているファイル",
+  "tabs.unsavedAria": (title) => `${title}（未保存の変更あり）`,
 
   "tabs.closeOthers": "他のタブを閉じる",
   "tabs.closeTabsToRight": "右側のタブを閉じる",
@@ -1441,6 +1491,7 @@ const ja: Messages = {
 
   "statusbar.noFile": "ファイルなし",
   "statusbar.cursor": (line, column) => `行 ${line}、列 ${column}`,
+  "statusbar.goToLineTitle": "行へ移動…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `読み取り専用プレビュー（ファイルサイズ ${size}）`,
   "statusbar.userReadOnly": "🔒 読み取り専用",
@@ -1559,6 +1610,9 @@ const ja: Messages = {
   "findInFiles.replaceFailuresHeading": (count) => `${count} 件のファイルを変更できませんでした:`,
 
   "goto.placeholder": "行:列に移動…",
+  "goto.hintWithTotal": (line, total) => `現在 ${line} 行目（全 ${total} 行）。行番号または「行:列」を入力。`,
+  "goto.hint": (line) => `現在 ${line} 行目。行番号または「行:列」を入力。`,
+  "goto.invalid": "行番号または「行:列」を入力してください（例: 120:4）。",
 
   "quickOpen.searchPlaceholder": "最近使用したファイルを検索…",
   "quickOpen.noRecent": "最近使用したファイルはありません",
@@ -1862,9 +1916,17 @@ const ja: Messages = {
 const zhCN: Messages = {
   "app.untitled": "未命名",
   "app.untitledNumbered": (n) => `未命名-${n}`,
+  "modal.goToLine": "跳转到行",
+  "modal.quickOpen": "打开最近的文件",
+  "modal.commandPalette": "命令面板",
+  "modal.findInFiles": "在文件中查找",
+  "modal.replaceInFile": "在文件中替换",
+  "modal.compareEncodings": "比较编码",
 
   "tabs.closeAria": (title) => `关闭 ${title}`,
   "tabs.newTabAria": "新建标签页",
+  "tabs.listAria": "已打开的文件",
+  "tabs.unsavedAria": (title) => `${title}，有未保存的更改`,
 
   "tabs.closeOthers": "关闭其他标签页",
   "tabs.closeTabsToRight": "关闭右侧标签页",
@@ -1874,6 +1936,7 @@ const zhCN: Messages = {
 
   "statusbar.noFile": "无文件",
   "statusbar.cursor": (line, column) => `第 ${line} 行，第 ${column} 列`,
+  "statusbar.goToLineTitle": "跳转到行…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `只读预览（文件大小 ${size}）`,
   "statusbar.userReadOnly": "🔒 只读",
@@ -1992,6 +2055,9 @@ const zhCN: Messages = {
   "findInFiles.replaceFailuresHeading": (count) => `${count} 个文件未变更：`,
 
   "goto.placeholder": "跳转到行:列…",
+  "goto.hintWithTotal": (line, total) => `当前在第 ${line} 行，共 ${total} 行。输入行号，或“行:列”。`,
+  "goto.hint": (line) => `当前在第 ${line} 行。输入行号，或“行:列”。`,
+  "goto.invalid": "请输入行号，或“行:列”（例如 120:4）。",
 
   "quickOpen.searchPlaceholder": "搜索最近的文件…",
   "quickOpen.noRecent": "没有最近的文件",

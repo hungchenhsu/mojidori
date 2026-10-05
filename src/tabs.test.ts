@@ -530,8 +530,8 @@ describe("TabStore pointer drag-to-reorder", () => {
     expect(tabs[0].style.transform).toBe(`translateX(${DRAG_THRESHOLD_PX}px)`);
   });
 
-  it("never enters dragging mode for a middle or right-click, but still selects on release", () => {
-    for (const button of [1, 2]) {
+  it("never enters dragging mode for a right-click, but still selects on release", () => {
+    for (const button of [2]) {
       const { store, container, events } = makeStore();
       store.add(makeDoc(1));
       store.add(makeDoc(2));
@@ -833,4 +833,127 @@ describe("closeSequentially", () => {
     await donePromise;
     expect(order).toEqual(["start:1", "end:1", "start:2", "end:2"]);
   });
+});
+
+describe("TabStore accessibility and keyboard", () => {
+  function threeTabs() {
+    const ctx = makeStore();
+    ctx.store.add(makeDoc(1, "/a/one.txt"));
+    ctx.store.add(makeDoc(2, "/a/two.txt"));
+    ctx.store.add(makeDoc(3, "/a/three.txt"));
+    ctx.store.setActive(2);
+    // Mirror main.ts: selecting re-renders the strip.
+    ctx.events.onSelect.mockImplementation((id: number) => {
+      ctx.store.setActive(id);
+      ctx.store.render();
+    });
+    ctx.store.render();
+    document.body.append(ctx.container);
+    return ctx;
+  }
+
+  it("renders an ARIA tablist with a roving tabindex", () => {
+    const { container } = threeTabs();
+    try {
+      expect(container.getAttribute("role")).toBe("tablist");
+      expect(container.getAttribute("aria-label")).toBe("Open files");
+      const tabs = [...container.querySelectorAll<HTMLElement>(".tab")];
+      expect(tabs.map((t) => t.getAttribute("role"))).toEqual(["tab", "tab", "tab"]);
+      expect(tabs.map((t) => t.getAttribute("aria-selected"))).toEqual(["false", "true", "false"]);
+      expect(tabs.map((t) => t.tabIndex)).toEqual([-1, 0, -1]);
+      for (const close of container.querySelectorAll<HTMLButtonElement>(".tab-close")) {
+        expect(close.tabIndex).toBe(-1);
+      }
+    } finally {
+      container.remove();
+    }
+  });
+
+  it("announces unsaved changes in the tab's accessible name", () => {
+    const { store, container } = threeTabs();
+    try {
+      store.get(1)!.dirty = true;
+      store.render();
+      const tabs = container.querySelectorAll<HTMLElement>(".tab");
+      expect(tabs[0].ariaLabel).toBe("one.txt, unsaved changes");
+      expect(tabs[0].classList.contains("dirty")).toBe(true);
+      expect(tabs[1].ariaLabel).toBe("two.txt");
+    } finally {
+      container.remove();
+    }
+  });
+
+  it("moves selection and focus with arrow keys, wrapping, and Home/End", () => {
+    const { store, container, events } = threeTabs();
+    const press = (key: string) => {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      (document.activeElement as HTMLElement).dispatchEvent(event);
+      return event;
+    };
+    try {
+      container.querySelector<HTMLElement>(".tab.active")!.focus();
+      expect(press("ArrowRight").defaultPrevented).toBe(true);
+      expect(store.activeId).toBe(3);
+      expect(document.activeElement).toBe(container.querySelector(".tab.active"));
+      press("ArrowRight");
+      expect(store.activeId).toBe(1);
+      press("ArrowLeft");
+      expect(store.activeId).toBe(3);
+      press("Home");
+      expect(store.activeId).toBe(1);
+      press("End");
+      expect(store.activeId).toBe(3);
+      expect(document.activeElement?.textContent).toContain("three.txt");
+      // Other keys are left alone.
+      const calls = events.onSelect.mock.calls.length;
+      expect(press("a").defaultPrevented).toBe(false);
+      expect(events.onSelect.mock.calls.length).toBe(calls);
+    } finally {
+      container.remove();
+    }
+  });
+
+  it("closes on middle-click without activating the tab first", () => {
+    const { container, events } = threeTabs();
+    try {
+      const tabs = container.querySelectorAll<HTMLElement>(".tab");
+      const first = tabs[0];
+      first.dispatchEvent(new PointerEvent("pointerdown", { button: 1, pointerId: 1, bubbles: true }));
+      const press = new MouseEvent("mousedown", { button: 1, bubbles: true, cancelable: true });
+      first.dispatchEvent(press);
+      // Cancelled at press time so WebView2 never starts autoscroll.
+      expect(press.defaultPrevented).toBe(true);
+      first.dispatchEvent(new PointerEvent("pointerup", { button: 1, pointerId: 1, bubbles: true }));
+      first.dispatchEvent(new MouseEvent("mouseup", { button: 1, bubbles: true }));
+      expect(events.onSelect).not.toHaveBeenCalled();
+      expect(events.onClose).toHaveBeenCalledWith(1);
+
+      // Press on one tab, release on another: nothing closes.
+      events.onClose.mockClear();
+      tabs[0].dispatchEvent(new MouseEvent("mousedown", { button: 1, bubbles: true, cancelable: true }));
+      tabs[1].dispatchEvent(new MouseEvent("mouseup", { button: 1, bubbles: true }));
+      expect(events.onClose).not.toHaveBeenCalled();
+
+      // Press on a tab, release off the tabs: the press ends there, so a
+      // later middle gesture that starts elsewhere and ends on that tab
+      // doesn't close it.
+      tabs[0].dispatchEvent(new MouseEvent("mousedown", { button: 1, bubbles: true, cancelable: true }));
+      document.body.dispatchEvent(new MouseEvent("mouseup", { button: 1, bubbles: true }));
+      tabs[0].dispatchEvent(new MouseEvent("mouseup", { button: 1, bubbles: true }));
+      expect(events.onClose).not.toHaveBeenCalled();
+      // Same when the window loses focus mid-press.
+      tabs[0].dispatchEvent(new MouseEvent("mousedown", { button: 1, bubbles: true, cancelable: true }));
+      window.dispatchEvent(new Event("blur"));
+      tabs[0].dispatchEvent(new MouseEvent("mouseup", { button: 1, bubbles: true }));
+      expect(events.onClose).not.toHaveBeenCalled();
+
+      // A right-button release is not a close.
+      tabs[0].dispatchEvent(new MouseEvent("mousedown", { button: 2, bubbles: true, cancelable: true }));
+      tabs[0].dispatchEvent(new MouseEvent("mouseup", { button: 2, bubbles: true }));
+      expect(events.onClose).not.toHaveBeenCalled();
+    } finally {
+      container.remove();
+    }
+  });
+
 });

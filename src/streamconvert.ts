@@ -15,6 +15,7 @@
 // showLossySaveConfirm verbatim — the exact same dialog save_document's own
 // lossy rejection drives — since streamconvert.rs's report shares the
 // identical LossyReport shape.
+import { installModal } from "./modal";
 import { message as messageDialog } from "@tauri-apps/plugin-dialog";
 import { t } from "./i18n";
 import { streamConvertFile } from "./ipc";
@@ -53,6 +54,8 @@ function showBusyOverlay(message: string): () => void {
   dialog.appendChild(text);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  dialog.setAttribute("aria-busy", "true");
+  installModal(overlay, dialog, { labelledBy: text });
   return () => overlay.remove();
 }
 

@@ -16,6 +16,7 @@
 // message, the post-execute summary, selection -> execute() params) lives
 // in replaceinfiles-ui.ts so it's unit-testable without a DOM; this module
 // is just the wiring.
+import { installModal } from "./modal";
 import { confirm as confirmDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { t } from "./i18n";
 import {
@@ -120,6 +121,16 @@ export function showFindInFiles(
   regexLabel.appendChild(regexBox);
   regexLabel.appendChild(document.createTextNode(".*"));
   regexLabel.title = t("findInFiles.regex");
+
+  // The visible "Aa" / ".*" glyphs aren't names; give the checkboxes real
+  // ones, and mirror their state onto the chip labels (styles.css).
+  caseBox.setAttribute("aria-label", t("findInFiles.matchCase"));
+  regexBox.setAttribute("aria-label", t("findInFiles.regex"));
+  for (const box of [caseBox, regexBox]) {
+    box.addEventListener("change", () => {
+      box.parentElement?.classList.toggle("is-checked", box.checked);
+    });
+  }
 
   controls.appendChild(folderButton);
   controls.appendChild(input);
@@ -821,6 +832,7 @@ export function showFindInFiles(
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  installModal(overlay, panel, { label: t("modal.findInFiles") });
   if (lastFolder) input.focus();
   setTimeout(() => document.addEventListener("mousedown", onAway), 0);
 }

@@ -1310,6 +1310,24 @@ function currentAbsoluteLine(doc: Doc): number | null {
   return doc.windowStartLine + bufferLine - 1;
 }
 
+/** The Go to Line panel's hint: the cursor's file line and, when known,
+ *  the file's line count — the buffer's own count for a whole document, the
+ *  line index's for a large file only once indexing covered all of it. */
+function gotoContext(): { currentLine: number | null; lineCount: number | null } {
+  const doc = tabs.active;
+  if (!doc) return { currentLine: null, lineCount: null };
+  const currentLine = currentAbsoluteLine(doc);
+  let lineCount = !doc.truncated
+    ? lineCountOf(editor.snapshot())
+    : doc.lineIndex && doc.lineIndex.indexedSize === doc.totalSize
+      ? doc.lineIndex.totalLines
+      : null;
+  // The line index doesn't count the empty line after a final newline,
+  // while the editor (and so the cursor) does; never show "5001 of 5000".
+  if (lineCount !== null && currentLine !== null) lineCount = Math.max(lineCount, currentLine);
+  return { currentLine, lineCount };
+}
+
 function jumpToBookmark(doc: Doc, target: number | null): void {
   if (target === null) return;
   if (!doc.truncated) {
@@ -3833,7 +3851,7 @@ function dispatchMenuCommand(id: string): void {
       });
       break;
     case "goto_line":
-      showGoToLine((line, column) => handleGotoLine(line, column));
+      showGoToLine((line, column) => handleGotoLine(line, column), gotoContext());
       break;
     // Cursor movement only, like select_next_occurrence/
     // select_all_occurrences above and goto_line just above — unguarded
@@ -4231,6 +4249,9 @@ document
 document
   .querySelector<HTMLElement>("#chunk-next")!
   .addEventListener("click", () => void pageChunk(1));
+document
+  .querySelector<HTMLElement>("#status-cursor")!
+  .addEventListener("click", () => dispatchMenuCommand("goto_line"));
 document
   .querySelector<HTMLElement>("#status-encoding")!
   .addEventListener("click", (event) =>

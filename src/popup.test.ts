@@ -285,3 +285,54 @@ describe("showFilterableMenu", () => {
     expect(document.querySelector(".popup-menu")).not.toBeNull();
   });
 });
+
+describe("popup focus restoration", () => {
+  afterEach(() => {
+    closeMenu();
+    document.body.innerHTML = "";
+  });
+
+  it("returns focus to the pre-menu element before an item's action runs", async () => {
+    const { installModal } = await import("./modal");
+    const editor = document.createElement("textarea");
+    document.body.appendChild(editor);
+    editor.focus();
+    let focusedDuringAction: Element | null = null;
+    showFilterableMenu(anchor(), {
+      placeholder: "Filter",
+      emptyText: "None",
+      getItems: () => [
+        {
+          label: "Compare",
+          action: () => {
+            focusedDuringAction = document.activeElement;
+            // Like showComparePreview: a modal opened by the item.
+            const overlay = document.createElement("div");
+            const dialog = document.createElement("div");
+            dialog.innerHTML = "<button>ok</button>";
+            overlay.appendChild(dialog);
+            document.body.appendChild(overlay);
+            installModal(overlay, dialog);
+            setTimeout(() => overlay.remove(), 0);
+          },
+        },
+      ],
+    });
+    // The filter input took focus; picking an item removes it.
+    expect(document.activeElement?.className).toBe("popup-filter-input");
+    document.querySelector<HTMLButtonElement>(".popup-item")!.click();
+    expect(focusedDuringAction).toBe(editor);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(document.activeElement).toBe(editor);
+  });
+
+  it("returns focus on Escape too", async () => {
+    const editor = document.createElement("textarea");
+    document.body.appendChild(editor);
+    editor.focus();
+    showFilterableMenu(anchor(), { placeholder: "", emptyText: "", getItems: () => [] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(document.activeElement).toBe(editor);
+  });
+});

@@ -306,6 +306,19 @@ export class TabStore {
    *  beats caching rects at drag-start. */
   private tabElements = new Map<number, HTMLElement>();
   private drag: TabDragState | null = null;
+  /** Doc id under the last middle-button press, so a release closes only
+   *  the tab it was pressed on (see render()). */
+  private middlePressId: number | null = null;
+  /** Ends a middle-press wherever the button is released (or the window
+   *  loses focus mid-press): runs from `window` after any tab's own
+   *  mouseup, so a release off the tabs can't leave the press armed for a
+   *  later gesture that merely ends on that tab. */
+  private readonly endMiddlePress = (e: Event): void => {
+    if (e instanceof MouseEvent && e.type === "mouseup" && e.button !== 1) return;
+    this.middlePressId = null;
+    window.removeEventListener("mouseup", this.endMiddlePress);
+    window.removeEventListener("blur", this.endMiddlePress);
+  };
 
   constructor(
     private container: HTMLElement,
@@ -385,15 +398,45 @@ export class TabStore {
   render(): void {
     this.container.replaceChildren();
     this.tabElements.clear();
+    this.container.setAttribute("role", "tablist");
+    this.container.setAttribute("aria-label", t("tabs.listAria"));
     for (const doc of this.docs) {
+      const isActive = doc.id === this.activeId;
       const tab = document.createElement("div");
-      tab.className = doc.id === this.activeId ? "tab active" : "tab";
+      tab.className = isActive ? "tab active" : "tab";
+      // ARIA tabs pattern with a roving tabindex: only the active tab is in
+      // the Tab order; arrow keys move between tabs (see onTabKeyDown).
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", String(isActive));
+      tab.tabIndex = isActive ? 0 : -1;
+      if (doc.dirty) tab.classList.add("dirty");
+      tab.ariaLabel = doc.dirty ? t("tabs.unsavedAria", doc.title) : doc.title;
       // pointerdown (not mousedown/click) doubles as both the click-to-
       // select trigger and the drag-to-reorder start — see beginTabDrag
       // for why selection itself is resolved on release, not here.
       tab.addEventListener("pointerdown", (e) =>
         this.beginTabDrag(e, doc.id, tab),
       );
+      // Middle-click closes, the convention in browsers and most editors.
+      // beginTabDrag ignores the middle button, so the tab is not activated
+      // first. Built from mousedown/mouseup rather than `auxclick`, which
+      // WKWebView only dispatches from Safari 18.2 on; the press itself is
+      // cancelled so WebView2 never starts middle-button autoscroll on a
+      // scrollable strip. Press and release must land on the same tab.
+      tab.addEventListener("mousedown", (e) => {
+        if (e.button !== 1) return;
+        e.preventDefault();
+        this.middlePressId = doc.id;
+        window.addEventListener("mouseup", this.endMiddlePress);
+        window.addEventListener("blur", this.endMiddlePress);
+      });
+      tab.addEventListener("mouseup", (e) => {
+        if (e.button !== 1) return;
+        const pressed = this.middlePressId;
+        this.middlePressId = null;
+        if (pressed === doc.id) this.events.onClose(doc.id);
+      });
+      tab.addEventListener("keydown", (e) => this.onTabKeyDown(e, doc.id));
       // Suppress the native context menu and open ours instead. This is a
       // plain "contextmenu" listener, not folded into the pointer-drag
       // state machine above — see TabEvents.onContextMenu for why the two
@@ -411,8 +454,13 @@ export class TabStore {
 
       const close = document.createElement("button");
       close.className = doc.dirty ? "tab-close dirty" : "tab-close";
+      // The dirty dot turns into a close glyph on hover (styles.css), so
+      // the only close affordance is never hidden behind the dot.
       close.textContent = doc.dirty ? "●" : "×";
       close.ariaLabel = t("tabs.closeAria", doc.title);
+      // Out of the Tab order: keyboard users close with Mod-W, and a
+      // focusable button nested in a role="tab" would add a stop per tab.
+      close.tabIndex = -1;
       // Stops the tab's own pointerdown (drag-arm/select trigger) from
       // ever seeing this gesture, so the close button can never start a
       // drag or flip selection on its way to its own click handler below.
@@ -428,17 +476,50 @@ export class TabStore {
     add.className = "tab-new";
     add.textContent = "+";
     add.ariaLabel = t("tabs.newTabAria");
+    add.title = t("tabs.newTabAria");
     add.addEventListener("click", () => this.events.onNew());
     this.container.appendChild(add);
   }
 
+  /** Keyboard support for a focused tab (ARIA tabs pattern, automatic
+   *  activation): Left/Right move to the neighboring tab (wrapping),
+   *  Home/End to the first/last. Selection goes through the same
+   *  `onSelect` a click uses; focus is then put back on the newly active
+   *  tab, because activation re-renders the strip and focuses the editor. */
+  private onTabKeyDown(event: KeyboardEvent, id: number): void {
+    const index = this.docs.findIndex((d) => d.id === id);
+    if (index === -1) return;
+    let target: number;
+    switch (event.key) {
+      case "ArrowRight":
+        target = (index + 1) % this.docs.length;
+        break;
+      case "ArrowLeft":
+        target = (index - 1 + this.docs.length) % this.docs.length;
+        break;
+      case "Home":
+        target = 0;
+        break;
+      case "End":
+        target = this.docs.length - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    const targetId = this.docs[target].id;
+    if (targetId !== this.activeId) this.events.onSelect(targetId);
+    this.tabElements.get(targetId)?.focus();
+  }
+
   /** pointerdown on a tab: arms a potential drag, but never itself selects
    *  or reorders — see onTabPointerUp for why both of those are resolved
-   *  on release. Deliberately does not gate on button here: middle/right-
-   *  click still arm this (so releasing without moving still selects,
-   *  matching the pre-drag mousedown behavior for every button), but
-   *  `primaryButton` stops onTabPointerMove from ever promoting one of
-   *  them to an actual drag — see requirement "中鍵/右鍵不拖".
+   *  on release. A right-click still arms this (so releasing without
+   *  moving still selects, matching the pre-drag mousedown behavior), but
+   *  `primaryButton` stops onTabPointerMove from ever promoting it to an
+   *  actual drag — see requirement "中鍵/右鍵不拖". A middle-click does not
+   *  arm at all: it closes the tab (render()'s mousedown/mouseup pair)
+   *  without first activating it.
    *
    *  Not HTML5 drag-and-drop: that API's native drag image/ghost and drop
    *  effect plumbing has long-standing WKWebView/WebView2 inconsistencies.
@@ -446,6 +527,7 @@ export class TabStore {
    *  and are equally mature on both. */
   private beginTabDrag(e: PointerEvent, id: number, tab: HTMLElement): void {
     if (this.drag) return; // one gesture at a time
+    if (e.button === 1) return; // middle-click closes; see render()
 
     const rect = tab.getBoundingClientRect();
     this.drag = {

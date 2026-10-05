@@ -1,6 +1,7 @@
 // Minimal "Go to Line" prompt. Accepts either a bare line number ("123")
 // or "line:column" ("123:45") — see parseGoToInput below for the exact
 // grammar this input box accepts.
+import { installModal } from "./modal";
 import { t } from "./i18n";
 
 /** Parsed result of a Go to Line input. `column` is `null` when the input
@@ -38,8 +39,24 @@ export function parseGoToInput(value: string): GoToTarget | null {
   return { line, column };
 }
 
+/** Where the cursor is, for the panel's hint line. `lineCount` is null
+ *  when the document's total isn't known yet (large-file indexing). */
+export interface GoToContext {
+  currentLine: number | null;
+  lineCount: number | null;
+}
+
+/** The hint shown under the field, or null when there's nothing to say. */
+export function goToHint(context: GoToContext | undefined): string | null {
+  if (!context || context.currentLine === null) return null;
+  return context.lineCount === null
+    ? t("goto.hint", context.currentLine)
+    : t("goto.hintWithTotal", context.currentLine, context.lineCount);
+}
+
 export function showGoToLine(
   onGo: (line: number, column: number | null) => void,
+  context?: GoToContext,
 ): void {
   if (document.querySelector(".goto-overlay")) return;
 
@@ -56,6 +73,15 @@ export function showGoToLine(
   input.placeholder = t("goto.placeholder");
   panel.appendChild(input);
 
+  const hint = document.createElement("div");
+  hint.className = "goto-hint";
+  hint.id = "goto-hint";
+  const contextHint = goToHint(context);
+  hint.textContent = contextHint ?? "";
+  hint.hidden = contextHint === null;
+  input.setAttribute("aria-describedby", hint.id);
+  panel.appendChild(hint);
+
   const close = (): void => {
     document.removeEventListener("mousedown", onAway);
     overlay.remove();
@@ -70,14 +96,34 @@ export function showGoToLine(
       close();
     } else if (event.key === "Enter") {
       event.preventDefault();
+      if (input.value.trim() === "") {
+        close();
+        return;
+      }
       const target = parseGoToInput(input.value);
+      if (!target) {
+        // Say what's accepted instead of silently closing on a typo.
+        input.setAttribute("aria-invalid", "true");
+        hint.textContent = t("goto.invalid");
+        hint.hidden = false;
+        hint.classList.add("goto-hint-error");
+        return;
+      }
       close();
-      if (target) onGo(target.line, target.column);
+      onGo(target.line, target.column);
     }
+  });
+  input.addEventListener("input", () => {
+    if (input.getAttribute("aria-invalid") !== "true") return;
+    input.removeAttribute("aria-invalid");
+    hint.classList.remove("goto-hint-error");
+    hint.textContent = contextHint ?? "";
+    hint.hidden = contextHint === null;
   });
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  installModal(overlay, panel, { label: t("modal.goToLine") });
   input.focus();
   setTimeout(() => document.addEventListener("mousedown", onAway), 0);
 }

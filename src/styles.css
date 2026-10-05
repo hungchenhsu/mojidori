@@ -16,8 +16,8 @@
   --bg-surface: #f2f1f0;
   --bg-raised: #ffffff;
   --fg: #1b1b1f;
-  --fg-muted: #5c5c66;
-  --fg-faint: #8e8e99;
+  --fg-muted: #55555e;
+  --fg-faint: #6d6d79;
   --border: #dcdbda;
   --border-strong: #c7c5c3;
   /* Indent-guide vertical lines (src/editor-theme.ts `.cm-indent-guide`,
@@ -40,7 +40,7 @@
      description for the WebKit/CodeMirror drawSelection() investigation
      that led to splitting this out. */
   --bg-selection: rgba(87, 87, 209, 0.32);
-  --warning: #b35900;
+  --warning: #9b4c00;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
   --overlay: rgba(0, 0, 0, 0.3);
@@ -111,6 +111,12 @@ input,
     color 120ms ease-out;
 }
 
+/* A dialog focused as a fallback (modal.ts installModal, when it has no
+   control to focus) is a container, not a control: no focus ring. */
+[aria-modal="true"]:focus {
+  outline: none;
+}
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible {
@@ -132,19 +138,26 @@ select:focus-visible {
 #tabbar {
   display: flex;
   align-items: stretch;
+  height: 34px;
   overflow-x: auto;
+  overflow-y: hidden;
   flex-shrink: 0;
   background: var(--bg-surface);
-  border-bottom: 1px solid var(--border);
+  /* The bottom rule is an inset shadow rather than a border so the active
+     tab's own background (painted above it) can cover it. */
+  box-shadow: inset 0 -1px 0 0 var(--border);
   user-select: none;
+  scrollbar-width: thin;
 }
 
 .tab {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  max-width: 200px;
-  padding: 5px 6px 5px 12px;
+  gap: 4px;
+  min-width: 72px;
+  max-width: 220px;
+  padding: 0 6px 0 14px;
   font-size: var(--font-ui-sm);
   color: var(--fg-muted);
   border-right: 1px solid var(--border);
@@ -154,12 +167,20 @@ select:focus-visible {
 
 .tab:not(.active):hover {
   background: var(--accent-soft);
+  color: var(--fg);
 }
 
+/* The active tab joins the editor surface: same background, and it covers
+   the strip's bottom border, with an accent line across its top. */
 .tab.active {
   background: var(--bg-base);
   color: var(--fg);
-  box-shadow: inset 0 -2px 0 0 var(--accent);
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* Drag-to-reorder feedback: the grabbed tab itself lifts and follows the
@@ -176,6 +197,8 @@ select:focus-visible {
 }
 
 .tab-title {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -183,12 +206,13 @@ select:focus-visible {
 .tab-close,
 .tab-new {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1;
   color: inherit;
   background: transparent;
@@ -197,9 +221,24 @@ select:focus-visible {
   cursor: pointer;
 }
 
+/* Close buttons stay out of the way until they matter: shown on the
+   active tab, on hover, and always (as the unsaved dot) on a dirty tab. */
+.tab-close {
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.tab.active .tab-close,
+.tab:hover .tab-close,
+.tab:focus-visible .tab-close,
+.tab-close.dirty {
+  opacity: 1;
+}
+
 .tab-close:hover,
 .tab-new:hover {
   background: var(--accent-soft);
+  color: var(--fg);
 }
 
 .tab-close.dirty {
@@ -207,10 +246,22 @@ select:focus-visible {
   color: var(--warning);
 }
 
+/* Hovering the unsaved dot reveals the close glyph it stands in for. */
+.tab-close.dirty:hover {
+  font-size: 0;
+}
+
+.tab-close.dirty:hover::after {
+  content: "×";
+  font-size: 14px;
+  color: var(--fg);
+}
+
 .tab-new {
   align-self: center;
-  margin: 0 4px;
-  flex-shrink: 0;
+  margin: 0 6px;
+  font-size: 16px;
+  color: var(--fg-muted);
 }
 
 #editor {
@@ -243,7 +294,9 @@ select:focus-visible {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 3px 10px;
+  gap: 12px;
+  height: 26px;
+  padding: 0 6px 0 12px;
   font-size: var(--font-ui-sm);
   color: var(--fg-muted);
   background: var(--bg-surface);
@@ -252,6 +305,7 @@ select:focus-visible {
 }
 
 #status-path {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -260,8 +314,24 @@ select:focus-visible {
 .statusbar-right {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 2px;
   flex-shrink: 0;
+}
+
+/* Every right-hand item gets the same box so plain read-outs and clickable
+   ones line up; only .status-action items react to hover. */
+.statusbar-right > * {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.statusbar-right > [hidden] {
+  display: none;
 }
 
 #status-cursor,
@@ -273,11 +343,9 @@ select:focus-visible {
 #status-readonly,
 #status-missing,
 #status-indexing {
-  padding: 1px 8px;
   color: var(--warning);
   background: var(--warning-soft);
-  border: 1px solid var(--warning);
-  border-radius: var(--radius-sm);
+  border-color: var(--warning);
 }
 
 #status-warning {
@@ -286,18 +354,19 @@ select:focus-visible {
 }
 
 .status-action {
-  padding: 1px 8px;
   font: inherit;
   color: inherit;
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
 .status-action:hover:not(:disabled) {
+  color: var(--fg);
   background: var(--accent-soft);
-  border-color: var(--accent);
+}
+
+.status-action:active:not(:disabled) {
+  background: var(--bg-selection);
 }
 
 .status-action:disabled {
@@ -553,10 +622,39 @@ select:focus-visible {
 }
 
 .palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 6px 10px;
   font-size: var(--font-ui);
   border-radius: var(--radius-md);
   cursor: pointer;
+}
+
+.palette-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Fuzzy-matched characters (palette.ts highlightRuns). */
+.palette-label mark {
+  color: var(--accent);
+  font-weight: 600;
+  background: transparent;
+}
+
+.palette-shortcut {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--font-ui-xs);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
 
 .palette-item:hover,
@@ -582,7 +680,8 @@ select:focus-visible {
 }
 
 .goto-panel {
-  width: 240px;
+  width: 320px;
+  max-width: calc(100vw - 32px);
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -601,6 +700,20 @@ select:focus-visible {
   background: transparent;
   border: none;
   outline: none;
+}
+
+.goto-hint {
+  padding: 0 14px 10px;
+  color: var(--fg-muted);
+  font-size: var(--font-ui-sm);
+}
+
+.goto-hint-error {
+  color: var(--danger);
+}
+
+.goto-panel input[aria-invalid="true"] {
+  color: var(--danger);
 }
 
 .fif-overlay {
@@ -662,12 +775,51 @@ select:focus-visible {
   outline: none;
 }
 
+/* Match-case / regex toggles, drawn as chips like the editor's find panel
+   (editor-theme.ts): the checkbox stays operable but is visually hidden,
+   and findinfiles.ts mirrors its state as `.is-checked`. */
 .fif-case {
-  display: flex;
-  gap: 4px;
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  color: var(--fg-muted);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: var(--font-ui-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
   user-select: none;
+}
+
+.fif-case:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.fif-case.is-checked {
+  color: var(--fg);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.fif-case:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.fif-case input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .fif-status {
@@ -1181,12 +1333,12 @@ select:focus-visible {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
+  padding: 12px 14px 8px;
 }
 
 .batchconvert-folder {
-  max-width: 160px;
+  min-width: 0;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1231,6 +1383,17 @@ select:focus-visible {
   border-radius: var(--radius-md);
 }
 
+/* Bordered text fields in the panels drop the default outline (the global
+   focus-visible ring loses to their more specific rules), so they show
+   focus on the border instead — otherwise keyboard focus is invisible. */
+.fif-controls input[type="text"]:focus-visible,
+.fif-replace-row input[type="text"]:focus-visible,
+.batchconvert-ext:focus-visible,
+.streamreplace-fields input[type="text"]:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
 .batchconvert-scan {
   padding: 5px 12px;
   font: inherit;
@@ -1250,9 +1413,15 @@ select:focus-visible {
 
 .batchconvert-options {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 0 14px 10px;
+  gap: 8px 16px;
+  padding: 0 14px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.batchconvert-options .batchconvert-scan {
+  margin-left: auto;
 }
 
 .batchconvert-lineending {
@@ -2192,8 +2361,8 @@ select:focus-visible {
     --bg-surface: #26272e;
     --bg-raised: #2b2c33;
     --fg: #e8e8ed;
-    --fg-muted: #a2a2ad;
-    --fg-faint: #6e6e78;
+    --fg-muted: #b1b1ba;
+    --fg-faint: #92929b;
     --border: #3a3b44;
     --border-strong: #4a4b56;
     --accent: #8c8cf0;
@@ -2202,7 +2371,7 @@ select:focus-visible {
     --bg-selection: rgba(140, 140, 240, 0.38);
     --warning: #ffb454;
     --warning-soft: rgba(255, 180, 84, 0.16);
-    --danger: #e5484d;
+    --danger: #ea6b6f;
     --overlay: rgba(0, 0, 0, 0.45);
     --shadow-1: 0 4px 16px rgba(0, 0, 0, 0.45);
     --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.6);
@@ -2225,15 +2394,15 @@ html[data-theme="light"],
   --bg-surface: #f2f1f0;
   --bg-raised: #ffffff;
   --fg: #1b1b1f;
-  --fg-muted: #5c5c66;
-  --fg-faint: #8e8e99;
+  --fg-muted: #55555e;
+  --fg-faint: #6d6d79;
   --border: #dcdbda;
   --border-strong: #c7c5c3;
   --accent: #5757d1;
   --accent-fg: #ffffff;
   --accent-soft: rgba(87, 87, 209, 0.14);
   --bg-selection: rgba(87, 87, 209, 0.32);
-  --warning: #b35900;
+  --warning: #9b4c00;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
   --overlay: rgba(0, 0, 0, 0.3);
@@ -2256,8 +2425,8 @@ html[data-theme="dark"],
   --bg-surface: #26272e;
   --bg-raised: #2b2c33;
   --fg: #e8e8ed;
-  --fg-muted: #a2a2ad;
-  --fg-faint: #6e6e78;
+  --fg-muted: #b1b1ba;
+  --fg-faint: #92929b;
   --border: #3a3b44;
   --border-strong: #4a4b56;
   --accent: #8c8cf0;
@@ -2266,7 +2435,7 @@ html[data-theme="dark"],
   --bg-selection: rgba(140, 140, 240, 0.38);
   --warning: #ffb454;
   --warning-soft: rgba(255, 180, 84, 0.16);
-  --danger: #e5484d;
+  --danger: #ea6b6f;
   --overlay: rgba(0, 0, 0, 0.45);
   --shadow-1: 0 4px 16px rgba(0, 0, 0, 0.45);
   --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.6);
@@ -2283,10 +2452,11 @@ html[data-theme="dark"],
 
 /*
  * Built-in theme: Paper — a warm, low-glare "ink on paper" palette for long
- * reading sessions. --accent and --fg-faint were nudged a shade darker than
- * the design anchors (#4E7B6A -> #3E6A59, #98907F -> #8F8672) to clear the
- * WCAG AA body-text threshold against --bg-base; see PR description for the
- * measured contrast ratios. --syn-keyword/--syn-comment need no override
+ * reading sessions. --accent was nudged a shade darker than its design
+ * anchor (#4E7B6A -> #3E6A59) to clear WCAG AA against --bg-base. The text
+ * tokens (--fg-muted, --fg-faint, --danger, --warning) in every theme are
+ * held to AA on all three surfaces by src/themecontrast.test.ts (2026-10
+ * contrast pass). --syn-keyword/--syn-comment need no override
  * here: both are var() references (to --accent / --fg-faint respectively)
  * defined once in :root, so they pick up this theme's values automatically.
  */
@@ -2296,17 +2466,17 @@ html[data-theme="paper"],
   --bg-surface: #ede6d6;
   --bg-raised: #fbf7ee;
   --fg: #3b3630;
-  --fg-muted: #6e6659;
-  --fg-faint: #8f8672;
+  --fg-muted: #554f45;
+  --fg-faint: #6e6758;
   --border: #dcd3bf;
   --border-strong: #c5bca8;
   --accent: #3e6a59;
   --accent-fg: #ffffff;
   --accent-soft: rgba(62, 106, 89, 0.14);
   --bg-selection: rgba(62, 106, 89, 0.32);
-  --warning: #b35900;
+  --warning: #924800;
   --warning-soft: rgba(179, 89, 0, 0.14);
-  --danger: #c4373c;
+  --danger: #bd353a;
   --overlay: rgba(0, 0, 0, 0.3);
   --shadow-1: 0 4px 16px rgba(0, 0, 0, 0.16);
   --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.28);
@@ -2333,8 +2503,8 @@ html[data-theme="dusk"],
   --bg-surface: #2a2e3f;
   --bg-raised: #303448;
   --fg: #e3e5f0;
-  --fg-muted: #a8acc4;
-  --fg-faint: #6f7490;
+  --fg-muted: #b8bccf;
+  --fg-faint: #989cb0;
   --border: #3e4358;
   --border-strong: #4e5368;
   --accent: #9ba3f5;
@@ -2343,7 +2513,7 @@ html[data-theme="dusk"],
   --bg-selection: rgba(155, 163, 245, 0.38);
   --warning: #f5b461;
   --warning-soft: rgba(245, 180, 97, 0.16);
-  --danger: #e5484d;
+  --danger: #ec7b7f;
   --overlay: rgba(0, 0, 0, 0.45);
   --shadow-1: 0 4px 16px rgba(0, 0, 0, 0.45);
   --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.6);

@@ -5,6 +5,7 @@
 // always picks a specific candidate from a preview before anything changes,
 // and the result only ever lands in the editor buffer as an unsaved,
 // undoable change (never written to disk by this module).
+import { installModal } from "./modal";
 import { message as messageDialog } from "@tauri-apps/plugin-dialog";
 import { t } from "./i18n";
 import { applyMojibakeRepair, detectMojibake, type RepairCandidate } from "./ipc";
@@ -161,6 +162,7 @@ export function showMojibakeWizard(
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  installModal(overlay, panel, { labelledBy: header });
   setTimeout(() => {
     document.addEventListener("mousedown", onAway);
     document.addEventListener("keydown", onKey);

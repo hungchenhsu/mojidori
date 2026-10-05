@@ -1064,3 +1064,23 @@ describe("showFindInFiles — search history integration", () => {
     expect(replaceHistory()).toHaveLength(replaceCountBefore);
   });
 });
+
+describe("showFindInFiles — option chips", () => {
+  it("names the Aa / .* toggles and mirrors their state on the chip", () => {
+    showFindInFiles(() => {});
+    try {
+      const [caseLabel, regexLabel] = document.querySelectorAll<HTMLElement>(".fif-case");
+      const caseBox = caseLabel.querySelector("input")!;
+      const regexBox = regexLabel.querySelector("input")!;
+      expect(caseBox.getAttribute("aria-label")).toBe("Match case");
+      expect(regexBox.getAttribute("aria-label")).toBe("Regular expression");
+      caseBox.click();
+      expect(caseLabel.classList.contains("is-checked")).toBe(true);
+      expect(regexLabel.classList.contains("is-checked")).toBe(false);
+      caseBox.click();
+      expect(caseLabel.classList.contains("is-checked")).toBe(false);
+    } finally {
+      document.querySelector(".fif-overlay")?.remove();
+    }
+  });
+});

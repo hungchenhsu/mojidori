@@ -389,6 +389,43 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
     ("window", "Window", "視窗", "ウィンドウ", "窗口"),
 ];
 
+/// Keyboard shortcut per menu item id, in Tauri accelerator syntax. The
+/// single source for both the native menu (`build`) and the Command
+/// Palette's shortcut hints (`palette_commands`), so the two can't drift.
+const ACCELERATORS: &[(&str, &str)] = &[
+    ("new_tab", "CmdOrCtrl+T"),
+    ("open", "CmdOrCtrl+O"),
+    ("open_recent", "CmdOrCtrl+P"),
+    ("save", "CmdOrCtrl+S"),
+    ("save_as", "CmdOrCtrl+Shift+S"),
+    ("close_tab", "CmdOrCtrl+W"),
+    ("reopen_closed_tab", "CmdOrCtrl+Shift+T"),
+    ("print", "CmdOrCtrl+Alt+P"),
+    ("preferences", "CmdOrCtrl+,"),
+    ("find", "CmdOrCtrl+F"),
+    ("find_in_files", "CmdOrCtrl+Shift+F"),
+    ("goto_line", "CmdOrCtrl+L"),
+    ("command_palette", "CmdOrCtrl+Shift+P"),
+    ("word_wrap", "Alt+Z"),
+    ("zoom_in", "CmdOrCtrl+="),
+    ("zoom_out", "CmdOrCtrl+-"),
+    ("zoom_reset", "CmdOrCtrl+0"),
+];
+
+/// Accelerator for a menu item id. Panics on an id missing from
+/// `ACCELERATORS`, the same programming-error contract as `label` — the
+/// `accelerator_call_sites_all_resolve` test checks every call site.
+fn accel(id: &str) -> &'static str {
+    accelerator(id).unwrap_or_else(|| panic!("menu.rs ACCELERATORS has no entry for id {id:?}"))
+}
+
+fn accelerator(id: &str) -> Option<&'static str> {
+    ACCELERATORS
+        .iter()
+        .find(|(entry_id, _)| *entry_id == id)
+        .map(|(_, accel)| *accel)
+}
+
 /// Look up a menu label by id and language ("en" | "zh-TW" | "ja" | "zh-CN",
 /// anything else falls back to English). Panics on an unknown id — that is
 /// a programming error in this module (a build()/retitle_menu() call site
@@ -454,17 +491,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let file = SubmenuBuilder::with_id(app, "file", l("file"))
         .item(
             &MenuItemBuilder::with_id("new_tab", l("new_tab"))
-                .accelerator("CmdOrCtrl+T")
+                .accelerator(accel("new_tab"))
                 .build(app)?,
         )
         .item(
             &MenuItemBuilder::with_id("open", l("open"))
-                .accelerator("CmdOrCtrl+O")
+                .accelerator(accel("open"))
                 .build(app)?,
         )
         .item(
             &MenuItemBuilder::with_id("open_recent", l("open_recent"))
-                .accelerator("CmdOrCtrl+P")
+                .accelerator(accel("open_recent"))
                 .build(app)?,
         )
         .separator()
@@ -487,18 +524,18 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .separator()
         .item(
             &MenuItemBuilder::with_id("save", l("save"))
-                .accelerator("CmdOrCtrl+S")
+                .accelerator(accel("save"))
                 .build(app)?,
         )
         .item(
             &MenuItemBuilder::with_id("save_as", l("save_as"))
-                .accelerator("CmdOrCtrl+Shift+S")
+                .accelerator(accel("save_as"))
                 .build(app)?,
         )
         .separator()
         .item(
             &MenuItemBuilder::with_id("close_tab", l("close_tab"))
-                .accelerator("CmdOrCtrl+W")
+                .accelerator(accel("close_tab"))
                 .build(app)?,
         )
         .item(
@@ -507,7 +544,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             // sync_reopen_closed_tab_menu enables the item once the
             // frontend records the first closed tab.
             &MenuItemBuilder::with_id("reopen_closed_tab", l("reopen_closed_tab"))
-                .accelerator("CmdOrCtrl+Shift+T")
+                .accelerator(accel("reopen_closed_tab"))
                 .enabled(false)
                 .build(app)?,
         )
@@ -515,7 +552,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(
             // CmdOrCtrl+P belongs to quick open (modern editor convention).
             &MenuItemBuilder::with_id("print", l("print"))
-                .accelerator("CmdOrCtrl+Alt+P")
+                .accelerator(accel("print"))
                 .build(app)?,
         )
         .separator()
@@ -540,7 +577,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     #[cfg(not(target_os = "macos"))]
     let file = file.separator().item(
         &MenuItemBuilder::with_id("preferences", l("preferences"))
-            .accelerator("CmdOrCtrl+,")
+            .accelerator(accel("preferences"))
             .build(app)?,
     );
     #[cfg(not(target_os = "macos"))]
@@ -638,17 +675,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .separator()
         .item(
             &MenuItemBuilder::with_id("find", l("find"))
-                .accelerator("CmdOrCtrl+F")
+                .accelerator(accel("find"))
                 .build(app)?,
         )
         .item(
             &MenuItemBuilder::with_id("find_in_files", l("find_in_files"))
-                .accelerator("CmdOrCtrl+Shift+F")
+                .accelerator(accel("find_in_files"))
                 .build(app)?,
         )
         .item(
             &MenuItemBuilder::with_id("goto_line", l("goto_line"))
-                .accelerator("CmdOrCtrl+L")
+                .accelerator(accel("goto_line"))
                 .build(app)?,
         )
         // No accelerator: @codemirror/commands' `defaultKeymap` (bundled
@@ -718,7 +755,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             .separator()
             .item(
                 &MenuItemBuilder::with_id("preferences", l("preferences"))
-                    .accelerator("CmdOrCtrl+,")
+                    .accelerator(accel("preferences"))
                     .build(app)?,
             )
             .separator()
@@ -777,14 +814,14 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             // command is needed -- same reasoning as line_ops's own header
             // comment.
             &MenuItemBuilder::with_id("command_palette", l("command_palette"))
-                .accelerator("CmdOrCtrl+Shift+P")
+                .accelerator(accel("command_palette"))
                 .build(app)?,
         )
         .separator()
         .item(
             &CheckMenuItemBuilder::with_id("word_wrap", l("word_wrap"))
                 .checked(current_prefs.word_wrap)
-                .accelerator("Alt+Z")
+                .accelerator(accel("word_wrap"))
                 .build(app)?,
         )
         .item(
@@ -832,17 +869,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .separator()
         .item(
             &MenuItemBuilder::with_id("zoom_in", l("zoom_in"))
-                .accelerator("CmdOrCtrl+=")
+                .accelerator(accel("zoom_in"))
                 .build(app)?,
         )
         .item(
             &MenuItemBuilder::with_id("zoom_out", l("zoom_out"))
-                .accelerator("CmdOrCtrl+-")
+                .accelerator(accel("zoom_out"))
                 .build(app)?,
         )
         .item(
             &MenuItemBuilder::with_id("zoom_reset", l("zoom_reset"))
-                .accelerator("CmdOrCtrl+0")
+                .accelerator(accel("zoom_reset"))
                 .build(app)?,
         )
         .build()?;
@@ -1194,9 +1231,13 @@ const PALETTE_EXCLUDED_IDS: &[&str] = &[
 pub struct PaletteCommand {
     id: String,
     label: String,
+    /// The item's `ACCELERATORS` entry (Tauri syntax, e.g.
+    /// "CmdOrCtrl+Shift+F"), for the palette to show as a hint; `None`
+    /// when the command has no shortcut.
+    accelerator: Option<String>,
 }
 
-/// List every dispatchable menu command as `(id, label)` pairs in `locale`,
+/// List every dispatchable menu command as `(id, label, accelerator)` in `locale`,
 /// for the Command Palette (ROADMAP.md v0.6 C1). `locale` is
 /// already-resolved ("en" | "zh-TW" | "ja" | "zh-CN"), the same contract as
 /// `retitle_menu` — the frontend passes `i18n.ts`'s `getLocale()` directly,
@@ -1215,13 +1256,79 @@ pub fn palette_commands(locale: String) -> Vec<PaletteCommand> {
         .map(|entry| PaletteCommand {
             id: entry.0.to_string(),
             label: label(entry.0, &locale).to_string(),
+            accelerator: accelerator(entry.0).map(str::to_string),
         })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{label, palette_commands, resolve_lang, LABELS, PALETTE_EXCLUDED_IDS, THEME_IDS};
+    use super::{
+        accelerator, label, palette_commands, resolve_lang, ACCELERATORS, LABELS,
+        PALETTE_EXCLUDED_IDS, THEME_IDS,
+    };
+
+    #[test]
+    fn accelerators_are_unique_and_name_real_menu_items() {
+        let mut ids: Vec<&str> = ACCELERATORS.iter().map(|(id, _)| *id).collect();
+        let mut keys: Vec<&str> = ACCELERATORS.iter().map(|(_, key)| *key).collect();
+        for id in &ids {
+            assert!(
+                LABELS.iter().any(|(entry, ..)| entry == id),
+                "ACCELERATORS id {id:?} has no LABELS entry"
+            );
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(
+            ids.len(),
+            ACCELERATORS.len(),
+            "duplicate id in ACCELERATORS"
+        );
+        assert_eq!(
+            keys.len(),
+            ACCELERATORS.len(),
+            "two commands share a shortcut"
+        );
+    }
+
+    #[test]
+    fn accelerator_call_sites_all_resolve() {
+        // `accel` panics on an unknown id while the menu is being built at
+        // startup, which unit tests never run — so check every call site in
+        // this file's source instead. The needle is split so this test's own
+        // text never matches it.
+        let source = include_str!("menu.rs");
+        let needle = concat!("acc", "el(\"");
+        let mut found = 0;
+        for (index, _) in source.match_indices(needle) {
+            let rest = &source[index + needle.len()..];
+            let id = &rest[..rest.find('"').expect("closing quote")];
+            assert!(
+                accelerator(id).is_some(),
+                "accel({id:?}) has no ACCELERATORS entry"
+            );
+            found += 1;
+        }
+        assert!(
+            found >= ACCELERATORS.len(),
+            "expected every shortcut to be used, found {found}"
+        );
+    }
+
+    #[test]
+    fn palette_commands_carry_their_shortcuts() {
+        let commands = palette_commands("en".to_string());
+        let find = |id: &str| commands.iter().find(|c| c.id == id).expect(id);
+        assert_eq!(
+            find("find_in_files").accelerator.as_deref(),
+            Some("CmdOrCtrl+Shift+F")
+        );
+        assert_eq!(find("word_wrap").accelerator.as_deref(), Some("Alt+Z"));
+        assert_eq!(find("sort_lines").accelerator, None);
+    }
 
     #[test]
     fn theme_ids_match_the_preferences_theme_values() {
