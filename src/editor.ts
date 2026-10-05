@@ -906,10 +906,19 @@ const searchCountPlugin = ViewPlugin.fromClass(
         const panel = this.panel();
         if (!panel) return;
         const state = this.view.state;
+        const query = getSearchQuery(state);
+        // Regexp queries are never auto-counted: a valid pattern with
+        // catastrophic backtracking (e.g. `(a+)+b` over a long run of `a`)
+        // can stall a single cursor step indefinitely, and neither the
+        // match cap nor the document limit bounds that. CodeMirror itself
+        // only runs such a pattern over the visible range until the user
+        // explicitly navigates; the counter must not widen that exposure.
         this.count =
-          state.facet(partialBuffer) || state.doc.length > SEARCH_COUNT_MAX_DOC
+          state.facet(partialBuffer) ||
+          state.doc.length > SEARCH_COUNT_MAX_DOC ||
+          query.regexp
             ? null
-          : countSearchMatches(state, getSearchQuery(state));
+          : countSearchMatches(state, query);
         this.render(panel);
       }, delay);
     }

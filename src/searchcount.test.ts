@@ -229,6 +229,23 @@ describe("search panel counter", () => {
     }
   });
 
+  it("never auto-counts a regexp query", () => {
+    const { view, label, parent } = setup("aaaa one");
+    try {
+      view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: "one" })) });
+      vi.runAllTimers();
+      expect(label()!.textContent).toBe("1 match");
+      view.dispatch({
+        effects: setSearchQuery.of(new SearchQuery({ search: "(a+)+b", regexp: true })),
+      });
+      vi.runAllTimers();
+      expect(label()!.hidden).toBe(true);
+    } finally {
+      view.destroy();
+      parent.remove();
+    }
+  });
+
   it("stays hidden above the document-size limit", () => {
     const { view, label, parent } = setup("one".padEnd(SEARCH_COUNT_MAX_DOC + 1, " "));
     try {
