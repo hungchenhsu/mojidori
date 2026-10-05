@@ -291,6 +291,14 @@ the open issue queue.
   A real-FSEvents test through a symlink fails without the mapping.
   Windows letter-case variants are still dropped by notify's own filter.
   The rename-following part of #280 is unchanged and still open.
+- [x] Routine npm dependency refresh (lockfile only): CodeMirror
+  state/view/search/language, @lezer/highlight, vitest 4.1.11, @types/node,
+  and the dev-only transitive undici (jsdom) and nanoid (vite/postcss)
+  advisories; `npm audit` is clean. Deliberately held back: the Tauri JS
+  packages (must move with their Rust crates; @tauri-apps/cli 2.11.5+
+  changes the updater signature's trusted comment), @codemirror/commands
+  6.11 (moves macOS toggleBlockComment from Shift-Option-A to
+  Shift-Ctrl-A), and major upgrades (vite 8, vitest 5, TypeScript 7).
 
 ## UI/UX pass (2026-10-05)
 
