@@ -312,6 +312,14 @@ export function showFilterableMenu(
   // ArrowDown from the filter field enters the list; ArrowUp on the first
   // item comes back up to it.
   input.addEventListener("keydown", (event) => {
+    // An IME uses the arrows to pick conversion candidates; leave them be.
+    if (event.isComposing || event.keyCode === 229) return;
+    // Results are tabIndex -1, so Tab here leaves the popup entirely:
+    // close it first, like Tab from a menu item (wireMenuKeys).
+    if (event.key === "Tab") {
+      closeMenu();
+      return;
+    }
     if (event.key !== "ArrowDown") return;
     const first = enabledItems(listEl)[0];
     if (!first) return;

@@ -433,4 +433,26 @@ describe("popup keyboard navigation", () => {
     press("ArrowUp");
     expect(document.activeElement).toBe(input);
   });
+
+  it("closes the filterable menu on Tab from its field and leaves IME arrows alone", () => {
+    const editor = document.createElement("textarea");
+    document.body.appendChild(editor);
+    editor.focus();
+    const items = () => [{ label: "UTF-8" }, { label: "Big5" }];
+    showFilterableMenu(anchor(), { placeholder: "", emptyText: "", getItems: items });
+    const input = document.querySelector<HTMLInputElement>(".popup-filter-input")!;
+    const composing = new KeyboardEvent("keydown", {
+      key: "ArrowDown",
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(composing);
+    expect(composing.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(input);
+
+    press("Tab");
+    expect(document.querySelector(".popup-filter-menu")).toBeNull();
+    expect(document.activeElement).toBe(editor);
+  });
 });
