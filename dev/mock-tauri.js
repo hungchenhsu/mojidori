@@ -163,12 +163,35 @@
       ["sort_lines", "Sort Lines"],
     ].map(([id, label]) => ({ id, label })),
     document_fingerprint: () => fingerprint(),
-    document_metadata: () => ({ readOnly: false, fingerprint: fingerprint() }),
+    document_metadata: () => ({
+      size: sample ? sample.content.length : 0,
+      modifiedMs: Date.UTC(2026, 9, 1, 9, 30),
+    }),
+    line_ending_distribution: () => {
+      const size = sample ? sample.content.length : 0;
+      const lf = sample ? sample.content.split("\n").length - 1 : 0;
+      return { lf, crlf: 0, cr: 0, scannedBytes: size, totalSize: size };
+    },
+    sync_theme_menu: () => null,
+    sync_read_only_menu: () => null,
+    sync_reopen_closed_tab_menu: () => null,
+    sync_clear_recent_menu: () => null,
+    retitle_menu: () => null,
+    save_backup: () => null,
+    delete_backup: () => null,
     watch_file: () => null,
     unwatch_file: () => null,
     build_line_index: () => null,
     report_startup_ready: () => null,
     report_openfile_ready: () => null,
+    explain_detection: () => ({
+      bom: null,
+      detectorVerdict: "UTF-8",
+      sampledBytes: sample ? sample.content.length : 0,
+      totalSize: sample ? sample.content.length : 0,
+      wouldChoose: "UTF-8 (detector)",
+      largeFilePreview: false,
+    }),
     "plugin:event|listen": (a) => {
       if (!listeners.has(a.event)) listeners.set(a.event, new Set());
       listeners.get(a.event).add(a.handler);
@@ -214,9 +237,12 @@
       calls.push([cmd, args]);
       const h = handlers[cmd];
       if (h) return h(args);
-      // Window/webview plugin calls (setTitle, onCloseRequested, …) and any
-      // command not modelled above resolve to null.
-      return null;
+      // Window/webview plugin calls (setTitle, onCloseRequested, …) are
+      // fire-and-forget here. Any other unmodelled app command rejects, so
+      // the frontend's real error path runs instead of treating `null` as
+      // valid data (add a canned handler above to screenshot that surface).
+      if (cmd.startsWith("plugin:")) return null;
+      throw new Error(`ui-harness: no mock for "${cmd}"`);
     },
   };
 
