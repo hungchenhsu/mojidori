@@ -16,8 +16,8 @@
   --bg-surface: #f2f1f0;
   --bg-raised: #ffffff;
   --fg: #1b1b1f;
-  --fg-muted: #5c5c66;
-  --fg-faint: #8e8e99;
+  --fg-muted: #55555e;
+  --fg-faint: #6d6d79;
   --border: #dcdbda;
   --border-strong: #c7c5c3;
   /* Indent-guide vertical lines (src/editor-theme.ts `.cm-indent-guide`,
@@ -40,7 +40,7 @@
      description for the WebKit/CodeMirror drawSelection() investigation
      that led to splitting this out. */
   --bg-selection: rgba(87, 87, 209, 0.32);
-  --warning: #b35900;
+  --warning: #9b4c00;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
   --overlay: rgba(0, 0, 0, 0.3);
@@ -2346,8 +2346,8 @@ select:focus-visible {
     --bg-surface: #26272e;
     --bg-raised: #2b2c33;
     --fg: #e8e8ed;
-    --fg-muted: #a2a2ad;
-    --fg-faint: #6e6e78;
+    --fg-muted: #b1b1ba;
+    --fg-faint: #92929b;
     --border: #3a3b44;
     --border-strong: #4a4b56;
     --accent: #8c8cf0;
@@ -2356,7 +2356,7 @@ select:focus-visible {
     --bg-selection: rgba(140, 140, 240, 0.38);
     --warning: #ffb454;
     --warning-soft: rgba(255, 180, 84, 0.16);
-    --danger: #e5484d;
+    --danger: #ea6b6f;
     --overlay: rgba(0, 0, 0, 0.45);
     --shadow-1: 0 4px 16px rgba(0, 0, 0, 0.45);
     --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.6);
@@ -2379,15 +2379,15 @@ html[data-theme="light"],
   --bg-surface: #f2f1f0;
   --bg-raised: #ffffff;
   --fg: #1b1b1f;
-  --fg-muted: #5c5c66;
-  --fg-faint: #8e8e99;
+  --fg-muted: #55555e;
+  --fg-faint: #6d6d79;
   --border: #dcdbda;
   --border-strong: #c7c5c3;
   --accent: #5757d1;
   --accent-fg: #ffffff;
   --accent-soft: rgba(87, 87, 209, 0.14);
   --bg-selection: rgba(87, 87, 209, 0.32);
-  --warning: #b35900;
+  --warning: #9b4c00;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
   --overlay: rgba(0, 0, 0, 0.3);
@@ -2410,8 +2410,8 @@ html[data-theme="dark"],
   --bg-surface: #26272e;
   --bg-raised: #2b2c33;
   --fg: #e8e8ed;
-  --fg-muted: #a2a2ad;
-  --fg-faint: #6e6e78;
+  --fg-muted: #b1b1ba;
+  --fg-faint: #92929b;
   --border: #3a3b44;
   --border-strong: #4a4b56;
   --accent: #8c8cf0;
@@ -2420,7 +2420,7 @@ html[data-theme="dark"],
   --bg-selection: rgba(140, 140, 240, 0.38);
   --warning: #ffb454;
   --warning-soft: rgba(255, 180, 84, 0.16);
-  --danger: #e5484d;
+  --danger: #ea6b6f;
   --overlay: rgba(0, 0, 0, 0.45);
   --shadow-1: 0 4px 16px rgba(0, 0, 0, 0.45);
   --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.6);
@@ -2437,10 +2437,11 @@ html[data-theme="dark"],
 
 /*
  * Built-in theme: Paper — a warm, low-glare "ink on paper" palette for long
- * reading sessions. --accent and --fg-faint were nudged a shade darker than
- * the design anchors (#4E7B6A -> #3E6A59, #98907F -> #8F8672) to clear the
- * WCAG AA body-text threshold against --bg-base; see PR description for the
- * measured contrast ratios. --syn-keyword/--syn-comment need no override
+ * reading sessions. --accent was nudged a shade darker than its design
+ * anchor (#4E7B6A -> #3E6A59) to clear WCAG AA against --bg-base. The text
+ * tokens (--fg-muted, --fg-faint, --danger, --warning) in every theme are
+ * held to AA on all three surfaces by src/themecontrast.test.ts (2026-10
+ * contrast pass). --syn-keyword/--syn-comment need no override
  * here: both are var() references (to --accent / --fg-faint respectively)
  * defined once in :root, so they pick up this theme's values automatically.
  */
@@ -2450,17 +2451,17 @@ html[data-theme="paper"],
   --bg-surface: #ede6d6;
   --bg-raised: #fbf7ee;
   --fg: #3b3630;
-  --fg-muted: #6e6659;
-  --fg-faint: #8f8672;
+  --fg-muted: #554f45;
+  --fg-faint: #6e6758;
   --border: #dcd3bf;
   --border-strong: #c5bca8;
   --accent: #3e6a59;
   --accent-fg: #ffffff;
   --accent-soft: rgba(62, 106, 89, 0.14);
   --bg-selection: rgba(62, 106, 89, 0.32);
-  --warning: #b35900;
+  --warning: #924800;
   --warning-soft: rgba(179, 89, 0, 0.14);
-  --danger: #c4373c;
+  --danger: #bd353a;
   --overlay: rgba(0, 0, 0, 0.3);
   --shadow-1: 0 4px 16px rgba(0, 0, 0, 0.16);
   --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.28);
@@ -2487,8 +2488,8 @@ html[data-theme="dusk"],
   --bg-surface: #2a2e3f;
   --bg-raised: #303448;
   --fg: #e3e5f0;
-  --fg-muted: #a8acc4;
-  --fg-faint: #6f7490;
+  --fg-muted: #b8bccf;
+  --fg-faint: #989cb0;
   --border: #3e4358;
   --border-strong: #4e5368;
   --accent: #9ba3f5;
@@ -2497,7 +2498,7 @@ html[data-theme="dusk"],
   --bg-selection: rgba(155, 163, 245, 0.38);
   --warning: #f5b461;
   --warning-soft: rgba(245, 180, 97, 0.16);
-  --danger: #e5484d;
+  --danger: #ec7b7f;
   --overlay: rgba(0, 0, 0, 0.45);
   --shadow-1: 0 4px 16px rgba(0, 0, 0, 0.45);
   --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.6);
