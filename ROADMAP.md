@@ -278,6 +278,20 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   and preserve the rejected Windows-handle and normalization-cache
   approaches in the judgment overlay. Source version remains 0.9.0.
 
+## Issue queue pass (2026-10-06)
+
+Resumed after the UI/UX pass, per the user's instruction to continue with
+the open issue queue.
+
+- [x] #280 side bug: auto-reload missed files opened through a symlink,
+  `/tmp`, a different letter case, or an NFD name, because macOS FSEvents
+  reports canonical paths and the frontend matches tab paths exactly. The
+  watcher now records each watched path under its canonical form and
+  reports every event under both the raw path and each watched spelling.
+  A real-FSEvents test through a symlink fails without the mapping.
+  Windows letter-case variants are still dropped by notify's own filter.
+  The rename-following part of #280 is unchanged and still open.
+
 ## UI/UX pass (2026-10-05)
 
 The user asked for a UI/UX-first autonomous pass (larger visual changes
