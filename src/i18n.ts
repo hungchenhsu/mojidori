@@ -21,6 +21,8 @@ export interface Messages {
 
   "tabs.closeAria": (title: string) => string;
   "tabs.newTabAria": string;
+  "tabs.listAria": string;
+  "tabs.unsavedAria": (title: string) => string;
 
   // Tab-strip right-click menu (ROADMAP.md Track C "Tab context menu");
   // see main.ts's showTabContextMenu. Reveal has two platform-variant
@@ -575,6 +577,8 @@ const en: Messages = {
 
   "tabs.closeAria": (title) => `Close ${title}`,
   "tabs.newTabAria": "New tab",
+  "tabs.listAria": "Open files",
+  "tabs.unsavedAria": (title) => `${title}, unsaved changes`,
 
   "tabs.closeOthers": "Close Others",
   "tabs.closeTabsToRight": "Close Tabs to the Right",
@@ -1028,6 +1032,8 @@ const zhTW: Messages = {
 
   "tabs.closeAria": (title) => `關閉 ${title}`,
   "tabs.newTabAria": "新增分頁",
+  "tabs.listAria": "已開啟的檔案",
+  "tabs.unsavedAria": (title) => `${title}，有未儲存的變更`,
 
   "tabs.closeOthers": "關閉其他分頁",
   "tabs.closeTabsToRight": "關閉右側分頁",
@@ -1432,6 +1438,8 @@ const ja: Messages = {
 
   "tabs.closeAria": (title) => `${title} を閉じる`,
   "tabs.newTabAria": "新しいタブ",
+  "tabs.listAria": "開いているファイル",
+  "tabs.unsavedAria": (title) => `${title}（未保存の変更あり）`,
 
   "tabs.closeOthers": "他のタブを閉じる",
   "tabs.closeTabsToRight": "右側のタブを閉じる",
@@ -1865,6 +1873,8 @@ const zhCN: Messages = {
 
   "tabs.closeAria": (title) => `关闭 ${title}`,
   "tabs.newTabAria": "新建标签页",
+  "tabs.listAria": "已打开的文件",
+  "tabs.unsavedAria": (title) => `${title}，有未保存的更改`,
 
   "tabs.closeOthers": "关闭其他标签页",
   "tabs.closeTabsToRight": "关闭右侧标签页",
