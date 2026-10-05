@@ -40,7 +40,7 @@
      description for the WebKit/CodeMirror drawSelection() investigation
      that led to splitting this out. */
   --bg-selection: rgba(87, 87, 209, 0.32);
-  --warning: #ae5600;
+  --warning: #9b4c00;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
   --overlay: rgba(0, 0, 0, 0.3);
@@ -2358,7 +2358,7 @@ html[data-theme="light"],
   --accent-fg: #ffffff;
   --accent-soft: rgba(87, 87, 209, 0.14);
   --bg-selection: rgba(87, 87, 209, 0.32);
-  --warning: #ae5600;
+  --warning: #9b4c00;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
   --overlay: rgba(0, 0, 0, 0.3);
@@ -2430,7 +2430,7 @@ html[data-theme="paper"],
   --accent-fg: #ffffff;
   --accent-soft: rgba(62, 106, 89, 0.14);
   --bg-selection: rgba(62, 106, 89, 0.32);
-  --warning: #a35100;
+  --warning: #924800;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #bd353a;
   --overlay: rgba(0, 0, 0, 0.3);

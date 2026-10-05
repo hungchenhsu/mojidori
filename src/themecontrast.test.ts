@@ -9,12 +9,35 @@ import { describe, expect, it } from "vitest";
 
 const css = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
 
-function tokens(selector: string): Record<string, string> {
+function block(selector: string): string {
   const start = css.indexOf(selector);
   if (start < 0) throw new Error(`missing ${selector}`);
-  const block = css.slice(start, css.indexOf("}", start));
+  return css.slice(start, css.indexOf("}", start));
+}
+
+function tokens(selector: string): Record<string, string> {
   return Object.fromEntries(
-    [...block.matchAll(/--([a-z-]+):\s*(#[0-9a-fA-F]{6})/g)].map((m) => [m[1], m[2]]),
+    [...block(selector).matchAll(/--([a-z-]+):\s*(#[0-9a-fA-F]{6})/g)].map((m) => [m[1], m[2]]),
+  );
+}
+
+/** `--name: rgba(r, g, b, a)` composited over an opaque `#rrggbb`. */
+function composite(selector: string, name: string, over: string): string {
+  const m = new RegExp(`--${name}:\\s*rgba\\(([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)\\)`).exec(
+    block(selector),
+  );
+  if (!m) throw new Error(`missing --${name} in ${selector}`);
+  const [r, g, b, a] = m.slice(1).map(Number);
+  return (
+    "#" +
+    [r, g, b]
+      .map((c, i) => {
+        const base = parseInt(over.slice(1 + i * 2, 3 + i * 2), 16);
+        return Math.round(a * c + (1 - a) * base)
+          .toString(16)
+          .padStart(2, "0");
+      })
+      .join("")
   );
 }
 
@@ -56,6 +79,15 @@ describe("theme text contrast", () => {
             `${name} --${fg} ${t[fg]} on --${bg} ${t[bg]}`,
           ).toBeGreaterThanOrEqual(4.5);
         }
+      }
+      // Status badges draw --warning text on a --warning-soft tint
+      // (styles.css #status-warning etc.), so check the composite too.
+      for (const bg of ["bg-base", "bg-surface", "bg-raised"]) {
+        const tinted = composite(selector, "warning-soft", t[bg]);
+        expect(
+          contrast(t.warning, tinted),
+          `${name} --warning on --warning-soft over --${bg} (${tinted})`,
+        ).toBeGreaterThanOrEqual(4.5);
       }
       expect(contrast(t["fg-muted"], t["bg-base"])).toBeGreaterThanOrEqual(6.5);
       expect(
