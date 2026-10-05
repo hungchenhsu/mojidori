@@ -13,6 +13,14 @@
 // existing close paths (buttons, Escape, Enter, away-clicks, async
 // completions) need to remember to call a cleanup function.
 
+interface OpenModal {
+  overlay: HTMLElement;
+  restoreTo: HTMLElement | null;
+}
+
+/** Every installed modal whose observer hasn't torn it down yet. */
+const openModals = new Set<OpenModal>();
+
 export interface ModalOptions {
   /** "alertdialog" for confirmations that interrupt with a question. */
   role?: "dialog" | "alertdialog";
@@ -64,7 +72,9 @@ export function tabbableIn(root: HTMLElement): HTMLElement[] {
  * Make `dialog` (inside `overlay`) an accessible modal. Call right after
  * the overlay is attached to the document and before focusing its initial
  * control, so the restore target is whatever was focused before the modal
- * appeared.
+ * appeared. If the caller hasn't focused anything inside by the end of the
+ * current task, the first tabbable control (or the dialog itself) gets
+ * focus.
  */
 export function installModal(
   overlay: HTMLElement,
@@ -82,11 +92,41 @@ export function installModal(
     dialog.setAttribute("aria-describedby", ensureId(options.describedBy));
   }
 
-  const previous =
+  let previous =
     document.activeElement instanceof HTMLElement &&
     document.activeElement !== document.body
       ? document.activeElement
       : null;
+  // A modal opened by another modal's action (e.g. a Command Palette
+  // command) arrives after that modal already left the DOM, so focus sits
+  // on body. Inherit the departed modal's restore target instead of losing
+  // it; its own observer will then see focus already placed and stand down.
+  if (!previous) {
+    for (const open of openModals) {
+      if (!open.overlay.isConnected && open.restoreTo?.isConnected) {
+        previous = open.restoreTo;
+      }
+    }
+  }
+  const entry: OpenModal = { overlay, restoreTo: previous };
+  openModals.add(entry);
+
+  // Move focus in if the caller doesn't within this task: keystrokes must
+  // never keep reaching the editor behind an aria-modal dialog. Callers
+  // that focus synchronously (most) are unaffected; ones that focus later
+  // (setTimeout) simply move focus again.
+  queueMicrotask(() => {
+    if (!overlay.isConnected) return;
+    const active = document.activeElement;
+    if (active instanceof Node && dialog.contains(active)) return;
+    const target = tabbableIn(dialog)[0];
+    if (target) {
+      target.focus();
+    } else {
+      if (!dialog.hasAttribute("tabindex")) dialog.tabIndex = -1;
+      dialog.focus();
+    }
+  });
 
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key !== "Tab" || event.defaultPrevented) return;
@@ -120,6 +160,7 @@ export function installModal(
   const observer = new MutationObserver(() => {
     if (overlay.isConnected) return;
     observer.disconnect();
+    openModals.delete(entry);
     document.removeEventListener("keydown", onKeyDown, true);
     const focusLost =
       document.activeElement === null || document.activeElement === document.body;

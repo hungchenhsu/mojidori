@@ -150,6 +150,52 @@ describe("installModal", () => {
     expect(document.activeElement?.id).toBe("u1");
   });
 
+  it("moves focus inside when the caller doesn't", async () => {
+    const editor = document.createElement("textarea");
+    document.body.appendChild(editor);
+    editor.focus();
+    const { overlay, dialog } = buildModal(`<p>text</p><button id="go">go</button>`);
+    installModal(overlay, dialog);
+    expect(document.activeElement).toBe(editor);
+    await Promise.resolve();
+    expect(document.activeElement?.id).toBe("go");
+  });
+
+  it("keeps the caller's own initial focus", async () => {
+    const { overlay, dialog } = buildModal(`<button id="a">a</button><input id="q" />`);
+    installModal(overlay, dialog);
+    dialog.querySelector<HTMLElement>("#q")!.focus();
+    await Promise.resolve();
+    expect(document.activeElement?.id).toBe("q");
+  });
+
+  it("focuses the dialog itself when it has no controls", async () => {
+    const { overlay, dialog } = buildModal(`<p>Working…</p>`);
+    installModal(overlay, dialog);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(dialog);
+    expect(dialog.tabIndex).toBe(-1);
+  });
+
+  it("carries the restore target through a modal that opens another", async () => {
+    const editor = document.createElement("textarea");
+    document.body.appendChild(editor);
+    editor.focus();
+    const palette = buildModal(`<input id="p" />`);
+    installModal(palette.overlay, palette.dialog);
+    palette.dialog.querySelector<HTMLElement>("#p")!.focus();
+    // The palette closes, then its command synchronously opens a dialog.
+    palette.overlay.remove();
+    const next = buildModal(`<button id="n">n</button>`);
+    installModal(next.overlay, next.dialog);
+    next.dialog.querySelector<HTMLElement>("#n")!.focus();
+    await flushObservers();
+    expect(document.activeElement?.id).toBe("n");
+    next.overlay.remove();
+    await flushObservers();
+    expect(document.activeElement).toBe(editor);
+  });
+
   it("restores focus to the previously focused element on removal", async () => {
     const editor = document.createElement("textarea");
     document.body.appendChild(editor);

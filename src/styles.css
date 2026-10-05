@@ -111,6 +111,12 @@ input,
     color 120ms ease-out;
 }
 
+/* A dialog focused as a fallback (modal.ts installModal, when it has no
+   control to focus) is a container, not a control: no focus ring. */
+[aria-modal="true"]:focus {
+  outline: none;
+}
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible {
