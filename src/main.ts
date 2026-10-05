@@ -1310,6 +1310,20 @@ function currentAbsoluteLine(doc: Doc): number | null {
   return doc.windowStartLine + bufferLine - 1;
 }
 
+/** The Go to Line panel's hint: the cursor's file line and, when known,
+ *  the file's line count — the buffer's own count for a whole document, the
+ *  line index's for a large file only once indexing covered all of it. */
+function gotoContext(): { currentLine: number | null; lineCount: number | null } {
+  const doc = tabs.active;
+  if (!doc) return { currentLine: null, lineCount: null };
+  const lineCount = !doc.truncated
+    ? lineCountOf(editor.snapshot())
+    : doc.lineIndex && doc.lineIndex.indexedSize === doc.totalSize
+      ? doc.lineIndex.totalLines
+      : null;
+  return { currentLine: currentAbsoluteLine(doc), lineCount };
+}
+
 function jumpToBookmark(doc: Doc, target: number | null): void {
   if (target === null) return;
   if (!doc.truncated) {
@@ -3833,7 +3847,7 @@ function dispatchMenuCommand(id: string): void {
       });
       break;
     case "goto_line":
-      showGoToLine((line, column) => handleGotoLine(line, column));
+      showGoToLine((line, column) => handleGotoLine(line, column), gotoContext());
       break;
     // Cursor movement only, like select_next_occurrence/
     // select_all_occurrences above and goto_line just above — unguarded

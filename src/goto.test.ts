@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { parseGoToInput } from "./goto";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { goToHint, parseGoToInput, showGoToLine } from "./goto";
 
 describe("parseGoToInput", () => {
   it("parses a bare line number, with no column (line-start, pre-existing behavior)", () => {
@@ -72,5 +72,58 @@ describe("parseGoToInput", () => {
 
   it("trims surrounding whitespace around an otherwise-valid input", () => {
     expect(parseGoToInput("  123:45  ")).toEqual({ line: 123, column: 45 });
+  });
+});
+
+describe("Go to Line hint and invalid input", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("describes the current position, with the total when known", () => {
+    expect(goToHint(undefined)).toBeNull();
+    expect(goToHint({ currentLine: null, lineCount: 10 })).toBeNull();
+    expect(goToHint({ currentLine: 12, lineCount: 340 })).toBe(
+      "Current line 12 of 340. Type a line, or line:column.",
+    );
+    expect(goToHint({ currentLine: 12, lineCount: null })).toBe(
+      "Current line 12. Type a line, or line:column.",
+    );
+  });
+
+  it("keeps the panel open and explains an invalid entry", () => {
+    const onGo = vi.fn();
+    showGoToLine(onGo, { currentLine: 3, lineCount: 9 });
+    const input = document.querySelector<HTMLInputElement>(".goto-panel input")!;
+    const hint = document.querySelector<HTMLElement>(".goto-hint")!;
+    expect(input.getAttribute("aria-describedby")).toBe(hint.id);
+    expect(hint.textContent).toBe("Current line 3 of 9. Type a line, or line:column.");
+
+    input.value = "12x";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(onGo).not.toHaveBeenCalled();
+    expect(document.querySelector(".goto-overlay")).not.toBeNull();
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(hint.textContent).toBe("Enter a line number, or line:column (e.g. 120:4).");
+
+    // Editing clears the error back to the position hint.
+    input.value = "12";
+    input.dispatchEvent(new Event("input"));
+    expect(input.hasAttribute("aria-invalid")).toBe(false);
+    expect(hint.textContent).toContain("Current line 3");
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(onGo).toHaveBeenCalledWith(12, null);
+    expect(document.querySelector(".goto-overlay")).toBeNull();
+  });
+
+  it("still closes quietly on an empty Enter", () => {
+    const onGo = vi.fn();
+    showGoToLine(onGo);
+    const input = document.querySelector<HTMLInputElement>(".goto-panel input")!;
+    expect(document.querySelector<HTMLElement>(".goto-hint")!.hidden).toBe(true);
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(onGo).not.toHaveBeenCalled();
+    expect(document.querySelector(".goto-overlay")).toBeNull();
   });
 });

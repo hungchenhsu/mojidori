@@ -39,8 +39,24 @@ export function parseGoToInput(value: string): GoToTarget | null {
   return { line, column };
 }
 
+/** Where the cursor is, for the panel's hint line. `lineCount` is null
+ *  when the document's total isn't known yet (large-file indexing). */
+export interface GoToContext {
+  currentLine: number | null;
+  lineCount: number | null;
+}
+
+/** The hint shown under the field, or null when there's nothing to say. */
+export function goToHint(context: GoToContext | undefined): string | null {
+  if (!context || context.currentLine === null) return null;
+  return context.lineCount === null
+    ? t("goto.hint", context.currentLine)
+    : t("goto.hintWithTotal", context.currentLine, context.lineCount);
+}
+
 export function showGoToLine(
   onGo: (line: number, column: number | null) => void,
+  context?: GoToContext,
 ): void {
   if (document.querySelector(".goto-overlay")) return;
 
@@ -57,6 +73,15 @@ export function showGoToLine(
   input.placeholder = t("goto.placeholder");
   panel.appendChild(input);
 
+  const hint = document.createElement("div");
+  hint.className = "goto-hint";
+  hint.id = "goto-hint";
+  const contextHint = goToHint(context);
+  hint.textContent = contextHint ?? "";
+  hint.hidden = contextHint === null;
+  input.setAttribute("aria-describedby", hint.id);
+  panel.appendChild(hint);
+
   const close = (): void => {
     document.removeEventListener("mousedown", onAway);
     overlay.remove();
@@ -71,10 +96,29 @@ export function showGoToLine(
       close();
     } else if (event.key === "Enter") {
       event.preventDefault();
+      if (input.value.trim() === "") {
+        close();
+        return;
+      }
       const target = parseGoToInput(input.value);
+      if (!target) {
+        // Say what's accepted instead of silently closing on a typo.
+        input.setAttribute("aria-invalid", "true");
+        hint.textContent = t("goto.invalid");
+        hint.hidden = false;
+        hint.classList.add("goto-hint-error");
+        return;
+      }
       close();
-      if (target) onGo(target.line, target.column);
+      onGo(target.line, target.column);
     }
+  });
+  input.addEventListener("input", () => {
+    if (input.getAttribute("aria-invalid") !== "true") return;
+    input.removeAttribute("aria-invalid");
+    hint.classList.remove("goto-hint-error");
+    hint.textContent = contextHint ?? "";
+    hint.hidden = contextHint === null;
   });
 
   overlay.appendChild(panel);
