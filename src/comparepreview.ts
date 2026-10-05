@@ -10,6 +10,7 @@
 // delegates to main.ts's existing reopenWithEncoding flow via a callback
 // (the same callback-into-main.ts shape as findinfiles.ts's
 // showFindInFiles) and then closes the panel.
+import { installModal } from "./modal";
 import { groupEncodingChoices, reopenEncodingChoices, type EncodingChoice } from "./encodings";
 import { hexPreviewCaption } from "./hexview";
 import { t } from "./i18n";
@@ -200,6 +201,7 @@ export function showComparePreview(
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  installModal(overlay, panel, { label: t("modal.compareEncodings") });
   setTimeout(() => {
     document.addEventListener("mousedown", onAway);
     document.addEventListener("keydown", onKey);

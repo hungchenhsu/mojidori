@@ -293,6 +293,13 @@ WKWebView/WebView2 acceptance is collected for the user.
   themes, panels, and dialogs can be screenshot-reviewed without the Rust
   core. A unit test pins its shell markup to `index.html`; nothing under
   `dev/` is bundled.
+- [x] Give every DOM modal (14 overlays: confirms, Go to Line, palettes,
+  Find in Files, conversion/repair/compare panels, hex view, Preferences,
+  Document Info) shared accessibility via `src/modal.ts`: dialog or
+  alertdialog role, `aria-modal`, an accessible name, a Tab/Shift+Tab
+  focus trap (topmost modal only), and focus restored to the prior element
+  when the overlay is removed unless the closing code moved focus itself.
+  Native screen-reader acceptance pending.
 - [x] Redesign the Preferences dialog: Appearance / Editor / Files
   sections, uniform control sizing, a pinned button bar, and a theme
   picker of five preview cards painted from each theme's own token block

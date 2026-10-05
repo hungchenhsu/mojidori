@@ -13,6 +13,7 @@
 // case-by-case as part of this change (see main.ts's switch, and the
 // defensive no-active-doc guard added to its `print` case, the one bare
 // case found).
+import { installModal } from "./modal";
 import { t } from "./i18n";
 import type { PaletteCommand } from "./ipc";
 
@@ -215,6 +216,7 @@ export function showPalette(
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  installModal(overlay, panel, { label: t("modal.commandPalette") });
   render();
   input.focus();
   setTimeout(() => document.addEventListener("mousedown", onAway), 0);
