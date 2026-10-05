@@ -212,6 +212,12 @@ export interface Messages {
   "findInFiles.replaceFailuresHeading": (count: number) => string;
 
   "goto.placeholder": string;
+  /** Hint under the Go to Line field: where the cursor is now, and the
+   *  document's line count when it's known (not for a large file whose
+   *  line index is still being built). */
+  "goto.hintWithTotal": (line: number, total: number) => string;
+  "goto.hint": (line: number) => string;
+  "goto.invalid": string;
 
   "quickOpen.searchPlaceholder": string;
   "quickOpen.noRecent": string;
@@ -734,6 +740,9 @@ const en: Messages = {
     `${count} file${count === 1 ? "" : "s"} could not be replaced:`,
 
   "goto.placeholder": "Go to line:column…",
+  "goto.hintWithTotal": (line, total) => `Current line ${line} of ${total}. Type a line, or line:column.`,
+  "goto.hint": (line) => `Current line ${line}. Type a line, or line:column.`,
+  "goto.invalid": "Enter a line number, or line:column (e.g. 120:4).",
 
   "quickOpen.searchPlaceholder": "Search recent files…",
   "quickOpen.noRecent": "No recent files",
@@ -1185,6 +1194,9 @@ const zhTW: Messages = {
   "findInFiles.replaceFailuresHeading": (count) => `${count} 個檔案未變更：`,
 
   "goto.placeholder": "跳至行:欄…",
+  "goto.hintWithTotal": (line, total) => `目前在第 ${line} 行，共 ${total} 行。輸入行號，或「行:欄」。`,
+  "goto.hint": (line) => `目前在第 ${line} 行。輸入行號，或「行:欄」。`,
+  "goto.invalid": "請輸入行號，或「行:欄」（例如 120:4）。",
 
   "quickOpen.searchPlaceholder": "搜尋最近的檔案…",
   "quickOpen.noRecent": "沒有最近的檔案",
@@ -1598,6 +1610,9 @@ const ja: Messages = {
   "findInFiles.replaceFailuresHeading": (count) => `${count} 件のファイルを変更できませんでした:`,
 
   "goto.placeholder": "行:列に移動…",
+  "goto.hintWithTotal": (line, total) => `現在 ${line} 行目（全 ${total} 行）。行番号または「行:列」を入力。`,
+  "goto.hint": (line) => `現在 ${line} 行目。行番号または「行:列」を入力。`,
+  "goto.invalid": "行番号または「行:列」を入力してください（例: 120:4）。",
 
   "quickOpen.searchPlaceholder": "最近使用したファイルを検索…",
   "quickOpen.noRecent": "最近使用したファイルはありません",
@@ -2040,6 +2055,9 @@ const zhCN: Messages = {
   "findInFiles.replaceFailuresHeading": (count) => `${count} 个文件未变更：`,
 
   "goto.placeholder": "跳转到行:列…",
+  "goto.hintWithTotal": (line, total) => `当前在第 ${line} 行，共 ${total} 行。输入行号，或“行:列”。`,
+  "goto.hint": (line) => `当前在第 ${line} 行。输入行号，或“行:列”。`,
+  "goto.invalid": "请输入行号，或“行:列”（例如 120:4）。",
 
   "quickOpen.searchPlaceholder": "搜索最近的文件…",
   "quickOpen.noRecent": "没有最近的文件",

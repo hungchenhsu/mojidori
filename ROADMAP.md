@@ -311,6 +311,10 @@ WKWebView/WebView2 acceptance is collected for the user.
   clickable items react to hover (borderless, like the rest of the
   chrome), and the cursor position is now a button that opens Go to Line.
   Native acceptance pending.
+- [x] Go to Line shows where the cursor is ("Current line 12 of 340";
+  the total only when known — a large file's line index must cover the
+  whole file) and, on an unparseable entry, stays open with an
+  explanation instead of silently closing.
 - [x] Add a browser UI harness (`dev/ui-harness.html` + an IPC mock) so
   themes, panels, and dialogs can be screenshot-reviewed without the Rust
   core. A unit test pins its shell markup to `index.html`; nothing under

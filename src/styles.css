@@ -680,7 +680,8 @@ select:focus-visible {
 }
 
 .goto-panel {
-  width: 240px;
+  width: 320px;
+  max-width: calc(100vw - 32px);
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -699,6 +700,20 @@ select:focus-visible {
   background: transparent;
   border: none;
   outline: none;
+}
+
+.goto-hint {
+  padding: 0 14px 10px;
+  color: var(--fg-muted);
+  font-size: var(--font-ui-sm);
+}
+
+.goto-hint-error {
+  color: var(--danger);
+}
+
+.goto-panel input[aria-invalid="true"] {
+  color: var(--danger);
 }
 
 .fif-overlay {
