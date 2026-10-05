@@ -278,6 +278,18 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   and preserve the rejected Windows-handle and normalization-cache
   approaches in the judgment overlay. Source version remains 0.9.0.
 
+## UI/UX pass (2026-10-05)
+
+The user asked for a UI/UX-first autonomous pass (larger visual changes
+allowed, one reviewable item per PR); afterwards the open issue queue
+resumes. Browser screenshots are review evidence only; native
+WKWebView/WebView2 acceptance is collected for the user.
+
+- [x] Add a browser UI harness (`dev/ui-harness.html` + an IPC mock) so
+  themes, panels, and dialogs can be screenshot-reviewed without the Rust
+  core. A unit test pins its shell markup to `index.html`; nothing under
+  `dev/` is bundled.
+
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:
