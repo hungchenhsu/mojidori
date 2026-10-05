@@ -209,6 +209,14 @@ export function showPalette(
   list.setAttribute("role", "listbox");
   panel.appendChild(list);
 
+  // "No matching commands" lives outside the listbox (it isn't an option)
+  // as a polite status, so an emptied result set is announced while focus
+  // stays in the input.
+  const emptyStatus = document.createElement("div");
+  emptyStatus.className = "palette-empty";
+  emptyStatus.setAttribute("role", "status");
+  panel.appendChild(emptyStatus);
+
   const mac = navigator.userAgent.includes("Mac");
 
   let filtered: PaletteMatch[] = [];
@@ -230,11 +238,12 @@ export function showPalette(
     filtered = filterAndSortCommands(commands, input.value);
     selected = clampSelectedIndex(selected, filtered.length);
     list.replaceChildren();
-    if (filtered.length === 0) {
-      const empty = document.createElement("li");
-      empty.className = "palette-empty";
-      empty.textContent = t("palette.noResults");
-      list.appendChild(empty);
+    const empty = filtered.length === 0;
+    list.hidden = empty;
+    input.setAttribute("aria-expanded", String(!empty));
+    emptyStatus.hidden = !empty;
+    emptyStatus.textContent = empty ? t("palette.noResults") : "";
+    if (empty) {
       input.removeAttribute("aria-activedescendant");
       return;
     }

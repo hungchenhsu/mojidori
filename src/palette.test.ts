@@ -208,8 +208,21 @@ describe("showPalette rendering", () => {
       const [only] = [...list.querySelectorAll<HTMLElement>(".palette-item")];
       expect([...only.querySelectorAll("mark")].map((m) => m.textContent)).toEqual(["S", "L"]);
 
-      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
       input.value = "zzz";
+      input.dispatchEvent(new Event("input"));
+      const status = document.querySelector<HTMLElement>(".palette-empty")!;
+      expect(status.getAttribute("role")).toBe("status");
+      expect(status.hidden).toBe(false);
+      expect(status.textContent).toBe("No matching commands");
+      expect(list.hidden).toBe(true);
+      expect(input.getAttribute("aria-expanded")).toBe("false");
+      expect(input.hasAttribute("aria-activedescendant")).toBe(false);
+
+      input.value = "";
+      input.dispatchEvent(new Event("input"));
+      expect(status.hidden).toBe(true);
+      expect(list.hidden).toBe(false);
+      expect(input.getAttribute("aria-expanded")).toBe("true");
     } finally {
       document.body.innerHTML = "";
     }
