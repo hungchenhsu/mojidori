@@ -242,30 +242,14 @@ export async function initPreferences(editor: EditorHandle): Promise<void> {
   });
 }
 
-/** `caption`, when given, renders as a muted line below the label/control
- *  pair — same visual idiom as extensionTable()'s `.prefs-ext-hint` below,
- *  reused here for a preference whose effect has a scope limit worth
- *  surfacing up front rather than only in docs (see
- *  preferences.trimTrailingWhitespaceOnSaveHint's call site). Omitting it
- *  returns exactly the old single `<label>` element, so every other
- *  caller is unaffected. */
-function row(label: string, control: HTMLElement, caption?: string): HTMLElement {
+function row(label: string, control: HTMLElement): HTMLElement {
   const wrapper = document.createElement("label");
   wrapper.className = "prefs-row";
   const text = document.createElement("span");
   text.textContent = label;
   wrapper.appendChild(text);
   wrapper.appendChild(control);
-  if (caption === undefined) return wrapper;
-
-  const withCaption = document.createElement("div");
-  withCaption.className = "prefs-row-with-caption";
-  withCaption.appendChild(wrapper);
-  const hint = document.createElement("div");
-  hint.className = "prefs-row-hint";
-  hint.textContent = caption;
-  withCaption.appendChild(hint);
-  return withCaption;
+  return wrapper;
 }
 
 /** `group` is optional and unused by themeChoices()/languageChoices() (they
@@ -391,6 +375,104 @@ function extensionTable(initial: [string, string][]): {
   };
 }
 
+/** A titled group of rows in the Preferences dialog. */
+function section(heading: string, ...children: HTMLElement[]): HTMLElement {
+  const group = document.createElement("section");
+  group.className = "prefs-section";
+  const title = document.createElement("h3");
+  title.className = "prefs-section-title";
+  title.textContent = heading;
+  group.append(title, ...children);
+  return group;
+}
+
+/** A row whose control is a checkbox: checkbox first, then its label, the
+ *  platform-conventional order (unlike the label/control pairs above).
+ *  `caption`, when given, renders as a muted line below — used for a
+ *  preference whose effect has a scope limit worth surfacing up front
+ *  rather than only in docs (see
+ *  preferences.trimTrailingWhitespaceOnSaveHint's call site). */
+function checkboxRow(label: string, control: HTMLInputElement, caption?: string): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "prefs-check";
+  const line = document.createElement("label");
+  line.className = "prefs-check-row";
+  const text = document.createElement("span");
+  text.textContent = label;
+  line.append(control, text);
+  wrapper.appendChild(line);
+  if (caption !== undefined) {
+    const hint = document.createElement("div");
+    hint.className = "prefs-row-hint";
+    hint.textContent = caption;
+    wrapper.appendChild(hint);
+  }
+  return wrapper;
+}
+
+/** Theme picker: one radio per theme, each drawn as a miniature window in
+ *  that theme's own colors. The swatch markup sets `data-theme` on itself,
+ *  and styles.css scopes every theme's token block to
+ *  `.theme-swatch[data-theme=...]` as well as `html[data-theme=...]`, so a
+ *  swatch is painted from the same tokens as the real theme — no second
+ *  copy of any color. "System" shows light and dark halves. */
+function themePicker(selected: string): { element: HTMLElement; value: () => string } {
+  const group = document.createElement("div");
+  group.className = "prefs-theme-picker";
+  group.setAttribute("role", "radiogroup");
+  group.setAttribute("aria-label", t("preferences.theme"));
+  const name = "prefs-theme";
+
+  const preview = (theme: string): HTMLElement => {
+    const swatch = document.createElement("span");
+    swatch.className = "theme-swatch";
+    swatch.dataset.theme = theme;
+    swatch.setAttribute("aria-hidden", "true");
+    const bar = document.createElement("span");
+    bar.className = "theme-swatch-bar";
+    const line1 = document.createElement("span");
+    line1.className = "theme-swatch-line theme-swatch-accent";
+    const line2 = document.createElement("span");
+    line2.className = "theme-swatch-line";
+    const line3 = document.createElement("span");
+    line3.className = "theme-swatch-line theme-swatch-short";
+    swatch.append(bar, line1, line2, line3);
+    return swatch;
+  };
+
+  for (const choice of themeChoices()) {
+    const option = document.createElement("label");
+    option.className = "prefs-theme-option";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = name;
+    radio.value = choice.value;
+    radio.checked = choice.value === selected;
+    const art = document.createElement("span");
+    art.className = "prefs-theme-art";
+    if (choice.value === "system") {
+      art.classList.add("prefs-theme-art-split");
+      art.append(preview("light"), preview("dark"));
+    } else {
+      art.append(preview(choice.value));
+    }
+    const caption = document.createElement("span");
+    caption.className = "prefs-theme-label";
+    caption.textContent = choice.label;
+    option.append(radio, art, caption);
+    group.appendChild(option);
+  }
+  // An unknown stored value (shouldn't happen; loadPreferences validates)
+  // still leaves exactly one option checked.
+  if (!group.querySelector("input:checked")) {
+    group.querySelector<HTMLInputElement>("input")!.checked = true;
+  }
+  return {
+    element: group,
+    value: () => group.querySelector<HTMLInputElement>("input:checked")!.value,
+  };
+}
+
 export function showPreferencesDialog(): void {
   if (document.querySelector(".prefs-overlay")) return;
 
@@ -398,53 +480,65 @@ export function showPreferencesDialog(): void {
   overlay.className = "prefs-overlay";
   const dialog = document.createElement("div");
   dialog.className = "prefs-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-labelledby", "prefs-title");
 
   const title = document.createElement("h2");
+  title.id = "prefs-title";
   title.textContent = t("preferences.title");
   dialog.appendChild(title);
+
+  const theme = themePicker(current.theme);
+
+  const language = select(languageChoices());
+  language.value = current.language;
+  if (language.selectedIndex < 0) language.selectedIndex = 0;
 
   const fontFamily = document.createElement("input");
   fontFamily.type = "text";
   fontFamily.placeholder = t("preferences.editorFontPlaceholder");
   fontFamily.value = current.fontFamily;
-  dialog.appendChild(row(t("preferences.editorFont"), fontFamily));
 
   const fontSize = document.createElement("input");
   fontSize.type = "number";
   fontSize.min = "9";
   fontSize.max = "32";
   fontSize.value = String(current.fontSize);
-  dialog.appendChild(row(t("preferences.fontSize"), fontSize));
-
-  const theme = select(themeChoices());
-  theme.value = current.theme;
-  dialog.appendChild(row(t("preferences.theme"), theme));
-
-  const language = select(languageChoices());
-  language.value = current.language;
-  if (language.selectedIndex < 0) language.selectedIndex = 0;
-  dialog.appendChild(row(t("preferences.language"), language));
 
   const encoding = select(
     encodingSelectOptions(encodingChoices(), (e) => `${e.value} ${e.withBom}`),
   );
   encoding.value = `${current.defaultEncoding} ${current.defaultBom}`;
   if (encoding.selectedIndex < 0) encoding.selectedIndex = 0;
-  dialog.appendChild(row(t("preferences.encodingForNewFiles"), encoding));
 
   const trimTrailingWhitespaceOnSave = document.createElement("input");
   trimTrailingWhitespaceOnSave.type = "checkbox";
   trimTrailingWhitespaceOnSave.checked = current.trimTrailingWhitespaceOnSave;
-  dialog.appendChild(
-    row(
-      t("preferences.trimTrailingWhitespaceOnSave"),
-      trimTrailingWhitespaceOnSave,
-      t("preferences.trimTrailingWhitespaceOnSaveHint"),
-    ),
-  );
 
   const extensions = extensionTable(current.extensionEncodings);
-  dialog.appendChild(extensions.element);
+
+  const body = document.createElement("div");
+  body.className = "prefs-body";
+  body.append(
+    section(t("preferences.sectionAppearance"), theme.element, row(t("preferences.language"), language)),
+    section(
+      t("preferences.sectionEditor"),
+      row(t("preferences.editorFont"), fontFamily),
+      row(t("preferences.fontSize"), fontSize),
+    ),
+    section(
+      t("preferences.sectionFiles"),
+      row(t("preferences.encodingForNewFiles"), encoding),
+      checkboxRow(
+        t("preferences.trimTrailingWhitespaceOnSave"),
+        trimTrailingWhitespaceOnSave,
+        t("preferences.trimTrailingWhitespaceOnSaveHint"),
+      ),
+      extensions.element,
+    ),
+  );
+  dialog.appendChild(body);
 
   const buttons = document.createElement("div");
   buttons.className = "prefs-buttons";
@@ -471,7 +565,7 @@ export function showPreferencesDialog(): void {
     current = {
       fontFamily: fontFamily.value,
       fontSize: Number.isFinite(size) ? Math.min(Math.max(size, 9), 32) : 13,
-      theme: theme.value,
+      theme: theme.value(),
       language: language.value,
       defaultEncoding: encValue,
       defaultBom: encBom === "true",
@@ -512,5 +606,5 @@ export function showPreferencesDialog(): void {
 
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
-  fontFamily.focus();
+  theme.element.querySelector<HTMLInputElement>("input:checked")!.focus();
 }
