@@ -306,6 +306,9 @@ export class TabStore {
    *  beats caching rects at drag-start. */
   private tabElements = new Map<number, HTMLElement>();
   private drag: TabDragState | null = null;
+  /** Doc id under the last middle-button press, so a release closes only
+   *  the tab it was pressed on (see render()). */
+  private middlePressId: number | null = null;
 
   constructor(
     private container: HTMLElement,
@@ -406,11 +409,20 @@ export class TabStore {
       );
       // Middle-click closes, the convention in browsers and most editors.
       // beginTabDrag ignores the middle button, so the tab is not activated
-      // first; the close targets this doc by id either way.
-      tab.addEventListener("auxclick", (e) => {
+      // first. Built from mousedown/mouseup rather than `auxclick`, which
+      // WKWebView only dispatches from Safari 18.2 on; the press itself is
+      // cancelled so WebView2 never starts middle-button autoscroll on a
+      // scrollable strip. Press and release must land on the same tab.
+      tab.addEventListener("mousedown", (e) => {
         if (e.button !== 1) return;
         e.preventDefault();
-        this.events.onClose(doc.id);
+        this.middlePressId = doc.id;
+      });
+      tab.addEventListener("mouseup", (e) => {
+        if (e.button !== 1) return;
+        const pressed = this.middlePressId;
+        this.middlePressId = null;
+        if (pressed === doc.id) this.events.onClose(doc.id);
       });
       tab.addEventListener("keydown", (e) => this.onTabKeyDown(e, doc.id));
       // Suppress the native context menu and open ours instead. This is a
@@ -494,7 +506,7 @@ export class TabStore {
    *  moving still selects, matching the pre-drag mousedown behavior), but
    *  `primaryButton` stops onTabPointerMove from ever promoting it to an
    *  actual drag — see requirement "中鍵/右鍵不拖". A middle-click does not
-   *  arm at all: it closes the tab (the render()'s `auxclick` listener)
+   *  arm at all: it closes the tab (render()'s mousedown/mouseup pair)
    *  without first activating it.
    *
    *  Not HTML5 drag-and-drop: that API's native drag image/ghost and drop
@@ -503,7 +515,7 @@ export class TabStore {
    *  and are equally mature on both. */
   private beginTabDrag(e: PointerEvent, id: number, tab: HTMLElement): void {
     if (this.drag) return; // one gesture at a time
-    if (e.button === 1) return; // middle-click closes; see auxclick in render()
+    if (e.button === 1) return; // middle-click closes; see render()
 
     const rect = tab.getBoundingClientRect();
     this.drag = {

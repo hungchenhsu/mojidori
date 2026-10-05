@@ -916,18 +916,31 @@ describe("TabStore accessibility and keyboard", () => {
   it("closes on middle-click without activating the tab first", () => {
     const { container, events } = threeTabs();
     try {
-      const first = container.querySelectorAll<HTMLElement>(".tab")[0];
+      const tabs = container.querySelectorAll<HTMLElement>(".tab");
+      const first = tabs[0];
       first.dispatchEvent(new PointerEvent("pointerdown", { button: 1, pointerId: 1, bubbles: true }));
+      const press = new MouseEvent("mousedown", { button: 1, bubbles: true, cancelable: true });
+      first.dispatchEvent(press);
+      // Cancelled at press time so WebView2 never starts autoscroll.
+      expect(press.defaultPrevented).toBe(true);
       first.dispatchEvent(new PointerEvent("pointerup", { button: 1, pointerId: 1, bubbles: true }));
-      first.dispatchEvent(new MouseEvent("auxclick", { button: 1, bubbles: true, cancelable: true }));
+      first.dispatchEvent(new MouseEvent("mouseup", { button: 1, bubbles: true }));
       expect(events.onSelect).not.toHaveBeenCalled();
       expect(events.onClose).toHaveBeenCalledWith(1);
-      // A right-button auxclick is not a close.
+
+      // Press on one tab, release on another: nothing closes.
       events.onClose.mockClear();
-      first.dispatchEvent(new MouseEvent("auxclick", { button: 2, bubbles: true }));
+      tabs[0].dispatchEvent(new MouseEvent("mousedown", { button: 1, bubbles: true, cancelable: true }));
+      tabs[1].dispatchEvent(new MouseEvent("mouseup", { button: 1, bubbles: true }));
+      expect(events.onClose).not.toHaveBeenCalled();
+
+      // A right-button release is not a close.
+      tabs[0].dispatchEvent(new MouseEvent("mousedown", { button: 2, bubbles: true, cancelable: true }));
+      tabs[0].dispatchEvent(new MouseEvent("mouseup", { button: 2, bubbles: true }));
       expect(events.onClose).not.toHaveBeenCalled();
     } finally {
       container.remove();
     }
   });
+
 });
