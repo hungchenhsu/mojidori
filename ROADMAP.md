@@ -340,7 +340,9 @@ WKWebView/WebView2 acceptance is collected for the user.
   focus starts on the first enabled item, Up/Down (wrapping) and Home/End
   move, checkable items are menuitemradio with aria-checked, and the
   filterable encoding picker enters its list with ArrowDown and returns to
-  the field with ArrowUp.
+  the field with ArrowUp. Tab from an item or the filter field closes the
+  menu, and IME-composition arrow keys are left to the IME (#387 deferred
+  review items).
 - [x] Redesign the Preferences dialog: Appearance / Editor / Files
   sections, uniform control sizing, a pinned button bar, and a theme
   picker of five preview cards painted from each theme's own token block
