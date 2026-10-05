@@ -1262,13 +1262,14 @@ select:focus-visible {
 
 .batchconvert-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   padding: 12px 14px 8px;
 }
 
 .batchconvert-folder {
-  flex-shrink: 0;
+  min-width: 0;
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
