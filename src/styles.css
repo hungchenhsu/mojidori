@@ -288,7 +288,9 @@ select:focus-visible {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 3px 10px;
+  gap: 12px;
+  height: 26px;
+  padding: 0 6px 0 12px;
   font-size: var(--font-ui-sm);
   color: var(--fg-muted);
   background: var(--bg-surface);
@@ -297,6 +299,7 @@ select:focus-visible {
 }
 
 #status-path {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -305,8 +308,24 @@ select:focus-visible {
 .statusbar-right {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 2px;
   flex-shrink: 0;
+}
+
+/* Every right-hand item gets the same box so plain read-outs and clickable
+   ones line up; only .status-action items react to hover. */
+.statusbar-right > * {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.statusbar-right > [hidden] {
+  display: none;
 }
 
 #status-cursor,
@@ -318,11 +337,9 @@ select:focus-visible {
 #status-readonly,
 #status-missing,
 #status-indexing {
-  padding: 1px 8px;
   color: var(--warning);
   background: var(--warning-soft);
-  border: 1px solid var(--warning);
-  border-radius: var(--radius-sm);
+  border-color: var(--warning);
 }
 
 #status-warning {
@@ -331,18 +348,19 @@ select:focus-visible {
 }
 
 .status-action {
-  padding: 1px 8px;
   font: inherit;
   color: inherit;
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
 .status-action:hover:not(:disabled) {
+  color: var(--fg);
   background: var(--accent-soft);
-  border-color: var(--accent);
+}
+
+.status-action:active:not(:disabled) {
+  background: var(--bg-selection);
 }
 
 .status-action:disabled {

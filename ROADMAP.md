@@ -285,6 +285,10 @@ allowed, one reviewable item per PR); afterwards the open issue queue
 resumes. Browser screenshots are review evidence only; native
 WKWebView/WebView2 acceptance is collected for the user.
 
+- [x] Unify the status bar: every right-hand item shares one box, only
+  clickable items react to hover (borderless, like the rest of the
+  chrome), and the cursor position is now a button that opens Go to Line.
+  Native acceptance pending.
 - [x] Add a browser UI harness (`dev/ui-harness.html` + an IPC mock) so
   themes, panels, and dialogs can be screenshot-reviewed without the Rust
   core. A unit test pins its shell markup to `index.html`; nothing under
