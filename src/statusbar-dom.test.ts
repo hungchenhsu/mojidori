@@ -14,7 +14,7 @@ beforeEach(() => {
 describe("status bar cursor position", () => {
   it("is a button that names its Go to Line action, in the current locale", async () => {
     const { setLocale } = await import("./i18n");
-    const { updateStatusBar } = await import("./statusbar");
+    const { updateCursor, updateStatusBar } = await import("./statusbar");
     const cursor = document.querySelector<HTMLElement>("#status-cursor")!;
     expect(cursor.tagName).toBe("BUTTON");
     expect(cursor.classList.contains("status-action")).toBe(true);
@@ -22,9 +22,13 @@ describe("status bar cursor position", () => {
     setLocale("en");
     updateStatusBar(null);
     expect(cursor.title).toBe("Go to Line…");
+    updateCursor(3, 5);
+    expect(cursor.textContent).toBe("Ln 3, Col 5");
+    expect(cursor.getAttribute("aria-label")).toBe("Go to Line… Ln 3, Col 5");
     setLocale("zh-TW");
     updateStatusBar(null);
     expect(cursor.title).toBe("跳至行號…");
+    expect(cursor.getAttribute("aria-label")).toBe("跳至行號… 第 3 行，第 5 欄");
     setLocale("en");
   });
 });
