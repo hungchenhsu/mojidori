@@ -46,8 +46,9 @@ describe("tabbableIn", () => {
       <input type="radio" name="h" value="1" id="h1" />
       <input type="radio" name="h" value="2" id="h2" />
       <select id="s"></select>
-      <div tabindex="0" id="d"></div>`;
-    expect(tabbableIn(root).map((el) => el.id)).toEqual(["a", "r2", "h1", "s", "d"]);
+      <div tabindex="0" id="d"></div>
+      <details><summary id="sum">errors</summary><p>x</p></details>`;
+    expect(tabbableIn(root).map((el) => el.id)).toEqual(["a", "r2", "h1", "s", "d", "sum"]);
   });
 });
 
@@ -105,6 +106,32 @@ describe("installModal", () => {
     outside.focus();
     tab(true);
     expect(document.activeElement?.id).toBe("b");
+  });
+
+  it("ignores modified Tab (Ctrl+Tab switches editor tabs)", () => {
+    const { overlay, dialog } = buildModal(`<button id="a">a</button><button id="b">b</button>`);
+    installModal(overlay, dialog);
+    dialog.querySelector<HTMLElement>("#b")!.focus();
+    for (const mod of ["ctrlKey", "metaKey", "altKey"] as const) {
+      const event = new KeyboardEvent("keydown", { key: "Tab", [mod]: true, bubbles: true, cancelable: true });
+      document.activeElement!.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(document.activeElement?.id).toBe("b");
+    }
+  });
+
+  it("is installed by every overlay module", async () => {
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const dir = resolve(process.cwd(), "src");
+    const modules = readdirSync(dir).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".test.ts") && name !== "modal.ts",
+    );
+    const missing = modules.filter((name) => {
+      const source = readFileSync(resolve(dir, name), "utf8");
+      return /overlay\.className = "[a-z-]+-overlay"/.test(source) && !source.includes("installModal(");
+    });
+    expect(missing).toEqual([]);
   });
 
   it("keeps Tab inert in a dialog with nothing to focus", () => {

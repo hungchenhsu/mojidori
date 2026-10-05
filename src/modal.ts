@@ -25,7 +25,7 @@ export interface ModalOptions {
 }
 
 const FOCUSABLE =
-  'button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])';
+  'button, input, select, textarea, summary, a[href], [tabindex]:not([tabindex="-1"])';
 
 let nextId = 0;
 
@@ -90,6 +90,9 @@ export function installModal(
 
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key !== "Tab" || event.defaultPrevented) return;
+    // Ctrl+Tab cycles editor tabs (main.ts) and other modified Tabs are
+    // not focus navigation.
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
     // Only the topmost modal traps Tab (a confirm can open over a panel).
     const modals = document.querySelectorAll('[aria-modal="true"]');
     if (modals[modals.length - 1] !== dialog) return;

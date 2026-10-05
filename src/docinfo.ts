@@ -286,6 +286,7 @@ function renderDialog(dialog: HTMLElement, content: DocumentInfoDialogContent, o
   title.id = "docinfo-title";
   title.textContent = content.title;
   dialog.appendChild(title);
+  dialog.removeAttribute("aria-label");
   dialog.setAttribute("aria-labelledby", title.id);
 
   renderSection(dialog, content.fileSection);
@@ -362,8 +363,9 @@ export function showDocumentInfo(doc: {
   dialog.textContent = t("common.loading");
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
-  // Named by its title once renderDialog draws it (see below).
-  installModal(overlay, dialog);
+  // Named up front for the loading state; renderDialog switches the name to
+  // its drawn title element.
+  installModal(overlay, dialog, { label: t("docinfo.title", doc.title) });
 
   const finish = (): void => {
     document.removeEventListener("keydown", onKey, true);
