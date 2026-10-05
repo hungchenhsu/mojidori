@@ -4232,6 +4232,9 @@ document
   .querySelector<HTMLElement>("#chunk-next")!
   .addEventListener("click", () => void pageChunk(1));
 document
+  .querySelector<HTMLElement>("#status-cursor")!
+  .addEventListener("click", () => dispatchMenuCommand("goto_line"));
+document
   .querySelector<HTMLElement>("#status-encoding")!
   .addEventListener("click", (event) =>
     showEncodingMenu(event.currentTarget as HTMLElement),

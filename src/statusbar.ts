@@ -285,6 +285,7 @@ export function updateStatusBar(doc: StatusInfo | null): void {
   // every other badge here — a save that landed but couldn't confirm its
   // own durability says nothing about the file's current readonly/missing/
   // decode state, so this never suppresses or is suppressed by any of them.
+  cursorEl.title = t("statusbar.goToLineTitle");
   durabilityWarningEl.hidden = !doc?.durabilityWarning;
   durabilityWarningEl.textContent = doc?.durabilityWarning
     ? t("statusbar.durabilityWarning", doc.durabilityWarning)

@@ -35,6 +35,7 @@ export interface Messages {
 
   "statusbar.noFile": string;
   "statusbar.cursor": (line: number, column: number) => string;
+  "statusbar.goToLineTitle": string;
   "statusbar.encodingWithBom": (encoding: string) => string;
   "statusbar.readonlyPreview": (size: string) => string;
   "statusbar.userReadOnly": string;
@@ -584,6 +585,7 @@ const en: Messages = {
 
   "statusbar.noFile": "No file",
   "statusbar.cursor": (line, column) => `Ln ${line}, Col ${column}`,
+  "statusbar.goToLineTitle": "Go to Line…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `Read-only preview of ${size} file`,
   "statusbar.userReadOnly": "🔒 Read-only",
@@ -1037,6 +1039,7 @@ const zhTW: Messages = {
 
   "statusbar.noFile": "無檔案",
   "statusbar.cursor": (line, column) => `第 ${line} 行，第 ${column} 欄`,
+  "statusbar.goToLineTitle": "跳至行號…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `唯讀預覽（檔案大小 ${size}）`,
   "statusbar.userReadOnly": "🔒 唯讀",
@@ -1441,6 +1444,7 @@ const ja: Messages = {
 
   "statusbar.noFile": "ファイルなし",
   "statusbar.cursor": (line, column) => `行 ${line}、列 ${column}`,
+  "statusbar.goToLineTitle": "行へ移動…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `読み取り専用プレビュー（ファイルサイズ ${size}）`,
   "statusbar.userReadOnly": "🔒 読み取り専用",
@@ -1874,6 +1878,7 @@ const zhCN: Messages = {
 
   "statusbar.noFile": "无文件",
   "statusbar.cursor": (line, column) => `第 ${line} 行，第 ${column} 列`,
+  "statusbar.goToLineTitle": "跳转到行…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `只读预览（文件大小 ${size}）`,
   "statusbar.userReadOnly": "🔒 只读",
