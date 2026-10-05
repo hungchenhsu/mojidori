@@ -27,6 +27,8 @@ interface OpenMenu {
   /** What had focus when the menu opened (usually the editor; the anchor
    *  button where clicking focuses buttons). */
   restoreTo: HTMLElement | null;
+  /** Extra teardown (listeners added after registration). */
+  cleanup?: () => void;
 }
 
 let current: OpenMenu | null = null;
@@ -39,6 +41,7 @@ let current: OpenMenu | null = null;
 export function closeMenu(): void {
   if (!current) return;
   const { restoreTo } = current;
+  current.cleanup?.();
   document.removeEventListener("mousedown", current.onAway);
   document.removeEventListener("keydown", current.onKey);
   current.el.remove();
@@ -62,6 +65,7 @@ function buildItemElement(item: MenuItem): HTMLElement {
   if (item.header) {
     const headerEl = document.createElement("div");
     headerEl.className = "popup-section-header";
+    headerEl.setAttribute("role", "presentation");
     headerEl.textContent = item.label;
     return headerEl;
   }
@@ -69,6 +73,15 @@ function buildItemElement(item: MenuItem): HTMLElement {
   const button = document.createElement("button");
   button.className = "popup-item";
   button.disabled = item.disabled ?? false;
+  // ARIA menu items, reached with the arrow keys (see wireMenuKeys) rather
+  // than one Tab stop each.
+  button.tabIndex = -1;
+  if (item.checked === undefined) {
+    button.setAttribute("role", "menuitem");
+  } else {
+    button.setAttribute("role", "menuitemradio");
+    button.setAttribute("aria-checked", String(item.checked));
+  }
 
   const check = document.createElement("span");
   check.className = "popup-check";
@@ -151,15 +164,76 @@ function registerOpenMenu(el: HTMLElement): void {
   }, 0);
 }
 
+/** The menu's operable items, in order. */
+function enabledItems(container: HTMLElement): HTMLButtonElement[] {
+  return [...container.querySelectorAll<HTMLButtonElement>("button.popup-item")].filter(
+    (button) => !button.disabled,
+  );
+}
+
+/** Arrow-key navigation within `list` (ARIA menu pattern): Up/Down move
+ *  between enabled items, wrapping; Home/End jump to the ends. Enter and
+ *  Space activate the focused item natively (it's a <button>). `onTopEdge`
+ *  runs instead of wrapping when ArrowUp is pressed on the first item —
+ *  the filterable menu uses it to return to its filter field. */
+function wireMenuKeys(list: HTMLElement, onTopEdge?: () => void): void {
+  list.addEventListener("keydown", (event) => {
+    // Tab leaves the menu: close it (focus returns to its opener) and let
+    // the browser move focus on from there, rather than leaving an open
+    // menu detached from the keyboard.
+    if (event.key === "Tab") {
+      closeMenu();
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const items = enabledItems(list);
+    if (items.length === 0) return;
+    event.preventDefault();
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "ArrowUp" && index <= 0 && onTopEdge) {
+      onTopEdge();
+      return;
+    }
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? items.length - 1
+          : event.key === "ArrowDown"
+            ? (index + 1) % items.length
+            : (index - 1 + items.length) % items.length;
+    items[next].focus();
+  });
+}
+
 export function showMenu(anchor: HTMLElement, items: MenuItem[]): void {
   closeMenu();
   const el = document.createElement("div");
   el.className = "popup-menu";
+  el.setAttribute("role", "menu");
   for (const item of items) el.appendChild(buildItemElement(item));
 
   document.body.appendChild(el);
   positionElement(el, anchor);
   registerOpenMenu(el);
+  wireMenuKeys(el);
+  // Keyboard users start inside the menu; focus returns on close
+  // (closeMenu).
+  const focusFirst = (): void => {
+    if (current?.el !== el || el.contains(document.activeElement)) return;
+    enabledItems(el)[0]?.focus();
+  };
+  focusFirst();
+  // A menu opened by a right-click (the tab context menu) is followed by
+  // that gesture's pointerup, which can activate the tab and move focus to
+  // the editor. Re-claim focus once, after the pointerup's own handlers
+  // (window bubble phase runs last).
+  const afterPointerUp = (): void => {
+    window.removeEventListener("pointerup", afterPointerUp);
+    focusFirst();
+  };
+  window.addEventListener("pointerup", afterPointerUp);
+  if (current) current.cleanup = () => window.removeEventListener("pointerup", afterPointerUp);
 }
 
 /**
@@ -215,7 +289,11 @@ export function showFilterableMenu(
 
   const listEl = document.createElement("div");
   listEl.className = "popup-filter-list";
+  listEl.id = "popup-filter-list";
+  listEl.setAttribute("role", "menu");
   el.appendChild(listEl);
+  input.setAttribute("aria-controls", listEl.id);
+  input.setAttribute("aria-label", options.placeholder);
 
   const renderList = (query: string): void => {
     listEl.replaceChildren();
@@ -231,6 +309,16 @@ export function showFilterableMenu(
   };
 
   input.addEventListener("input", () => renderList(input.value));
+  // ArrowDown from the filter field enters the list; ArrowUp on the first
+  // item comes back up to it.
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown") return;
+    const first = enabledItems(listEl)[0];
+    if (!first) return;
+    event.preventDefault();
+    first.focus();
+  });
+  wireMenuKeys(listEl, () => input.focus());
 
   document.body.appendChild(el);
   renderList("");

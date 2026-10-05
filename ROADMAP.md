@@ -336,6 +336,11 @@ WKWebView/WebView2 acceptance is collected for the user.
   and status text, and --danger was 3.1-4.2:1 in Dark/Dusk), with
   --fg-muted lifted to ≥6.5:1 to keep a visible step above --fg-faint.
   `src/themecontrast.test.ts` holds the floor.
+- [x] Status-bar and tab context menus are keyboard-operable ARIA menus:
+  focus starts on the first enabled item, Up/Down (wrapping) and Home/End
+  move, checkable items are menuitemradio with aria-checked, and the
+  filterable encoding picker enters its list with ArrowDown and returns to
+  the field with ArrowUp.
 - [x] Redesign the Preferences dialog: Appearance / Editor / Files
   sections, uniform control sizing, a pinned button bar, and a theme
   picker of five preview cards painted from each theme's own token block
