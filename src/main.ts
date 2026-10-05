@@ -1316,12 +1316,16 @@ function currentAbsoluteLine(doc: Doc): number | null {
 function gotoContext(): { currentLine: number | null; lineCount: number | null } {
   const doc = tabs.active;
   if (!doc) return { currentLine: null, lineCount: null };
-  const lineCount = !doc.truncated
+  const currentLine = currentAbsoluteLine(doc);
+  let lineCount = !doc.truncated
     ? lineCountOf(editor.snapshot())
     : doc.lineIndex && doc.lineIndex.indexedSize === doc.totalSize
       ? doc.lineIndex.totalLines
       : null;
-  return { currentLine: currentAbsoluteLine(doc), lineCount };
+  // The line index doesn't count the empty line after a final newline,
+  // while the editor (and so the cursor) does; never show "5001 of 5000".
+  if (lineCount !== null && currentLine !== null) lineCount = Math.max(lineCount, currentLine);
+  return { currentLine, lineCount };
 }
 
 function jumpToBookmark(doc: Doc, target: number | null): void {
