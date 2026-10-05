@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mojidori (UI harness)</title>
+    <!-- Dev-only: see dev/mock-tauri.js. Must load before main.ts. -->
+    <script src="/dev/mock-tauri.js"></script>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <div id="app">
+      <nav id="tabbar"></nav>
+      <main id="editor"></main>
+      <footer id="statusbar">
+        <span id="status-path">No file</span>
+        <span class="statusbar-right">
+          <button id="chunk-prev" class="status-action" hidden>◀</button>
+          <button id="chunk-next" class="status-action" hidden>▶</button>
+          <span id="status-readonly" hidden></span>
+          <span id="status-missing" hidden></span>
+          <span id="status-durability-warning" hidden></span>
+          <span id="status-indexing" hidden></span>
+          <span id="status-updating" hidden></span>
+          <button id="status-warning" hidden>⚠ decoded with errors</button>
+          <span id="status-cursor">Ln 1, Col 1</span>
+          <button id="status-char-inspector" class="status-action" hidden></button>
+          <span id="status-textstats" hidden></span>
+          <span id="status-suspicious" hidden></span>
+          <span id="status-nonnfc" hidden></span>
+          <span id="status-indent" hidden></span>
+          <button id="status-line-ending" class="status-action">LF</button>
+          <button id="status-encoding" class="status-action">UTF-8</button>
+        </span>
+      </footer>
+    </div>
+    <pre id="print-view"></pre>
+  </body>
+</html>

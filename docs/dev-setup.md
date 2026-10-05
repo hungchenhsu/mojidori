@@ -48,6 +48,16 @@ cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 All five checks above must pass before a PR — see the Definition of Done
 in [CLAUDE.md](../CLAUDE.md) / [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+- Browser UI harness for visual/UX review without the Rust core: with
+  `npm run dev` running, open
+  `http://localhost:1420/dev/ui-harness.html?theme=dark&lang=en&doc=sample&tabs=many`
+  (`theme`: light/dark/paper/dusk/system; `doc`: sample/code/empty).
+  `dev/mock-tauri.js` stands in for the IPC layer with canned data; call
+  `window.__mock.menu("find")` (any native-menu command id) or
+  `window.__mock.emit(event, payload)` from DevTools or Playwright. It is
+  Chromium-only evidence and never a substitute for WKWebView/WebView2
+  acceptance; nothing under `dev/` is bundled.
+
 ## Content Security Policy (dev mode)
 
 `src-tauri/tauri.conf.json`'s `devCsp` pins `connect-src` to
