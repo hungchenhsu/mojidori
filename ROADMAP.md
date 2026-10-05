@@ -343,6 +343,10 @@ WKWebView/WebView2 acceptance is collected for the user.
   formatted per platform (⇧⌘F / Ctrl+Shift+F); highlight fuzzy-matched
   characters; expose the list as an ARIA combobox/listbox; and keep the
   arrow-key selection scrolled into view. Native acceptance pending.
+- [x] Quick Open (recent files) gets the Command Palette's treatment: an
+  ARIA combobox/listbox with aria-activedescendant, the empty state as a
+  polite status outside the listbox, and the arrow-key selection kept in
+  view.
 
 ## Explicit non-goals
 
