@@ -289,6 +289,13 @@ WKWebView/WebView2 acceptance is collected for the user.
   themes, panels, and dialogs can be screenshot-reviewed without the Rust
   core. A unit test pins its shell markup to `index.html`; nothing under
   `dev/` is bundled.
+- [x] Redesign the Preferences dialog: Appearance / Editor / Files
+  sections, uniform control sizing, a pinned button bar, and a theme
+  picker of five preview cards painted from each theme's own token block
+  (styles.css scopes every `html[data-theme]` block to
+  `.theme-swatch[data-theme]` too, so there is no second copy of any
+  color). The dialog is a labelled `role="dialog"`. Native acceptance
+  pending.
 
 ## Explicit non-goals
 

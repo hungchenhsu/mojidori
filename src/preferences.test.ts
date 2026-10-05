@@ -324,3 +324,68 @@ describe("prefsOps write serialization", () => {
     expect(document.querySelector(".prefs-overlay")).toBeNull();
   });
 });
+
+describe("showPreferencesDialog layout and theme picker", () => {
+  it("is a labelled modal dialog grouped into sections", () => {
+    showPreferencesDialog();
+    const dialog = document.querySelector<HTMLElement>(".prefs-dialog")!;
+    expect(dialog.getAttribute("role")).toBe("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    const titleId = dialog.getAttribute("aria-labelledby")!;
+    expect(document.getElementById(titleId)?.textContent).toBe("Preferences");
+    expect(
+      [...dialog.querySelectorAll(".prefs-section-title")].map((h) => h.textContent),
+    ).toEqual(["Appearance", "Editor", "Files"]);
+  });
+
+  it("offers one radio per theme with the stored theme checked and focused", async () => {
+    loadPreferences.mockResolvedValue(defaultPreferences({ theme: "paper" }));
+    await initPreferences(fakeEditor);
+    showPreferencesDialog();
+    const group = document.querySelector<HTMLElement>(".prefs-theme-picker")!;
+    expect(group.getAttribute("role")).toBe("radiogroup");
+    const radios = [...group.querySelectorAll<HTMLInputElement>("input[type='radio']")];
+    expect(radios.map((r) => r.value)).toEqual(["system", "light", "dark", "paper", "dusk"]);
+    expect(radios.filter((r) => r.checked).map((r) => r.value)).toEqual(["paper"]);
+    expect(document.activeElement).toBe(radios[3]);
+    // Every swatch is painted by a theme token scope; System shows both halves.
+    const systemSwatches = radios[0].parentElement!.querySelectorAll<HTMLElement>(".theme-swatch");
+    expect([...systemSwatches].map((s) => s.dataset.theme)).toEqual(["light", "dark"]);
+  });
+
+  it("saves the picked theme and applies it", async () => {
+    showPreferencesDialog();
+    const dusk = document.querySelector<HTMLInputElement>(
+      ".prefs-theme-picker input[value='dusk']",
+    )!;
+    dusk.click();
+    document.querySelector<HTMLButtonElement>(".prefs-save")!.click();
+    await flush();
+    expect(savePreferences).toHaveBeenCalledWith(expect.objectContaining({ theme: "dusk" }));
+    expect(document.documentElement.dataset.theme).toBe("dusk");
+    expect(syncThemeMenu).toHaveBeenCalledWith("dusk");
+  });
+
+  it("falls back to checking the first theme for an unknown stored value", async () => {
+    loadPreferences.mockResolvedValue(defaultPreferences({ theme: "neon" }));
+    await initPreferences(fakeEditor);
+    showPreferencesDialog();
+    const checked = [
+      ...document.querySelectorAll<HTMLInputElement>(".prefs-theme-picker input:checked"),
+    ];
+    expect(checked.map((r) => r.value)).toEqual(["system"]);
+  });
+});
+
+describe("theme swatch token scoping (styles.css)", () => {
+  it("paints each swatch from the same token block as its real theme", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const css = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+    for (const theme of ["light", "dark", "paper", "dusk"]) {
+      expect(css).toContain(
+        `html[data-theme="${theme}"],\n.theme-swatch[data-theme="${theme}"] {`,
+      );
+    }
+  });
+});

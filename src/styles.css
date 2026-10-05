@@ -1877,58 +1877,204 @@ select:focus-visible {
 .prefs-dialog {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  width: 380px;
-  padding: 18px 20px;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-2);
+  font-size: var(--font-ui);
   animation: panel-in 140ms ease-out;
 }
 
 .prefs-dialog h2 {
-  margin: 0 0 4px;
+  margin: 0;
+  padding: 18px 22px 10px;
   font-size: 15px;
 }
 
-.prefs-row {
+.prefs-body {
   display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 4px 22px 18px;
+  overflow-y: auto;
+}
+
+.prefs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.prefs-section-title {
+  margin: 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: var(--font-ui-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.prefs-row {
+  display: grid;
+  grid-template-columns: 1fr 240px;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  font-size: var(--font-ui);
+}
+
+.prefs-row input,
+.prefs-row select,
+.prefs-ext-row input,
+.prefs-ext-row select {
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 8px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg-base);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
 }
 
 .prefs-row input,
 .prefs-row select {
-  width: 190px;
-  padding: 4px 6px;
-  font: inherit;
-  color: inherit;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  width: 100%;
 }
 
-.prefs-row-with-caption {
+.prefs-check {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
+.prefs-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.prefs-check-row input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.prefs-check .prefs-row-hint {
+  padding-left: 23px;
+}
+
 .prefs-row-hint {
   color: var(--fg-muted);
-  font-size: calc(var(--font-ui) - 1px);
+  font-size: var(--font-ui-sm);
+  line-height: 1.4;
+}
+
+/* Theme picker (preferences.ts themePicker). The radio stays in the DOM for
+   keyboard/screen-reader use (arrow keys move within the radiogroup) but is
+   visually replaced by the preview card's selected ring. */
+.prefs-theme-picker {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+}
+
+.prefs-theme-option {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.prefs-theme-option input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  pointer-events: none;
+}
+
+.prefs-theme-art {
+  display: flex;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  transition:
+    border-color 120ms ease-out,
+    box-shadow 120ms ease-out;
+}
+
+.prefs-theme-option:hover .prefs-theme-art {
+  border-color: var(--accent);
+}
+
+.prefs-theme-option input:checked + .prefs-theme-art {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.prefs-theme-option input:focus-visible + .prefs-theme-art {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.prefs-theme-label {
+  color: var(--fg-muted);
+  font-size: var(--font-ui-sm);
+  text-align: center;
+}
+
+.prefs-theme-option input:checked ~ .prefs-theme-label {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.theme-swatch {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 0 6px;
+  background: var(--bg-base);
+}
+
+.theme-swatch-bar {
+  height: 22%;
+  margin-bottom: 2px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.theme-swatch-line {
+  height: 4px;
+  margin: 0 8px;
+  border-radius: 2px;
+  background: var(--fg-faint);
+}
+
+.theme-swatch-accent {
+  width: 45%;
+  background: var(--accent);
+}
+
+.theme-swatch-short {
+  width: 60%;
 }
 
 .prefs-ext-section {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-  font-size: var(--font-ui);
+  padding-top: 4px;
 }
 
 .prefs-ext-heading {
@@ -1937,7 +2083,8 @@ select:focus-visible {
 
 .prefs-ext-hint {
   color: var(--fg-muted);
-  font-size: calc(var(--font-ui) - 1px);
+  font-size: var(--font-ui-sm);
+  line-height: 1.4;
 }
 
 .prefs-ext-rows {
@@ -1952,18 +2099,8 @@ select:focus-visible {
   gap: 6px;
 }
 
-.prefs-ext-row input,
-.prefs-ext-row select {
-  padding: 4px 6px;
-  font: inherit;
-  color: inherit;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-}
-
 .prefs-ext-row .prefs-ext-name {
-  width: 70px;
+  width: 90px;
 }
 
 .prefs-ext-row .prefs-ext-encoding {
@@ -1973,13 +2110,20 @@ select:focus-visible {
 
 .prefs-ext-remove,
 .prefs-ext-add {
-  padding: 4px 10px;
+  height: 28px;
+  padding: 0 10px;
   font: inherit;
   color: inherit;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   cursor: pointer;
+}
+
+.prefs-ext-remove:hover,
+.prefs-ext-add:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
 }
 
 .prefs-ext-add {
@@ -1990,23 +2134,36 @@ select:focus-visible {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 6px;
+  padding: 12px 22px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 
 .prefs-buttons button {
-  padding: 5px 14px;
+  min-width: 76px;
+  height: 28px;
+  padding: 0 14px;
   font: inherit;
   color: inherit;
-  background: transparent;
-  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   cursor: pointer;
+}
+
+.prefs-buttons button:hover {
+  border-color: var(--accent);
 }
 
 .prefs-buttons .prefs-save {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-fg);
+}
+
+.prefs-buttons .prefs-save:hover {
+  filter: brightness(1.08);
 }
 
 #print-view {
@@ -2057,8 +2214,13 @@ select:focus-visible {
   }
 }
 
-/* Explicit theme choice from Preferences overrides the system scheme. */
-html[data-theme="light"] {
+/* Explicit theme choice from Preferences overrides the system scheme. Each
+   block is also scoped to `.theme-swatch[data-theme=...]`, so the
+   Preferences theme picker's miniature previews are painted from these
+   same tokens (custom properties set on the swatch override inherited
+   ones) — see preferences.ts themePicker. */
+html[data-theme="light"],
+.theme-swatch[data-theme="light"] {
   --bg-base: #ffffff;
   --bg-surface: #f2f1f0;
   --bg-raised: #ffffff;
@@ -2088,7 +2250,8 @@ html[data-theme="light"] {
   background-color: var(--bg-base);
 }
 
-html[data-theme="dark"] {
+html[data-theme="dark"],
+.theme-swatch[data-theme="dark"] {
   --bg-base: #1e1f24;
   --bg-surface: #26272e;
   --bg-raised: #2b2c33;
@@ -2127,7 +2290,8 @@ html[data-theme="dark"] {
  * here: both are var() references (to --accent / --fg-faint respectively)
  * defined once in :root, so they pick up this theme's values automatically.
  */
-html[data-theme="paper"] {
+html[data-theme="paper"],
+.theme-swatch[data-theme="paper"] {
   --bg-base: #f6f0e4;
   --bg-surface: #ede6d6;
   --bg-raised: #fbf7ee;
@@ -2163,7 +2327,8 @@ html[data-theme="paper"] {
  * from :root's var(--accent) / var(--fg-faint) references, no override
  * needed.
  */
-html[data-theme="dusk"] {
+html[data-theme="dusk"],
+.theme-swatch[data-theme="dusk"] {
   --bg-base: #232634;
   --bg-surface: #2a2e3f;
   --bg-raised: #303448;

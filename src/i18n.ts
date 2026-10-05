@@ -229,6 +229,9 @@ export interface Messages {
   "preferences.extAdd": string;
   "preferences.cancel": string;
   "preferences.save": string;
+  "preferences.sectionAppearance": string;
+  "preferences.sectionEditor": string;
+  "preferences.sectionFiles": string;
   "preferences.themeSystem": string;
   "preferences.themeLight": string;
   "preferences.themeDark": string;
@@ -739,6 +742,9 @@ const en: Messages = {
   "preferences.extAdd": "Add",
   "preferences.cancel": "Cancel",
   "preferences.save": "Save",
+  "preferences.sectionAppearance": "Appearance",
+  "preferences.sectionEditor": "Editor",
+  "preferences.sectionFiles": "Files",
   "preferences.themeSystem": "Follow system",
   "preferences.themeLight": "Light",
   "preferences.themeDark": "Dark",
@@ -1176,6 +1182,9 @@ const zhTW: Messages = {
   "preferences.extAdd": "新增",
   "preferences.cancel": "取消",
   "preferences.save": "儲存",
+  "preferences.sectionAppearance": "外觀",
+  "preferences.sectionEditor": "編輯器",
+  "preferences.sectionFiles": "檔案",
   "preferences.themeSystem": "跟隨系統",
   "preferences.themeLight": "亮色",
   "preferences.themeDark": "暗色",
@@ -1578,6 +1587,9 @@ const ja: Messages = {
   "preferences.extAdd": "追加",
   "preferences.cancel": "キャンセル",
   "preferences.save": "保存",
+  "preferences.sectionAppearance": "外観",
+  "preferences.sectionEditor": "エディタ",
+  "preferences.sectionFiles": "ファイル",
   "preferences.themeSystem": "システムに従う",
   "preferences.themeLight": "ライト",
   "preferences.themeDark": "ダーク",
@@ -2007,6 +2019,9 @@ const zhCN: Messages = {
   "preferences.extAdd": "添加",
   "preferences.cancel": "取消",
   "preferences.save": "保存",
+  "preferences.sectionAppearance": "外观",
+  "preferences.sectionEditor": "编辑器",
+  "preferences.sectionFiles": "文件",
   "preferences.themeSystem": "跟随系统",
   "preferences.themeLight": "浅色",
   "preferences.themeDark": "深色",
