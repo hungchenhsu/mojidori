@@ -147,6 +147,8 @@ describe("search panel counter", () => {
       expect(panel().dataset.matchState).toBe("some");
       const field = parent.querySelector('input[name="search"]')!;
       expect(field.getAttribute("aria-describedby")).toBe(label()!.id);
+      expect(label()!.getAttribute("role")).toBe("status");
+      expect(label()!.getAttribute("aria-atomic")).toBe("true");
 
       view.dispatch({ selection: { anchor: 8, head: 11 } });
       expect(label()!.textContent).toBe("2 of 2");

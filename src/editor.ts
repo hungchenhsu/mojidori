@@ -920,6 +920,11 @@ const searchCountPlugin = ViewPlugin.fromClass(
         label = document.createElement("span");
         label.className = "cm-search-count";
         label.id = SEARCH_COUNT_ID;
+        // A polite status region, so a screen reader announces "3 of 12" /
+        // "No matches" while focus stays in the find field; the debounce
+        // and the no-op-when-unchanged write below keep it from chattering.
+        label.setAttribute("role", "status");
+        label.setAttribute("aria-atomic", "true");
         const field = panel.querySelector<HTMLInputElement>(
           '.cm-textfield[name="search"]',
         );
