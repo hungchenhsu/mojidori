@@ -606,6 +606,9 @@ export function retitleMenu(locale: string): Promise<void> {
 export interface PaletteCommand {
   id: string;
   label: string;
+  /** Tauri accelerator syntax ("CmdOrCtrl+Shift+F"), or null when the
+   *  command has no shortcut — menu.rs `ACCELERATORS`. */
+  accelerator: string | null;
 }
 
 /**
