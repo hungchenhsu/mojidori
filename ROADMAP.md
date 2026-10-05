@@ -302,6 +302,12 @@ WKWebView/WebView2 acceptance is collected for the user.
   follow the ARIA tabs pattern (tablist, roving tabindex, unsaved state in
   the accessible name); arrow keys/Home/End switch tabs and middle-click
   closes without activating first. Native acceptance pending.
+- [x] Panel polish: Batch Conversion splits into "which files" and "what to
+  do" rows with Scan at the end; Find in Files' Aa / .* toggles become
+  named chips matching the find panel; bordered panel text fields regain a
+  visible keyboard focus state (their `outline: none` had beaten the
+  global ring); and a middle-button press released off the tabs no longer
+  stays armed (#377 deferred review item).
 
 ## Explicit non-goals
 

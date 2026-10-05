@@ -121,6 +121,16 @@ export function showFindInFiles(
   regexLabel.appendChild(document.createTextNode(".*"));
   regexLabel.title = t("findInFiles.regex");
 
+  // The visible "Aa" / ".*" glyphs aren't names; give the checkboxes real
+  // ones, and mirror their state onto the chip labels (styles.css).
+  caseBox.setAttribute("aria-label", t("findInFiles.matchCase"));
+  regexBox.setAttribute("aria-label", t("findInFiles.regex"));
+  for (const box of [caseBox, regexBox]) {
+    box.addEventListener("change", () => {
+      box.parentElement?.classList.toggle("is-checked", box.checked);
+    });
+  }
+
   controls.appendChild(folderButton);
   controls.appendChild(input);
   controls.appendChild(caseLabel);

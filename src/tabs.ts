@@ -309,6 +309,16 @@ export class TabStore {
   /** Doc id under the last middle-button press, so a release closes only
    *  the tab it was pressed on (see render()). */
   private middlePressId: number | null = null;
+  /** Ends a middle-press wherever the button is released (or the window
+   *  loses focus mid-press): runs from `window` after any tab's own
+   *  mouseup, so a release off the tabs can't leave the press armed for a
+   *  later gesture that merely ends on that tab. */
+  private readonly endMiddlePress = (e: Event): void => {
+    if (e instanceof MouseEvent && e.type === "mouseup" && e.button !== 1) return;
+    this.middlePressId = null;
+    window.removeEventListener("mouseup", this.endMiddlePress);
+    window.removeEventListener("blur", this.endMiddlePress);
+  };
 
   constructor(
     private container: HTMLElement,
@@ -417,6 +427,8 @@ export class TabStore {
         if (e.button !== 1) return;
         e.preventDefault();
         this.middlePressId = doc.id;
+        window.addEventListener("mouseup", this.endMiddlePress);
+        window.addEventListener("blur", this.endMiddlePress);
       });
       tab.addEventListener("mouseup", (e) => {
         if (e.button !== 1) return;
