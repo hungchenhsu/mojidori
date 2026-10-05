@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   clampSelectedIndex,
   filterAndSortCommands,
+  formatAccelerator,
   fuzzyMatch,
+  highlightRuns,
   moveSelection,
+  showPalette,
 } from "./palette";
 import type { PaletteCommand } from "./ipc";
 
@@ -59,10 +62,10 @@ describe("fuzzyMatch", () => {
 });
 
 const COMMANDS: PaletteCommand[] = [
-  { id: "save", label: "Save" },
-  { id: "save_as", label: "Save As…" },
-  { id: "find", label: "Find and Replace…" },
-  { id: "sort_lines", label: "Sort Lines" },
+  { id: "save", label: "Save", accelerator: "CmdOrCtrl+S" },
+  { id: "save_as", label: "Save As…", accelerator: null },
+  { id: "find", label: "Find and Replace…", accelerator: null },
+  { id: "sort_lines", label: "Sort Lines", accelerator: null },
 ];
 
 describe("filterAndSortCommands", () => {
@@ -85,23 +88,23 @@ describe("filterAndSortCommands", () => {
 
   it("carries the match info alongside id/label", () => {
     const [entry] = filterAndSortCommands(COMMANDS, "sort");
-    expect(entry).toMatchObject({ id: "sort_lines", label: "Sort Lines" });
+    expect(entry).toMatchObject({ id: "sort_lines", label: "Sort Lines", accelerator: null });
     expect(entry.match.indices).toEqual([0, 1, 2, 3]);
   });
 
   it("sorts matches by score, best first", () => {
     const commands: PaletteCommand[] = [
-      { id: "b", label: "coat" },
-      { id: "a", label: "cat" },
-      { id: "c", label: "dog" },
+      { id: "b", label: "coat", accelerator: null },
+      { id: "a", label: "cat", accelerator: null },
+      { id: "c", label: "dog", accelerator: null },
     ];
     expect(filterAndSortCommands(commands, "cat").map((c) => c.id)).toEqual(["a", "b"]);
   });
 
   it("keeps original relative order for equal scores (stable sort)", () => {
     const commands: PaletteCommand[] = [
-      { id: "first", label: "Save" },
-      { id: "second", label: "Save As…" },
+      { id: "first", label: "Save", accelerator: null },
+      { id: "second", label: "Save As…", accelerator: null },
     ];
     // Both greedy-leftmost-match "sa" at positions [0,1] -- genuinely tied
     // scores, so this pins the stable-sort tie-break rather than an actual
@@ -150,5 +153,78 @@ describe("clampSelectedIndex", () => {
 
   it("returns 0 for an empty list", () => {
     expect(clampSelectedIndex(3, 0)).toBe(0);
+  });
+});
+
+describe("formatAccelerator", () => {
+  it("prints macOS symbols in the system modifier order", () => {
+    expect(formatAccelerator("CmdOrCtrl+Shift+F", true)).toBe("⇧⌘F");
+    expect(formatAccelerator("CmdOrCtrl+Alt+P", true)).toBe("⌥⌘P");
+    expect(formatAccelerator("Alt+Z", true)).toBe("⌥Z");
+    expect(formatAccelerator("CmdOrCtrl+,", true)).toBe("⌘,");
+    expect(formatAccelerator("CmdOrCtrl+=", true)).toBe("⌘=");
+    expect(formatAccelerator("Ctrl+Shift+Tab", true)).toBe("⌃⇧Tab");
+  });
+
+  it("prints Ctrl/Alt/Shift words elsewhere", () => {
+    expect(formatAccelerator("CmdOrCtrl+Shift+F", false)).toBe("Ctrl+Shift+F");
+    expect(formatAccelerator("CmdOrCtrl+Alt+P", false)).toBe("Ctrl+Alt+P");
+    expect(formatAccelerator("Alt+Z", false)).toBe("Alt+Z");
+    expect(formatAccelerator("CmdOrCtrl+-", false)).toBe("Ctrl+-");
+  });
+});
+
+describe("highlightRuns", () => {
+  it("groups matched and unmatched characters into runs", () => {
+    expect(highlightRuns("Save As", [0, 1, 5])).toEqual([
+      { text: "Sa", matched: true },
+      { text: "ve ", matched: false },
+      { text: "A", matched: true },
+      { text: "s", matched: false },
+    ]);
+    expect(highlightRuns("Save", [])).toEqual([{ text: "Save", matched: false }]);
+  });
+});
+
+describe("showPalette rendering", () => {
+  it("shows shortcut hints, highlights matches, and exposes a listbox", () => {
+    showPalette(COMMANDS, () => {});
+    try {
+      const input = document.querySelector<HTMLInputElement>(".palette-panel input")!;
+      const list = document.querySelector<HTMLElement>(".palette-list")!;
+      expect(input.getAttribute("role")).toBe("combobox");
+      expect(input.getAttribute("aria-controls")).toBe(list.id);
+      expect(list.getAttribute("role")).toBe("listbox");
+
+      const items = [...list.querySelectorAll<HTMLElement>(".palette-item")];
+      expect(items.map((i) => i.getAttribute("role"))).toEqual(["option", "option", "option", "option"]);
+      expect(items[0].getAttribute("aria-selected")).toBe("true");
+      expect(input.getAttribute("aria-activedescendant")).toBe(items[0].id);
+      expect(items[0].querySelector(".palette-shortcut")?.textContent).toMatch(/S$/);
+      expect(items[1].querySelector(".palette-shortcut")).toBeNull();
+
+      input.value = "sl";
+      input.dispatchEvent(new Event("input"));
+      const [only] = [...list.querySelectorAll<HTMLElement>(".palette-item")];
+      expect([...only.querySelectorAll("mark")].map((m) => m.textContent)).toEqual(["S", "L"]);
+
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      input.value = "zzz";
+    } finally {
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("moves aria-activedescendant with the arrow keys", () => {
+    showPalette(COMMANDS, () => {});
+    try {
+      const input = document.querySelector<HTMLInputElement>(".palette-panel input")!;
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }));
+      const items = document.querySelectorAll<HTMLElement>(".palette-item");
+      expect(input.getAttribute("aria-activedescendant")).toBe(items[1].id);
+      expect(items[1].getAttribute("aria-selected")).toBe("true");
+    } finally {
+      document.body.innerHTML = "";
+    }
   });
 });

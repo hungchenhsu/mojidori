@@ -553,10 +553,39 @@ select:focus-visible {
 }
 
 .palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 6px 10px;
   font-size: var(--font-ui);
   border-radius: var(--radius-md);
   cursor: pointer;
+}
+
+.palette-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Fuzzy-matched characters (palette.ts highlightRuns). */
+.palette-label mark {
+  color: var(--accent);
+  font-weight: 600;
+  background: transparent;
+}
+
+.palette-shortcut {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--font-ui-xs);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
 
 .palette-item:hover,

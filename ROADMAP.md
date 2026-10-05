@@ -296,6 +296,12 @@ WKWebView/WebView2 acceptance is collected for the user.
   `.theme-swatch[data-theme]` too, so there is no second copy of any
   color). The dialog is a labelled `role="dialog"`. Native acceptance
   pending.
+- [x] Command Palette: show each command's shortcut (menu.rs now keeps
+  one `ACCELERATORS` table that both the native menu and
+  `palette_commands` read, with a test that every call site resolves),
+  formatted per platform (⇧⌘F / Ctrl+Shift+F); highlight fuzzy-matched
+  characters; expose the list as an ARIA combobox/listbox; and keep the
+  arrow-key selection scrolled into view. Native acceptance pending.
 
 ## Explicit non-goals
 
