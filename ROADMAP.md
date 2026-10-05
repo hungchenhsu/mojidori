@@ -291,6 +291,14 @@ the open issue queue.
   A real-FSEvents test through a symlink fails without the mapping.
   Windows letter-case variants are still dropped by notify's own filter.
   The rename-following part of #280 is unchanged and still open.
+- [x] Routine npm dependency refresh (lockfile only): CodeMirror
+  state/view/search/language, @lezer/highlight, vitest 4.1.11, @types/node,
+  and the dev-only transitive undici (jsdom) and nanoid (vite/postcss)
+  advisories; `npm audit` is clean. Deliberately held back: the Tauri JS
+  packages (must move with their Rust crates; @tauri-apps/cli 2.11.5+
+  changes the updater signature's trusted comment), @codemirror/commands
+  6.11 (moves macOS toggleBlockComment from Shift-Option-A to
+  Shift-Ctrl-A), and major upgrades (vite 8, vitest 5, TypeScript 7).
 
 ## UI/UX pass (2026-10-05)
 
@@ -318,6 +326,12 @@ WKWebView/WebView2 acceptance is collected for the user.
   when they close (item click or Escape), before an item's action runs, so
   a modal launched from a popup (e.g. Compare Encodings) restores focus
   correctly on its own close (#378 deferred review item).
+- [x] Theme contrast pass: --fg-muted, --fg-faint, --danger, and
+  --warning now clear WCAG AA (4.5:1) on every surface in all four themes
+  (previously --fg-faint was 2.7-3.3:1 while carrying paths, scan errors,
+  and status text, and --danger was 3.1-4.2:1 in Dark/Dusk), with
+  --fg-muted lifted to ≥6.5:1 to keep a visible step above --fg-faint.
+  `src/themecontrast.test.ts` holds the floor.
 - [x] Status-bar and tab context menus are keyboard-operable ARIA menus:
   focus starts on the first enabled item, Up/Down (wrapping) and Home/End
   move, checkable items are menuitemradio with aria-checked, and the
