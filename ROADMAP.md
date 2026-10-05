@@ -300,6 +300,10 @@ WKWebView/WebView2 acceptance is collected for the user.
   focus trap (topmost modal only), and focus restored to the prior element
   when the overlay is removed unless the closing code moved focus itself.
   Native screen-reader acceptance pending.
+- [x] Status-bar popups return focus to what had it before they opened
+  when they close (item click or Escape), before an item's action runs, so
+  a modal launched from a popup (e.g. Compare Encodings) restores focus
+  correctly on its own close (#378 deferred review item).
 - [x] Redesign the Preferences dialog: Appearance / Editor / Files
   sections, uniform control sizing, a pinned button bar, and a theme
   picker of five preview cards painted from each theme's own token block
