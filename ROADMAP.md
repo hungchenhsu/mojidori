@@ -278,6 +278,20 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
   and preserve the rejected Windows-handle and normalization-cache
   approaches in the judgment overlay. Source version remains 0.9.0.
 
+## Issue queue pass (2026-10-06)
+
+Resumed after the UI/UX pass, per the user's instruction to continue with
+the open issue queue.
+
+- [x] Routine npm dependency refresh (lockfile only): CodeMirror
+  state/view/search/language, @lezer/highlight, vitest 4.1.11, @types/node,
+  and the dev-only transitive undici (jsdom) and nanoid (vite/postcss)
+  advisories; `npm audit` is clean. Deliberately held back: the Tauri JS
+  packages (must move with their Rust crates; @tauri-apps/cli 2.11.5+
+  changes the updater signature's trusted comment), @codemirror/commands
+  6.11 (moves macOS toggleBlockComment from Shift-Option-A to
+  Shift-Ctrl-A), and major upgrades (vite 8, vitest 5, TypeScript 7).
+
 ## UI/UX pass (2026-10-05)
 
 The user asked for a UI/UX-first autonomous pass (larger visual changes
