@@ -318,6 +318,11 @@ WKWebView/WebView2 acceptance is collected for the user.
   when they close (item click or Escape), before an item's action runs, so
   a modal launched from a popup (e.g. Compare Encodings) restores focus
   correctly on its own close (#378 deferred review item).
+- [x] Status-bar and tab context menus are keyboard-operable ARIA menus:
+  focus starts on the first enabled item, Up/Down (wrapping) and Home/End
+  move, checkable items are menuitemradio with aria-checked, and the
+  filterable encoding picker enters its list with ArrowDown and returns to
+  the field with ArrowUp.
 - [x] Redesign the Preferences dialog: Appearance / Editor / Files
   sections, uniform control sizing, a pinned button bar, and a theme
   picker of five preview cards painted from each theme's own token block

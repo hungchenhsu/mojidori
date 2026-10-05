@@ -336,3 +336,76 @@ describe("popup focus restoration", () => {
     expect(document.activeElement).toBe(editor);
   });
 });
+
+describe("popup keyboard navigation", () => {
+  afterEach(() => {
+    closeMenu();
+    document.body.innerHTML = "";
+  });
+
+  const press = (key: string): KeyboardEvent => {
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    (document.activeElement as HTMLElement).dispatchEvent(event);
+    return event;
+  };
+
+  it("is an ARIA menu that focuses its first enabled item and moves with the arrows", () => {
+    const pick = vi.fn();
+    showMenu(anchor(), [
+      { label: "Section", header: true },
+      { label: "Off", disabled: true },
+      { label: "One", checked: false },
+      { label: "Two", checked: true, action: pick },
+      { label: "Three" },
+    ]);
+    const menu = document.querySelector<HTMLElement>(".popup-menu")!;
+    expect(menu.getAttribute("role")).toBe("menu");
+    const items = [...menu.querySelectorAll<HTMLButtonElement>("button.popup-item")];
+    expect(items.map((b) => b.getAttribute("role"))).toEqual([
+      "menuitem",
+      "menuitemradio",
+      "menuitemradio",
+      "menuitem",
+    ]);
+    expect(items[2].getAttribute("aria-checked")).toBe("true");
+    expect(items.every((b) => b.tabIndex === -1)).toBe(true);
+
+    // The disabled item is skipped everywhere.
+    expect(document.activeElement).toBe(items[1]);
+    expect(press("ArrowDown").defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(items[2]);
+    press("ArrowDown");
+    press("ArrowDown"); // wraps
+    expect(document.activeElement).toBe(items[1]);
+    press("ArrowUp"); // wraps backwards
+    expect(document.activeElement).toBe(items[3]);
+    press("Home");
+    expect(document.activeElement).toBe(items[1]);
+    press("End");
+    expect(document.activeElement).toBe(items[3]);
+    items[2].focus();
+    items[2].click();
+    expect(pick).toHaveBeenCalledOnce();
+  });
+
+  it("enters the filtered list with ArrowDown and returns to the field with ArrowUp", () => {
+    showFilterableMenu(anchor(), {
+      placeholder: "Filter encodings",
+      emptyText: "None",
+      getItems: () => [{ label: "UTF-8" }, { label: "Big5" }],
+    });
+    const input = document.querySelector<HTMLInputElement>(".popup-filter-input")!;
+    const list = document.querySelector<HTMLElement>(".popup-filter-list")!;
+    expect(list.getAttribute("role")).toBe("menu");
+    expect(input.getAttribute("aria-controls")).toBe(list.id);
+    expect(input.getAttribute("aria-label")).toBe("Filter encodings");
+    expect(document.activeElement).toBe(input);
+    press("ArrowDown");
+    expect(document.activeElement?.textContent).toContain("UTF-8");
+    press("ArrowDown");
+    expect(document.activeElement?.textContent).toContain("Big5");
+    press("ArrowUp");
+    press("ArrowUp");
+    expect(document.activeElement).toBe(input);
+  });
+});
