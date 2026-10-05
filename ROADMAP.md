@@ -289,6 +289,13 @@ WKWebView/WebView2 acceptance is collected for the user.
   themes, panels, and dialogs can be screenshot-reviewed without the Rust
   core. A unit test pins its shell markup to `index.html`; nothing under
   `dev/` is bundled.
+- [x] Restyle the find/replace panel and add a match counter. Options
+  render as toggle chips (the checkboxes stay operable), English labels
+  are capitalized, and a debounced "3 of 12" / "No matches" counter sits
+  beside the find field (red border on no results). Counting stops at
+  1,000 matches ("1000+"), skips buffers over 500,000 characters and
+  truncated large-file windows, and ignores replacement-only edits.
+  Native WKWebView/WebView2 acceptance pending.
 
 ## Explicit non-goals
 

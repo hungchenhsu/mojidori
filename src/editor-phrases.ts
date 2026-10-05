@@ -1,6 +1,11 @@
 // Exact English keys consumed by CodeMirror search/fold UI and screen-reader
 // announcements. Keep this data module independent of CodeMirror imports;
 // editor.ts applies it through EditorState.phrases and its locale compartment.
+//
+// The last four keys are this app's own (editor.ts's search match counter),
+// not upstream CodeMirror strings; `$1`/`$2` are EditorState.phrase's
+// positional insertions, so the English key text doubles as the English
+// rendering.
 import type { Locale } from "./i18n";
 
 const CM6_PHRASES_ZH_TW = {
@@ -28,6 +33,10 @@ const CM6_PHRASES_ZH_TW = {
   "Folded lines": "已摺疊行",
   "Unfolded lines": "已展開行",
   to: "至",
+  "$1 of $2": "第 $1 / $2 筆",
+  "$ matches": "$ 筆符合",
+  "1 match": "1 筆符合",
+  "No matches": "無符合項目",
 } as const;
 
 type PhraseKey = keyof typeof CM6_PHRASES_ZH_TW;
@@ -59,6 +68,10 @@ const CM6_PHRASES: Record<Exclude<Locale, "en">, Record<PhraseKey, string>> = {
     "Folded lines": "折りたたんだ行",
     "Unfolded lines": "展開した行",
     to: "から",
+    "$1 of $2": "$2 件中 $1 件目",
+    "$ matches": "$ 件一致",
+    "1 match": "1 件一致",
+    "No matches": "一致なし",
   },
   "zh-CN": {
     Find: "查找",
@@ -85,9 +98,28 @@ const CM6_PHRASES: Record<Exclude<Locale, "en">, Record<PhraseKey, string>> = {
     "Folded lines": "已折叠行",
     "Unfolded lines": "已展开行",
     to: "至",
+    "$1 of $2": "第 $1 / $2 项",
+    "$ matches": "$ 个匹配项",
+    "1 match": "1 个匹配项",
+    "No matches": "无匹配项",
   },
 };
 
+// English otherwise uses CodeMirror's own keys verbatim; only the search
+// panel's lowercase button/checkbox labels are capitalized to match the rest
+// of the app's sentence-case UI.
+const CM6_PHRASES_EN: Partial<Record<PhraseKey, string>> = {
+  next: "Next",
+  previous: "Previous",
+  all: "All",
+  "match case": "Match case",
+  regexp: "Regexp",
+  "by word": "By word",
+  replace: "Replace",
+  "replace all": "Replace all",
+  go: "Go",
+};
+
 export function cm6Phrases(locale: Locale): Record<string, string> {
-  return locale === "en" ? {} : CM6_PHRASES[locale];
+  return locale === "en" ? CM6_PHRASES_EN : CM6_PHRASES[locale];
 }

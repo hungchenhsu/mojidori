@@ -7,6 +7,7 @@ import {
   countColumn,
   EditorSelection,
   EditorState,
+  Facet,
   Prec,
   RangeSetBuilder,
   StateEffect,
@@ -44,6 +45,7 @@ import { languages } from "@codemirror/language-data";
 import {
   getSearchQuery,
   openSearchPanel,
+  type SearchQuery,
   selectNextOccurrence as cmSelectNextOccurrence,
   selectSelectionMatches as cmSelectSelectionMatches,
 } from "@codemirror/search";
@@ -761,6 +763,203 @@ function wireSearchHistory(view: EditorView): void {
   });
 }
 
+// ---- Search match counter. A small status line ("3 of 12" / "No
+// matches") next to the search panel's find field. Like `wireSearchHistory`
+// above, this only reads `@codemirror/search`'s public state
+// (`getSearchQuery`, `SearchQuery.getCursor`) and decorates the panel's
+// documented DOM; it never forks or re-implements the panel.
+
+/** Stop counting past this many matches and show "N+" instead, so a query
+ *  like a single space can't turn every keystroke into an unbounded walk. */
+export const SEARCH_COUNT_CAP = 1000;
+
+/** Skip counting entirely above this many characters: a literal
+ *  @codemirror/search cursor normalizes as it scans (issue #337 measured
+ *  roughly 10-19 MB/s; a 1M-character literal scan measured ~75-87 ms in
+ *  Node, slower WebViews more), so a sparse query over a large buffer
+ *  would block the UI for a noticeable moment after each debounced edit.
+ *  The counter is a convenience; it hides rather than stalls. */
+export const SEARCH_COUNT_MAX_DOC = 500_000;
+
+/** Marks a buffer as a partial window of a larger file (the truncated
+ *  large-file preview), where a whole-document count would silently mean
+ *  "in the loaded slice" — the counter stays hidden there instead. */
+const partialBuffer = Facet.define<boolean, boolean>({
+  combine: (values) => values.some(Boolean),
+});
+
+export interface SearchMatchCount {
+  /** Start/end offsets of each counted match, in document order. */
+  ranges: { from: number; to: number }[];
+  capped: boolean;
+}
+
+/** Count `query`'s matches in `state`, stopping at `cap`. `null` for an
+ *  invalid/empty query (nothing to report). Exported for unit testing. */
+export function countSearchMatches(
+  state: EditorState,
+  query: SearchQuery,
+  cap = SEARCH_COUNT_CAP,
+): SearchMatchCount | null {
+  if (!query.valid) return null;
+  const ranges: { from: number; to: number }[] = [];
+  const cursor = query.getCursor(state);
+  for (let next = cursor.next(); !next.done; next = cursor.next()) {
+    if (ranges.length >= cap) return { ranges, capped: true };
+    ranges.push({ from: next.value.from, to: next.value.to });
+  }
+  return { ranges, capped: false };
+}
+
+/** The counter's text for `count` given the main selection: "i of n" when
+ *  the selection is exactly a counted match (what find-next/previous
+ *  leaves), otherwise the total. Exported for unit testing. */
+export function searchCountLabel(
+  state: EditorState,
+  count: SearchMatchCount,
+): string {
+  const total = count.ranges.length;
+  if (total === 0) return state.phrase("No matches");
+  const totalText = count.capped ? `${total}+` : String(total);
+  const { from, to } = state.selection.main;
+  // Matches are sorted and non-overlapping, so binary search by `from`.
+  let lo = 0;
+  let hi = total - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const range = count.ranges[mid];
+    if (range.from < from) lo = mid + 1;
+    else if (range.from > from) hi = mid - 1;
+    else {
+      if (range.to === to) return state.phrase("$1 of $2", mid + 1, totalText);
+      break;
+    }
+  }
+  if (total === 1 && !count.capped) return state.phrase("1 match");
+  return state.phrase("$ matches", totalText);
+}
+
+/** Debounce for recounting after a query change, and the longer one after
+ *  a document edit (typing in the editor with the panel open should not
+ *  pay a rescan per pause). */
+const SEARCH_COUNT_QUERY_DELAY_MS = 120;
+const SEARCH_COUNT_EDIT_DELAY_MS = 300;
+
+/** Whether two queries find the same matches. `SearchQuery.eq` also
+ *  compares the replacement text, which the panel commits on every key in
+ *  the Replace field — that must not trigger a recount. */
+function sameSearch(a: SearchQuery, b: SearchQuery): boolean {
+  return (
+    a.search === b.search &&
+    a.caseSensitive === b.caseSensitive &&
+    a.regexp === b.regexp &&
+    a.wholeWord === b.wholeWord &&
+    a.literal === b.literal
+  );
+}
+
+const searchCountPlugin = ViewPlugin.fromClass(
+  class {
+    private count: SearchMatchCount | null = null;
+    private query: SearchQuery | null = null;
+    private timer: ReturnType<typeof setTimeout> | null = null;
+
+    constructor(private readonly view: EditorView) {}
+
+    update(update: ViewUpdate): void {
+      const panel = this.panel();
+      if (!panel) {
+        this.reset();
+        return;
+      }
+      const query = getSearchQuery(update.state);
+      if (!this.query || !sameSearch(query, this.query)) {
+        this.query = query;
+        this.schedule(SEARCH_COUNT_QUERY_DELAY_MS);
+      } else if (update.docChanged) {
+        this.schedule(SEARCH_COUNT_EDIT_DELAY_MS);
+      }
+      // Selection and locale changes only need the label re-rendered from
+      // the cached count.
+      this.render(panel);
+    }
+
+    destroy(): void {
+      if (this.timer !== null) clearTimeout(this.timer);
+    }
+
+    private panel(): HTMLElement | null {
+      return this.view.dom.querySelector<HTMLElement>(".cm-panel.cm-search");
+    }
+
+    private reset(): void {
+      if (this.timer !== null) clearTimeout(this.timer);
+      this.timer = null;
+      this.count = null;
+      this.query = null;
+    }
+
+    private schedule(delay: number): void {
+      if (this.timer !== null) clearTimeout(this.timer);
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        const panel = this.panel();
+        if (!panel) return;
+        const state = this.view.state;
+        this.count =
+          state.facet(partialBuffer) || state.doc.length > SEARCH_COUNT_MAX_DOC
+            ? null
+          : countSearchMatches(state, getSearchQuery(state));
+        this.render(panel);
+      }, delay);
+    }
+
+    private render(panel: HTMLElement): void {
+      let label = panel.querySelector<HTMLElement>(".cm-search-count");
+      if (!label) {
+        label = document.createElement("span");
+        label.className = "cm-search-count";
+        label.id = SEARCH_COUNT_ID;
+        const field = panel.querySelector<HTMLInputElement>(
+          '.cm-textfield[name="search"]',
+        );
+        field?.after(label);
+        field?.setAttribute("aria-describedby", SEARCH_COUNT_ID);
+      }
+      for (const box of panel.querySelectorAll<HTMLInputElement>(
+        "label > input[type=checkbox]",
+      )) {
+        box.parentElement?.classList.toggle("is-checked", box.checked);
+      }
+      const state = this.view.state;
+      const query = getSearchQuery(state);
+      // A count from before the latest query edit is hidden rather than
+      // shown against the new query.
+      const current =
+        this.count &&
+        this.query &&
+        sameSearch(query, this.query) &&
+        this.timer === null
+          ? this.count
+          : null;
+      if (!current) {
+        if (!label.hidden) {
+          label.textContent = "";
+          label.hidden = true;
+        }
+        delete panel.dataset.matchState;
+        return;
+      }
+      const text = searchCountLabel(state, current);
+      if (label.hidden) label.hidden = false;
+      if (label.textContent !== text) label.textContent = text;
+      panel.dataset.matchState = current.ranges.length === 0 ? "none" : "some";
+    }
+  },
+);
+
+const SEARCH_COUNT_ID = "mojidori-search-count";
+
 /**
  * Character offsets marking the end of every line, within [from, to], that
  * has a trailing newline. The document's last line never has one (that's
@@ -1352,6 +1551,9 @@ export function createEditor(
     phrases.of([]),
     readOnlyCompartment.of([]),
     indentation.of([]),
+    // Lowest precedence so it updates after @codemirror/search's own panel
+    // has synced its checkboxes to the new query.
+    Prec.lowest(searchCountPlugin),
     EditorView.updateListener.of((update) => {
       wireSearchHistory(update.view);
       if (update.docChanged) onDocChanged();
@@ -1378,7 +1580,11 @@ export function createEditor(
     EditorState.create({
       doc: content,
       selection: { anchor: Math.min(Math.max(cursor, 0), content.length) },
-      extensions: readOnly ? [extensions, readOnlyExtension] : extensions,
+      // Every caller passes the doc's `truncated` flag as `readOnly`, so
+      // this is also where a buffer is marked as a partial window.
+      extensions: readOnly
+        ? [extensions, readOnlyExtension, partialBuffer.of(true)]
+        : extensions,
     });
 
   const view = new EditorView({ state: newBuffer(""), parent });
