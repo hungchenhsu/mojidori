@@ -106,6 +106,52 @@ export function filterAndSortCommands(
   return matches;
 }
 
+/** Render a Tauri accelerator ("CmdOrCtrl+Shift+F") the way each platform
+ *  prints shortcuts: macOS symbols in the system's modifier order
+ *  (⌃⌥⇧⌘, no separators), elsewhere "Ctrl+Shift+F". */
+export function formatAccelerator(accelerator: string, mac: boolean): string {
+  const parts = accelerator.split("+");
+  // "CmdOrCtrl+=" / "CmdOrCtrl+-" style keys survive the split intact; a
+  // literal "+" key would not, but no shortcut here uses one.
+  const key = parts.pop() ?? "";
+  const mods = new Set(parts.map((part) => part.toLowerCase()));
+  const has = (...names: string[]) => names.some((name) => mods.has(name));
+  if (mac) {
+    return (
+      (has("ctrl", "control") ? "⌃" : "") +
+      (has("alt", "option") ? "⌥" : "") +
+      (has("shift") ? "⇧" : "") +
+      (has("cmdorctrl", "commandorcontrol", "cmd", "command", "super") ? "⌘" : "") +
+      key
+    );
+  }
+  return [
+    has("cmdorctrl", "commandorcontrol", "ctrl", "control") ? "Ctrl" : null,
+    has("alt", "option") ? "Alt" : null,
+    has("shift") ? "Shift" : null,
+    key,
+  ]
+    .filter((part) => part !== null)
+    .join("+");
+}
+
+/** Split `text` into runs, marking the fuzzy-matched code-unit `indices`
+ *  (ascending, from `fuzzyMatch`) so the palette can highlight them. */
+export function highlightRuns(
+  text: string,
+  indices: number[],
+): { text: string; matched: boolean }[] {
+  const marked = new Set(indices);
+  const runs: { text: string; matched: boolean }[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const matched = marked.has(i);
+    const last = runs[runs.length - 1];
+    if (last && last.matched === matched) last.text += text[i];
+    else runs.push({ text: text[i], matched });
+  }
+  return runs;
+}
+
 /** Clamp `selected` back into `[0, length)` (0 for an empty list) after the
  *  list's length changes -- e.g. a query narrowing the match set out from
  *  under the previously selected index. */
@@ -149,11 +195,30 @@ export function showPalette(
   const input = document.createElement("input");
   input.type = "text";
   input.placeholder = t("palette.searchPlaceholder");
+  // ARIA combobox: focus stays in the input while the listbox's selected
+  // option is exposed through aria-activedescendant.
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-expanded", "true");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-controls", "palette-list");
+  input.setAttribute("aria-label", t("palette.searchPlaceholder"));
   panel.appendChild(input);
 
   const list = document.createElement("ul");
   list.className = "palette-list";
+  list.id = "palette-list";
+  list.setAttribute("role", "listbox");
   panel.appendChild(list);
+
+  // "No matching commands" lives outside the listbox (it isn't an option)
+  // as a polite status, so an emptied result set is announced while focus
+  // stays in the input.
+  const emptyStatus = document.createElement("div");
+  emptyStatus.className = "palette-empty";
+  emptyStatus.setAttribute("role", "status");
+  panel.appendChild(emptyStatus);
+
+  const mac = navigator.userAgent.includes("Mac");
 
   let filtered: PaletteMatch[] = [];
   let selected = 0;
@@ -174,21 +239,51 @@ export function showPalette(
     filtered = filterAndSortCommands(commands, input.value);
     selected = clampSelectedIndex(selected, filtered.length);
     list.replaceChildren();
-    if (filtered.length === 0) {
-      const empty = document.createElement("li");
-      empty.className = "palette-empty";
-      empty.textContent = t("palette.noResults");
-      list.appendChild(empty);
+    const empty = filtered.length === 0;
+    list.hidden = empty;
+    input.setAttribute("aria-expanded", String(!empty));
+    emptyStatus.hidden = !empty;
+    emptyStatus.textContent = empty ? t("palette.noResults") : "";
+    if (empty) {
+      input.removeAttribute("aria-activedescendant");
       return;
     }
     filtered.forEach((entry, index) => {
       const item = document.createElement("li");
       item.className = index === selected ? "palette-item selected" : "palette-item";
-      item.textContent = entry.label;
+      item.id = `palette-option-${index}`;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(index === selected));
+      const label = document.createElement("span");
+      label.className = "palette-label";
+      for (const run of highlightRuns(entry.label, entry.match.indices)) {
+        if (run.matched) {
+          const mark = document.createElement("mark");
+          mark.textContent = run.text;
+          label.appendChild(mark);
+        } else {
+          label.appendChild(document.createTextNode(run.text));
+        }
+      }
+      item.appendChild(label);
+      if (entry.accelerator) {
+        const shortcut = document.createElement("kbd");
+        shortcut.className = "palette-shortcut";
+        shortcut.textContent = formatAccelerator(entry.accelerator, mac);
+        item.appendChild(shortcut);
+      }
       item.addEventListener("mousedown", (event) => event.preventDefault());
       item.addEventListener("click", () => run(entry.id));
       list.appendChild(item);
     });
+    const current = list.children[selected] as HTMLElement | undefined;
+    if (current) {
+      input.setAttribute("aria-activedescendant", current.id);
+      // jsdom has no scrollIntoView; real WebViews do.
+      current.scrollIntoView?.({ block: "nearest" });
+    } else {
+      input.removeAttribute("aria-activedescendant");
+    }
   };
 
   input.addEventListener("input", () => {

@@ -283,6 +283,14 @@ then the existing P2 correctness queue; keep each fix independently reviewable.
 Resumed after the UI/UX pass, per the user's instruction to continue with
 the open issue queue.
 
+- [x] #280 side bug: auto-reload missed files opened through a symlink,
+  `/tmp`, a different letter case, or an NFD name, because macOS FSEvents
+  reports canonical paths and the frontend matches tab paths exactly. The
+  watcher now records each watched path under its canonical form and
+  reports every event under both the raw path and each watched spelling.
+  A real-FSEvents test through a symlink fails without the mapping.
+  Windows letter-case variants are still dropped by notify's own filter.
+  The rename-following part of #280 is unchanged and still open.
 - [x] Routine npm dependency refresh (lockfile only): CodeMirror
   state/view/search/language, @lezer/highlight, vitest 4.1.11, @types/node,
   and the dev-only transitive undici (jsdom) and nanoid (vite/postcss)
@@ -331,6 +339,18 @@ WKWebView/WebView2 acceptance is collected for the user.
   follow the ARIA tabs pattern (tablist, roving tabindex, unsaved state in
   the accessible name); arrow keys/Home/End switch tabs and middle-click
   closes without activating first. Native acceptance pending.
+- [x] Panel polish: Batch Conversion splits into "which files" and "what to
+  do" rows with Scan at the end; Find in Files' Aa / .* toggles become
+  named chips matching the find panel; bordered panel text fields regain a
+  visible keyboard focus state (their `outline: none` had beaten the
+  global ring); and a middle-button press released off the tabs no longer
+  stays armed (#377 deferred review item).
+- [x] Command Palette: show each command's shortcut (menu.rs now keeps
+  one `ACCELERATORS` table that both the native menu and
+  `palette_commands` read, with a test that every call site resolves),
+  formatted per platform (⇧⌘F / Ctrl+Shift+F); highlight fuzzy-matched
+  characters; expose the list as an ARIA combobox/listbox; and keep the
+  arrow-key selection scrolled into view. Native acceptance pending.
 
 ## Explicit non-goals
 

@@ -934,6 +934,19 @@ describe("TabStore accessibility and keyboard", () => {
       tabs[1].dispatchEvent(new MouseEvent("mouseup", { button: 1, bubbles: true }));
       expect(events.onClose).not.toHaveBeenCalled();
 
+      // Press on a tab, release off the tabs: the press ends there, so a
+      // later middle gesture that starts elsewhere and ends on that tab
+      // doesn't close it.
+      tabs[0].dispatchEvent(new MouseEvent("mousedown", { button: 1, bubbles: true, cancelable: true }));
+      document.body.dispatchEvent(new MouseEvent("mouseup", { button: 1, bubbles: true }));
+      tabs[0].dispatchEvent(new MouseEvent("mouseup", { button: 1, bubbles: true }));
+      expect(events.onClose).not.toHaveBeenCalled();
+      // Same when the window loses focus mid-press.
+      tabs[0].dispatchEvent(new MouseEvent("mousedown", { button: 1, bubbles: true, cancelable: true }));
+      window.dispatchEvent(new Event("blur"));
+      tabs[0].dispatchEvent(new MouseEvent("mouseup", { button: 1, bubbles: true }));
+      expect(events.onClose).not.toHaveBeenCalled();
+
       // A right-button release is not a close.
       tabs[0].dispatchEvent(new MouseEvent("mousedown", { button: 2, bubbles: true, cancelable: true }));
       tabs[0].dispatchEvent(new MouseEvent("mouseup", { button: 2, bubbles: true }));
