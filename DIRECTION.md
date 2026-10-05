@@ -63,6 +63,24 @@ end-to-end update acceptance. Future release publication still requires
 user confirmation (§7). The cycle records below retain their historical
 implementation and acceptance context.
 
+- **2026-10-05→06 UI/UX pass and issue queue** (unreleased; the user asked
+  for a UI/UX-first autonomous pass with larger visual changes allowed, then
+  the open issue queue; PRs #374–#388 and #390 merged, #375 open): a browser
+  UI harness (`dev/`), sectioned Preferences with live theme previews, a
+  reworked tab strip, a uniform status bar, Command Palette shortcuts and
+  match highlighting, Go to Line hints, tidier panels, and an AA contrast
+  floor for every theme's text tokens. Accessibility: every DOM dialog is a
+  labelled modal with a focus trap and focus restoration,
+  tabs/menus/palettes follow their ARIA patterns with keyboard navigation.
+  Issue queue: the macOS auto-reload miss for symlinked/case/NFD paths
+  (#384, found under #280), a lockfile-only dependency refresh, and #338
+  findings posted to the issue (no gate shipped; G3 recommended for a
+  human-approved follow-up). All UI changes have Chromium-harness evidence
+  only; native WKWebView/WebView2 acceptance is pending with the user. #375
+  (restyled find panel with a match counter) stopped at ready after a
+  round-3 P1 fix, per the review gate, and awaits the user's merge. New
+  issue #389 (search-match tint vs. syntax-color contrast) needs a design
+  decision. #280, #314, #337, #338 and #339 remain open.
 - **2026-10-03 correctness pass** (PRs #364–#371, unreleased): fixed
   complete-document mojibake candidate/apply disagreement (#362), removed
   the unreachable GB18030 detection pair (#336), isolated test temp paths
