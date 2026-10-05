@@ -296,6 +296,12 @@ WKWebView/WebView2 acceptance is collected for the user.
   `.theme-swatch[data-theme]` too, so there is no second copy of any
   color). The dialog is a labelled `role="dialog"`. Native acceptance
   pending.
+- [x] Polish the tab strip: taller tabs, the active tab merges into the
+  editor surface with an accent top rule, inactive close buttons appear
+  on hover, and the unsaved dot turns into a close glyph on hover. Tabs
+  follow the ARIA tabs pattern (tablist, roving tabindex, unsaved state in
+  the accessible name); arrow keys/Home/End switch tabs and middle-click
+  closes without activating first. Native acceptance pending.
 
 ## Explicit non-goals
 
