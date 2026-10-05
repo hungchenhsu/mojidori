@@ -21,6 +21,8 @@ export interface Messages {
 
   "tabs.closeAria": (title: string) => string;
   "tabs.newTabAria": string;
+  "tabs.listAria": string;
+  "tabs.unsavedAria": (title: string) => string;
 
   // Tab-strip right-click menu (ROADMAP.md Track C "Tab context menu");
   // see main.ts's showTabContextMenu. Reveal has two platform-variant
@@ -35,6 +37,7 @@ export interface Messages {
 
   "statusbar.noFile": string;
   "statusbar.cursor": (line: number, column: number) => string;
+  "statusbar.goToLineTitle": string;
   "statusbar.encodingWithBom": (encoding: string) => string;
   "statusbar.readonlyPreview": (size: string) => string;
   "statusbar.userReadOnly": string;
@@ -575,6 +578,8 @@ const en: Messages = {
 
   "tabs.closeAria": (title) => `Close ${title}`,
   "tabs.newTabAria": "New tab",
+  "tabs.listAria": "Open files",
+  "tabs.unsavedAria": (title) => `${title}, unsaved changes`,
 
   "tabs.closeOthers": "Close Others",
   "tabs.closeTabsToRight": "Close Tabs to the Right",
@@ -584,6 +589,7 @@ const en: Messages = {
 
   "statusbar.noFile": "No file",
   "statusbar.cursor": (line, column) => `Ln ${line}, Col ${column}`,
+  "statusbar.goToLineTitle": "Go to Line…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `Read-only preview of ${size} file`,
   "statusbar.userReadOnly": "🔒 Read-only",
@@ -1028,6 +1034,8 @@ const zhTW: Messages = {
 
   "tabs.closeAria": (title) => `關閉 ${title}`,
   "tabs.newTabAria": "新增分頁",
+  "tabs.listAria": "已開啟的檔案",
+  "tabs.unsavedAria": (title) => `${title}，有未儲存的變更`,
 
   "tabs.closeOthers": "關閉其他分頁",
   "tabs.closeTabsToRight": "關閉右側分頁",
@@ -1037,6 +1045,7 @@ const zhTW: Messages = {
 
   "statusbar.noFile": "無檔案",
   "statusbar.cursor": (line, column) => `第 ${line} 行，第 ${column} 欄`,
+  "statusbar.goToLineTitle": "跳至行號…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `唯讀預覽（檔案大小 ${size}）`,
   "statusbar.userReadOnly": "🔒 唯讀",
@@ -1432,6 +1441,8 @@ const ja: Messages = {
 
   "tabs.closeAria": (title) => `${title} を閉じる`,
   "tabs.newTabAria": "新しいタブ",
+  "tabs.listAria": "開いているファイル",
+  "tabs.unsavedAria": (title) => `${title}（未保存の変更あり）`,
 
   "tabs.closeOthers": "他のタブを閉じる",
   "tabs.closeTabsToRight": "右側のタブを閉じる",
@@ -1441,6 +1452,7 @@ const ja: Messages = {
 
   "statusbar.noFile": "ファイルなし",
   "statusbar.cursor": (line, column) => `行 ${line}、列 ${column}`,
+  "statusbar.goToLineTitle": "行へ移動…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `読み取り専用プレビュー（ファイルサイズ ${size}）`,
   "statusbar.userReadOnly": "🔒 読み取り専用",
@@ -1865,6 +1877,8 @@ const zhCN: Messages = {
 
   "tabs.closeAria": (title) => `关闭 ${title}`,
   "tabs.newTabAria": "新建标签页",
+  "tabs.listAria": "已打开的文件",
+  "tabs.unsavedAria": (title) => `${title}，有未保存的更改`,
 
   "tabs.closeOthers": "关闭其他标签页",
   "tabs.closeTabsToRight": "关闭右侧标签页",
@@ -1874,6 +1888,7 @@ const zhCN: Messages = {
 
   "statusbar.noFile": "无文件",
   "statusbar.cursor": (line, column) => `第 ${line} 行，第 ${column} 列`,
+  "statusbar.goToLineTitle": "跳转到行…",
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `只读预览（文件大小 ${size}）`,
   "statusbar.userReadOnly": "🔒 只读",

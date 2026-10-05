@@ -285,6 +285,10 @@ allowed, one reviewable item per PR); afterwards the open issue queue
 resumes. Browser screenshots are review evidence only; native
 WKWebView/WebView2 acceptance is collected for the user.
 
+- [x] Unify the status bar: every right-hand item shares one box, only
+  clickable items react to hover (borderless, like the rest of the
+  chrome), and the cursor position is now a button that opens Go to Line.
+  Native acceptance pending.
 - [x] Add a browser UI harness (`dev/ui-harness.html` + an IPC mock) so
   themes, panels, and dialogs can be screenshot-reviewed without the Rust
   core. A unit test pins its shell markup to `index.html`; nothing under
@@ -296,6 +300,12 @@ WKWebView/WebView2 acceptance is collected for the user.
   `.theme-swatch[data-theme]` too, so there is no second copy of any
   color). The dialog is a labelled `role="dialog"`. Native acceptance
   pending.
+- [x] Polish the tab strip: taller tabs, the active tab merges into the
+  editor surface with an accent top rule, inactive close buttons appear
+  on hover, and the unsaved dot turns into a close glyph on hover. Tabs
+  follow the ARIA tabs pattern (tablist, roving tabindex, unsaved state in
+  the accessible name); arrow keys/Home/End switch tabs and middle-click
+  closes without activating first. Native acceptance pending.
 - [x] Command Palette: show each command's shortcut (menu.rs now keeps
   one `ACCELERATORS` table that both the native menu and
   `palette_commands` read, with a test that every call site resolves),

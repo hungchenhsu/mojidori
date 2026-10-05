@@ -59,7 +59,11 @@ let lastCursor: { line: number; column: number } = { line: 1, column: 1 };
 
 export function updateCursor(line: number, column: number): void {
   lastCursor = { line, column };
-  cursorEl.textContent = t("statusbar.cursor", line, column);
+  const position = t("statusbar.cursor", line, column);
+  cursorEl.textContent = position;
+  // The visible text is just coordinates; the accessible name leads with
+  // the button's action so a screen reader says what activating it does.
+  cursorEl.setAttribute("aria-label", `${t("statusbar.goToLineTitle")} ${position}`);
 }
 
 /** Re-render the cursor label after a locale change, using the last known
@@ -285,6 +289,8 @@ export function updateStatusBar(doc: StatusInfo | null): void {
   // every other badge here — a save that landed but couldn't confirm its
   // own durability says nothing about the file's current readonly/missing/
   // decode state, so this never suppresses or is suppressed by any of them.
+  cursorEl.title = t("statusbar.goToLineTitle");
+  refreshCursor();
   durabilityWarningEl.hidden = !doc?.durabilityWarning;
   durabilityWarningEl.textContent = doc?.durabilityWarning
     ? t("statusbar.durabilityWarning", doc.durabilityWarning)
