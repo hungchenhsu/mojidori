@@ -1,6 +1,7 @@
 // Minimal "Go to Line" prompt. Accepts either a bare line number ("123")
 // or "line:column" ("123:45") — see parseGoToInput below for the exact
 // grammar this input box accepts.
+import { installModal } from "./modal";
 import { t } from "./i18n";
 
 /** Parsed result of a Go to Line input. `column` is `null` when the input
@@ -78,6 +79,7 @@ export function showGoToLine(
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  installModal(overlay, panel, { label: t("modal.goToLine") });
   input.focus();
   setTimeout(() => document.addEventListener("mousedown", onAway), 0);
 }

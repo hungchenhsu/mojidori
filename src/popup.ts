@@ -24,16 +24,29 @@ interface OpenMenu {
   el: HTMLElement;
   onAway: (event: MouseEvent) => void;
   onKey: (event: KeyboardEvent) => void;
+  /** What had focus when the menu opened (usually the editor; the anchor
+   *  button where clicking focuses buttons). */
+  restoreTo: HTMLElement | null;
 }
 
 let current: OpenMenu | null = null;
 
+/** Close the open menu. If that left focus on nothing (the focused filter
+ *  input or item went away with it), focus returns to what had it before
+ *  the menu opened — synchronously, before an item's action runs, so a
+ *  modal that action opens records the right element to restore to on its
+ *  own close (modal.ts installModal). */
 export function closeMenu(): void {
   if (!current) return;
+  const { restoreTo } = current;
   document.removeEventListener("mousedown", current.onAway);
   document.removeEventListener("keydown", current.onKey);
   current.el.remove();
   current = null;
+  const active = document.activeElement;
+  if ((active === null || active === document.body) && restoreTo?.isConnected) {
+    restoreTo.focus();
+  }
 }
 
 /** Builds one item's DOM node — a non-interactive header `<div>`, or a
@@ -126,7 +139,12 @@ function registerOpenMenu(el: HTMLElement): void {
   const onKey = (event: KeyboardEvent) => {
     if (event.key === "Escape") closeMenu();
   };
-  current = { el, onAway, onKey };
+  const active = document.activeElement;
+  const restoreTo =
+    active instanceof HTMLElement && active !== document.body && !el.contains(active)
+      ? active
+      : null;
+  current = { el, onAway, onKey, restoreTo };
   setTimeout(() => {
     document.addEventListener("mousedown", onAway);
     document.addEventListener("keydown", onKey);

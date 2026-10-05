@@ -1,4 +1,5 @@
 // Preferences state, application, and the in-window settings dialog.
+import { installModal } from "./modal";
 import { message as messageDialog } from "@tauri-apps/plugin-dialog";
 import type { EditorHandle } from "./editor";
 import {
@@ -480,9 +481,6 @@ export function showPreferencesDialog(): void {
   overlay.className = "prefs-overlay";
   const dialog = document.createElement("div");
   dialog.className = "prefs-dialog";
-  dialog.setAttribute("role", "dialog");
-  dialog.setAttribute("aria-modal", "true");
-  dialog.setAttribute("aria-labelledby", "prefs-title");
 
   const title = document.createElement("h2");
   title.id = "prefs-title";
@@ -606,5 +604,6 @@ export function showPreferencesDialog(): void {
 
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  installModal(overlay, dialog, { labelledBy: title });
   theme.element.querySelector<HTMLInputElement>("input:checked")!.focus();
 }

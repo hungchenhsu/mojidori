@@ -111,6 +111,12 @@ input,
     color 120ms ease-out;
 }
 
+/* A dialog focused as a fallback (modal.ts installModal, when it has no
+   control to focus) is a container, not a control: no focus ring. */
+[aria-modal="true"]:focus {
+  outline: none;
+}
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible {
@@ -754,12 +760,51 @@ select:focus-visible {
   outline: none;
 }
 
+/* Match-case / regex toggles, drawn as chips like the editor's find panel
+   (editor-theme.ts): the checkbox stays operable but is visually hidden,
+   and findinfiles.ts mirrors its state as `.is-checked`. */
 .fif-case {
-  display: flex;
-  gap: 4px;
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  color: var(--fg-muted);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: var(--font-ui-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
   user-select: none;
+}
+
+.fif-case:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.fif-case.is-checked {
+  color: var(--fg);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.fif-case:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.fif-case input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .fif-status {
@@ -1273,12 +1318,12 @@ select:focus-visible {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
+  padding: 12px 14px 8px;
 }
 
 .batchconvert-folder {
-  max-width: 160px;
+  min-width: 0;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1323,6 +1368,17 @@ select:focus-visible {
   border-radius: var(--radius-md);
 }
 
+/* Bordered text fields in the panels drop the default outline (the global
+   focus-visible ring loses to their more specific rules), so they show
+   focus on the border instead — otherwise keyboard focus is invisible. */
+.fif-controls input[type="text"]:focus-visible,
+.fif-replace-row input[type="text"]:focus-visible,
+.batchconvert-ext:focus-visible,
+.streamreplace-fields input[type="text"]:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
 .batchconvert-scan {
   padding: 5px 12px;
   font: inherit;
@@ -1342,9 +1398,15 @@ select:focus-visible {
 
 .batchconvert-options {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 0 14px 10px;
+  gap: 8px 16px;
+  padding: 0 14px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.batchconvert-options .batchconvert-scan {
+  margin-left: auto;
 }
 
 .batchconvert-lineending {

@@ -293,6 +293,17 @@ WKWebView/WebView2 acceptance is collected for the user.
   themes, panels, and dialogs can be screenshot-reviewed without the Rust
   core. A unit test pins its shell markup to `index.html`; nothing under
   `dev/` is bundled.
+- [x] Give every DOM modal (14 overlays: confirms, Go to Line, palettes,
+  Find in Files, conversion/repair/compare panels, hex view, Preferences,
+  Document Info) shared accessibility via `src/modal.ts`: dialog or
+  alertdialog role, `aria-modal`, an accessible name, a Tab/Shift+Tab
+  focus trap (topmost modal only), and focus restored to the prior element
+  when the overlay is removed unless the closing code moved focus itself.
+  Native screen-reader acceptance pending.
+- [x] Status-bar popups return focus to what had it before they opened
+  when they close (item click or Escape), before an item's action runs, so
+  a modal launched from a popup (e.g. Compare Encodings) restores focus
+  correctly on its own close (#378 deferred review item).
 - [x] Redesign the Preferences dialog: Appearance / Editor / Files
   sections, uniform control sizing, a pinned button bar, and a theme
   picker of five preview cards painted from each theme's own token block
@@ -306,6 +317,12 @@ WKWebView/WebView2 acceptance is collected for the user.
   follow the ARIA tabs pattern (tablist, roving tabindex, unsaved state in
   the accessible name); arrow keys/Home/End switch tabs and middle-click
   closes without activating first. Native acceptance pending.
+- [x] Panel polish: Batch Conversion splits into "which files" and "what to
+  do" rows with Scan at the end; Find in Files' Aa / .* toggles become
+  named chips matching the find panel; bordered panel text fields regain a
+  visible keyboard focus state (their `outline: none` had beaten the
+  global ring); and a middle-button press released off the tabs no longer
+  stays armed (#377 deferred review item).
 - [x] Command Palette: show each command's shortcut (menu.rs now keeps
   one `ACCELERATORS` table that both the native menu and
   `palette_commands` read, with a test that every call site resolves),

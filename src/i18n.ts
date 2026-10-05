@@ -19,6 +19,15 @@ export interface Messages {
   "app.untitled": string;
   "app.untitledNumbered": (n: number) => string;
 
+  // Accessible names for modal panels that have no visible title (see
+  // modal.ts installModal).
+  "modal.goToLine": string;
+  "modal.quickOpen": string;
+  "modal.commandPalette": string;
+  "modal.findInFiles": string;
+  "modal.replaceInFile": string;
+  "modal.compareEncodings": string;
+
   "tabs.closeAria": (title: string) => string;
   "tabs.newTabAria": string;
   "tabs.listAria": string;
@@ -575,6 +584,12 @@ export interface Messages {
 const en: Messages = {
   "app.untitled": "Untitled",
   "app.untitledNumbered": (n) => `Untitled-${n}`,
+  "modal.goToLine": "Go to Line",
+  "modal.quickOpen": "Open Recent",
+  "modal.commandPalette": "Command Palette",
+  "modal.findInFiles": "Find in Files",
+  "modal.replaceInFile": "Replace in File",
+  "modal.compareEncodings": "Compare Encodings",
 
   "tabs.closeAria": (title) => `Close ${title}`,
   "tabs.newTabAria": "New tab",
@@ -1031,6 +1046,12 @@ const en: Messages = {
 const zhTW: Messages = {
   "app.untitled": "未命名",
   "app.untitledNumbered": (n) => `未命名-${n}`,
+  "modal.goToLine": "跳至行號",
+  "modal.quickOpen": "開啟最近使用的檔案",
+  "modal.commandPalette": "命令選擇區",
+  "modal.findInFiles": "在檔案中尋找",
+  "modal.replaceInFile": "在檔案中取代",
+  "modal.compareEncodings": "比較編碼",
 
   "tabs.closeAria": (title) => `關閉 ${title}`,
   "tabs.newTabAria": "新增分頁",
@@ -1438,6 +1459,12 @@ const zhTW: Messages = {
 const ja: Messages = {
   "app.untitled": "無題",
   "app.untitledNumbered": (n) => `無題-${n}`,
+  "modal.goToLine": "行へ移動",
+  "modal.quickOpen": "最近使ったファイルを開く",
+  "modal.commandPalette": "コマンドパレット",
+  "modal.findInFiles": "ファイルを横断して検索",
+  "modal.replaceInFile": "ファイル内で置換",
+  "modal.compareEncodings": "エンコーディングを比較",
 
   "tabs.closeAria": (title) => `${title} を閉じる`,
   "tabs.newTabAria": "新しいタブ",
@@ -1874,6 +1901,12 @@ const ja: Messages = {
 const zhCN: Messages = {
   "app.untitled": "未命名",
   "app.untitledNumbered": (n) => `未命名-${n}`,
+  "modal.goToLine": "跳转到行",
+  "modal.quickOpen": "打开最近的文件",
+  "modal.commandPalette": "命令面板",
+  "modal.findInFiles": "在文件中查找",
+  "modal.replaceInFile": "在文件中替换",
+  "modal.compareEncodings": "比较编码",
 
   "tabs.closeAria": (title) => `关闭 ${title}`,
   "tabs.newTabAria": "新建标签页",

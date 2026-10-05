@@ -47,6 +47,7 @@
 // "skipped" for UTF-16), adapted below into this module's own `DocInfoFetch`
 // shape, which predates the merge and is unaffected by it (still shared with
 // the untitled-tab "skipped: untitled" case, which has no IPC call at all).
+import { installModal } from "./modal";
 import { t } from "./i18n";
 import { formatDetectionEvidence } from "./detectcard";
 import { formatSize } from "./statusbar";
@@ -282,8 +283,11 @@ function renderDialog(dialog: HTMLElement, content: DocumentInfoDialogContent, o
 
   const title = document.createElement("p");
   title.className = "confirm-dialog-title";
+  title.id = "docinfo-title";
   title.textContent = content.title;
   dialog.appendChild(title);
+  dialog.removeAttribute("aria-label");
+  dialog.setAttribute("aria-labelledby", title.id);
 
   renderSection(dialog, content.fileSection);
   renderSection(dialog, content.encodingSection);
@@ -359,6 +363,9 @@ export function showDocumentInfo(doc: {
   dialog.textContent = t("common.loading");
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  // Named up front for the loading state; renderDialog switches the name to
+  // its drawn title element.
+  installModal(overlay, dialog, { label: t("docinfo.title", doc.title) });
 
   const finish = (): void => {
     document.removeEventListener("keydown", onKey, true);
