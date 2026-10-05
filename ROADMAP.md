@@ -304,6 +304,12 @@ WKWebView/WebView2 acceptance is collected for the user.
   when they close (item click or Escape), before an item's action runs, so
   a modal launched from a popup (e.g. Compare Encodings) restores focus
   correctly on its own close (#378 deferred review item).
+- [x] Theme contrast pass: --fg-muted, --fg-faint, --danger, and
+  --warning now clear WCAG AA (4.5:1) on every surface in all four themes
+  (previously --fg-faint was 2.7-3.3:1 while carrying paths, scan errors,
+  and status text, and --danger was 3.1-4.2:1 in Dark/Dusk), with
+  --fg-muted lifted to ≥6.5:1 to keep a visible step above --fg-faint.
+  `src/themecontrast.test.ts` holds the floor.
 - [x] Redesign the Preferences dialog: Appearance / Editor / Files
   sections, uniform control sizing, a pinned button bar, and a theme
   picker of five preview cards painted from each theme's own token block
