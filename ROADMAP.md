@@ -373,6 +373,10 @@ WKWebView/WebView2 acceptance is collected for the user.
   polite status outside the listbox, and the arrow-key selection kept in
   view.
 
+- [x] Reconcile the UI/UX pass and issue-queue pass for handoff: record
+  the merged changes under CHANGELOG's Unreleased section and add the
+  pass to DIRECTION §2. Source version remains 0.9.0.
+
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:

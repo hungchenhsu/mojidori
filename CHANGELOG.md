@@ -8,8 +8,47 @@ Semantic Versioning compatibility guarantees.
 
 ## [Unreleased]
 
+### Added
+
+- Command Palette shows each command's keyboard shortcut (formatted per
+  platform), highlights the characters a query matched, and keeps the
+  arrow-key selection scrolled into view (#380).
+- Go to Line shows the current line and, when known, the line count, and
+  explains an unparseable entry instead of closing silently (#386).
+- Clicking the status bar's cursor position opens Go to Line (#379).
+- Middle-clicking a tab closes it without activating it first (#377,
+  #381).
+
+### Changed
+
+- Refreshed editor chrome: Preferences grouped into Appearance / Editor /
+  Files with a theme picker of live preview cards (#376); a taller tab
+  strip whose active tab joins the editor surface, with close buttons
+  revealed on hover (#377); a borderless, uniformly sized status bar
+  (#379); tidier Batch Conversion and Find in Files panels (#381).
+- Secondary text and status colors meet WCAG AA contrast (4.5:1) on every
+  surface in all four themes, including warning text on its tinted badge
+  (#385).
+
+### Accessibility
+
+- Every dialog is a labelled modal with a Tab focus trap, initial focus
+  inside it, and focus restored when it closes — including dialogs opened
+  from the Command Palette or a status-bar popup (#378, #382).
+- Tabs follow the ARIA tabs pattern with arrow-key / Home / End navigation
+  (#377); status-bar and tab context menus are keyboard-operable ARIA
+  menus whose filter field also closes on Tab and leaves IME composition
+  keys alone (#387, #390); the Command Palette and Quick Open are ARIA
+  comboboxes with announced empty states (#380, #388); Find in Files
+  option toggles and the cursor button have meaningful accessible names
+  (#379, #381); bordered panel fields regain a visible keyboard focus
+  state (#381).
+
 ### Fixed
 
+- Auto-reload now works for files opened through a symlink, `/tmp`, a
+  different letter case, or a decomposed (NFD) name on macOS (#384; found
+  while investigating #280).
 - Mojibake detection no longer tolerates an incomplete trailing byte
   sequence in a complete document, so it stops offering repair
   candidates that can never apply; genuinely truncated samples keep the
@@ -31,6 +70,10 @@ Semantic Versioning compatibility guarantees.
 
 ### Maintenance
 
+- Browser UI harness (`dev/ui-harness.html`) for screenshot review
+  without the Rust core (#374).
+- Routine npm dependency refresh (lockfile only), clearing the dev-only
+  undici and nanoid advisories (#383).
 - Test temp paths now include the process ID and an incrementing
   sequence number so parallel tests no longer interfere with each other
   (#368, fixes #236).
