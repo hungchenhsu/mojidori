@@ -34,11 +34,24 @@ export function showQuickOpen(
   const input = document.createElement("input");
   input.type = "text";
   input.placeholder = t("quickOpen.searchPlaceholder");
+  // Same ARIA combobox/listbox shape as palette.ts's Command Palette.
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-controls", "quickopen-list");
+  input.setAttribute("aria-label", t("quickOpen.searchPlaceholder"));
   panel.appendChild(input);
 
   const list = document.createElement("ul");
   list.className = "quickopen-list";
+  list.id = "quickopen-list";
+  list.setAttribute("role", "listbox");
   panel.appendChild(list);
+
+  // Empty-state text lives outside the listbox as a polite status.
+  const emptyStatus = document.createElement("div");
+  emptyStatus.className = "quickopen-empty";
+  emptyStatus.setAttribute("role", "status");
+  panel.appendChild(emptyStatus);
 
   let filtered: string[] = [];
   let selected = 0;
@@ -55,18 +68,26 @@ export function showQuickOpen(
     filtered = filterRecent(recent, input.value);
     selected = Math.min(selected, Math.max(filtered.length - 1, 0));
     list.replaceChildren();
-    if (filtered.length === 0) {
-      const empty = document.createElement("li");
-      empty.className = "quickopen-empty";
-      empty.textContent =
-        recent.length === 0 ? t("quickOpen.noRecent") : t("quickOpen.noMatches");
-      list.appendChild(empty);
+    const empty = filtered.length === 0;
+    list.hidden = empty;
+    input.setAttribute("aria-expanded", String(!empty));
+    emptyStatus.hidden = !empty;
+    emptyStatus.textContent = !empty
+      ? ""
+      : recent.length === 0
+        ? t("quickOpen.noRecent")
+        : t("quickOpen.noMatches");
+    if (empty) {
+      input.removeAttribute("aria-activedescendant");
       return;
     }
     filtered.forEach((path, index) => {
       const item = document.createElement("li");
       item.className =
         index === selected ? "quickopen-item selected" : "quickopen-item";
+      item.id = `quickopen-option-${index}`;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(index === selected));
       const name = document.createElement("span");
       name.className = "quickopen-name";
       name.textContent = basename(path);
@@ -82,6 +103,12 @@ export function showQuickOpen(
       });
       list.appendChild(item);
     });
+    const current = list.children[selected] as HTMLElement | undefined;
+    if (current) {
+      input.setAttribute("aria-activedescendant", current.id);
+      // jsdom has no scrollIntoView; real WebViews do.
+      current.scrollIntoView?.({ block: "nearest" });
+    }
   };
 
   input.addEventListener("input", () => {
