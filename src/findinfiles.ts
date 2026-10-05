@@ -16,6 +16,7 @@
 // message, the post-execute summary, selection -> execute() params) lives
 // in replaceinfiles-ui.ts so it's unit-testable without a DOM; this module
 // is just the wiring.
+import { installModal } from "./modal";
 import { confirm as confirmDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { t } from "./i18n";
 import {
@@ -821,6 +822,7 @@ export function showFindInFiles(
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  installModal(overlay, panel, { label: t("modal.findInFiles") });
   if (lastFolder) input.focus();
   setTimeout(() => document.addEventListener("mousedown", onAway), 0);
 }

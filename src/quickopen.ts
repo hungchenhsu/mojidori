@@ -1,4 +1,5 @@
 // Quick-open panel: type-to-filter over recently opened files.
+import { installModal } from "./modal";
 import { t } from "./i18n";
 
 const MAX_VISIBLE = 12;
@@ -111,6 +112,7 @@ export function showQuickOpen(
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  installModal(overlay, panel, { label: t("modal.quickOpen") });
   render();
   input.focus();
   setTimeout(() => document.addEventListener("mousedown", onAway), 0);

@@ -3,6 +3,7 @@
 // strictly read-only: no editing, no save path — it only ever displays the
 // plain-text hex dump the Rust core already formatted (raw bytes never
 // cross IPC).
+import { installModal } from "./modal";
 import { t } from "./i18n";
 import { readHexDump } from "./ipc";
 import { formatSize } from "./statusbar";
@@ -67,6 +68,7 @@ export function showHexView(path: string, title: string): void {
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  installModal(overlay, panel, { labelledBy: titleEl });
   setTimeout(() => {
     document.addEventListener("mousedown", onAway);
     document.addEventListener("keydown", onKey);

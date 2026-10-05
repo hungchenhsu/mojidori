@@ -18,6 +18,7 @@
 // initial-focus-on-Cancel pattern (this is an irreversible, data-losing
 // action once confirmed, so — like the stale-file dialog — there is no
 // global Enter shortcut for it).
+import { installModal } from "./modal";
 import { t } from "./i18n";
 import type { LossyReport } from "./ipc";
 
@@ -128,6 +129,7 @@ export function showLossySaveConfirm(encoding: string, report: LossyReport): Pro
     dialog.appendChild(buttons);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
+    installModal(overlay, dialog, { role: "alertdialog", labelledBy: title, describedBy: message });
     cancel.focus();
   });
 }

@@ -12,6 +12,7 @@
 // default to" action worth a global Enter shortcut. Escape still cancels,
 // and initial focus lands on Cancel — the one button that is always
 // non-destructive.
+import { installModal } from "./modal";
 import { t } from "./i18n";
 
 export type StaleFileChoice = "reload" | "overwrite" | "cancel";
@@ -60,6 +61,7 @@ export function showStaleFileConfirm(title: string): Promise<StaleFileChoice> {
     dialog.appendChild(buttons);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
+    installModal(overlay, dialog, { role: "alertdialog", labelledBy: message });
     cancel.focus();
   });
 }

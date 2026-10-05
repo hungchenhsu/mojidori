@@ -24,6 +24,7 @@
 // drives the scan/convert calls; "keep"+"keep" naturally reports every
 // file alreadyTarget (nothing to change), which disables Convert without
 // any special-case UI code.
+import { installModal } from "./modal";
 import {
   confirm as confirmDialog,
   open as openDialog,
@@ -696,6 +697,7 @@ export function showBatchConvert(): void {
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  installModal(overlay, panel, { labelledBy: header });
   if (lastFolder) extInput.focus();
   setTimeout(() => {
     document.addEventListener("mousedown", onAway);

@@ -1,5 +1,6 @@
 // Three-way close confirmation (the native dialog plugin only offers two
 // buttons). Modal: clicking outside does nothing; Esc cancels, Enter saves.
+import { installModal } from "./modal";
 import { t } from "./i18n";
 
 export type CloseChoice = "save" | "discard" | "cancel";
@@ -53,6 +54,7 @@ export function showCloseConfirm(title: string): Promise<CloseChoice> {
     dialog.appendChild(buttons);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
+    installModal(overlay, dialog, { role: "alertdialog", labelledBy: message });
     save.focus();
   });
 }
