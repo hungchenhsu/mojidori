@@ -388,6 +388,31 @@ describe("popup keyboard navigation", () => {
     expect(pick).toHaveBeenCalledOnce();
   });
 
+  it("closes on Tab, returning focus to the opener", () => {
+    const editor = document.createElement("textarea");
+    document.body.appendChild(editor);
+    editor.focus();
+    showMenu(anchor(), [{ label: "One" }, { label: "Two" }]);
+    expect(document.activeElement?.textContent).toContain("One");
+    press("Tab");
+    expect(document.querySelector(".popup-menu")).toBeNull();
+    expect(document.activeElement).toBe(editor);
+  });
+
+  it("re-claims focus after the opening gesture's pointerup moved it away", () => {
+    const editor = document.createElement("textarea");
+    document.body.appendChild(editor);
+    showMenu(anchor(), [{ label: "One" }, { label: "Two" }]);
+    // A right-click's pointerup activates the tab, which focuses the editor.
+    editor.focus();
+    window.dispatchEvent(new PointerEvent("pointerup"));
+    expect(document.activeElement?.textContent).toContain("One");
+    // Only once: a later pointerup doesn't keep stealing focus.
+    editor.focus();
+    window.dispatchEvent(new PointerEvent("pointerup"));
+    expect(document.activeElement).toBe(editor);
+  });
+
   it("enters the filtered list with ArrowDown and returns to the field with ArrowUp", () => {
     showFilterableMenu(anchor(), {
       placeholder: "Filter encodings",

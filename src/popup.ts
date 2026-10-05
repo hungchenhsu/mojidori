@@ -27,6 +27,8 @@ interface OpenMenu {
   /** What had focus when the menu opened (usually the editor; the anchor
    *  button where clicking focuses buttons). */
   restoreTo: HTMLElement | null;
+  /** Extra teardown (listeners added after registration). */
+  cleanup?: () => void;
 }
 
 let current: OpenMenu | null = null;
@@ -39,6 +41,7 @@ let current: OpenMenu | null = null;
 export function closeMenu(): void {
   if (!current) return;
   const { restoreTo } = current;
+  current.cleanup?.();
   document.removeEventListener("mousedown", current.onAway);
   document.removeEventListener("keydown", current.onKey);
   current.el.remove();
@@ -175,6 +178,13 @@ function enabledItems(container: HTMLElement): HTMLButtonElement[] {
  *  the filterable menu uses it to return to its filter field. */
 function wireMenuKeys(list: HTMLElement, onTopEdge?: () => void): void {
   list.addEventListener("keydown", (event) => {
+    // Tab leaves the menu: close it (focus returns to its opener) and let
+    // the browser move focus on from there, rather than leaving an open
+    // menu detached from the keyboard.
+    if (event.key === "Tab") {
+      closeMenu();
+      return;
+    }
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     const items = enabledItems(list);
     if (items.length === 0) return;
@@ -209,7 +219,21 @@ export function showMenu(anchor: HTMLElement, items: MenuItem[]): void {
   wireMenuKeys(el);
   // Keyboard users start inside the menu; focus returns on close
   // (closeMenu).
-  enabledItems(el)[0]?.focus();
+  const focusFirst = (): void => {
+    if (current?.el !== el || el.contains(document.activeElement)) return;
+    enabledItems(el)[0]?.focus();
+  };
+  focusFirst();
+  // A menu opened by a right-click (the tab context menu) is followed by
+  // that gesture's pointerup, which can activate the tab and move focus to
+  // the editor. Re-claim focus once, after the pointerup's own handlers
+  // (window bubble phase runs last).
+  const afterPointerUp = (): void => {
+    window.removeEventListener("pointerup", afterPointerUp);
+    focusFirst();
+  };
+  window.addEventListener("pointerup", afterPointerUp);
+  if (current) current.cleanup = () => window.removeEventListener("pointerup", afterPointerUp);
 }
 
 /**
