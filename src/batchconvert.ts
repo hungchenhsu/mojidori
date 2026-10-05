@@ -265,10 +265,11 @@ export function showBatchConvert(): void {
   scanButton.className = "batchconvert-scan";
   scanButton.textContent = t("batchConvert.scanButton");
 
+  // Row 1 says *which files* (folder + extensions); row 2 says *what to do
+  // with them* (target encoding, line endings) and ends with the action
+  // that previews it.
   controls.appendChild(folderButton);
   controls.appendChild(extInput);
-  controls.appendChild(targetLabel);
-  controls.appendChild(scanButton);
   panel.appendChild(controls);
 
   const lineEndingLabel = document.createElement("label");
@@ -286,7 +287,9 @@ export function showBatchConvert(): void {
 
   const optionsArea = document.createElement("div");
   optionsArea.className = "batchconvert-options";
+  optionsArea.appendChild(targetLabel);
   optionsArea.appendChild(lineEndingLabel);
+  optionsArea.appendChild(scanButton);
   panel.appendChild(optionsArea);
 
   const status = document.createElement("div");
