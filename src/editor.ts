@@ -788,6 +788,41 @@ const partialBuffer = Facet.define<boolean, boolean>({
   combine: (values) => values.some(Boolean),
 });
 
+/** Skip counting when `document length × normalized query length` exceeds
+ *  this. A literal @codemirror/search cursor keeps one partial match per
+ *  position where the query could still be starting, so each document
+ *  character costs up to one step per query character: a long query with a
+ *  repeated prefix over a long run of that prefix ("a"×1000 + "b" over
+ *  480K "a") measured ~2.5 s in Chromium while finding nothing, so neither
+ *  the match cap nor the debounce bounds it. At that measured ~5 ns/step
+ *  this budget keeps the worst case near 50 ms, while a 20-character query
+ *  is still counted at the document limit (and longer ones in shorter
+ *  documents). Characters that NFKD-expand (e.g. Hangul syllables to
+ *  jamo) can stretch the document side by a small constant factor. */
+export const SEARCH_COUNT_WORK_BUDGET = 10_000_000;
+
+/** Whether the counter may scan `state` for `query` automatically, i.e.
+ *  whether the scan's worst-case work is bounded. Exported for unit
+ *  testing. */
+export function canAutoCount(state: EditorState, query: SearchQuery): boolean {
+  // Regexp queries are never auto-counted: a valid pattern with
+  // catastrophic backtracking (e.g. `(a+)+b` over a long run of `a`) can
+  // stall a single cursor step indefinitely, and neither the match cap nor
+  // the document limit bounds that. CodeMirror itself only runs such a
+  // pattern over the visible range until the user explicitly navigates;
+  // the counter must not widen that exposure.
+  if (query.regexp) return false;
+  if (state.facet(partialBuffer)) return false;
+  const docLength = state.doc.length;
+  if (docLength > SEARCH_COUNT_MAX_DOC) return false;
+  // The cursor matches against the NFKD-normalized (and, when not
+  // case-sensitive, lowercased) query; unescaping `\n`/`\t` only shortens
+  // it, so the raw search text's normalized length is an upper bound.
+  let normalized = query.search.normalize("NFKD");
+  if (!query.caseSensitive) normalized = normalized.toLowerCase();
+  return docLength * normalized.length <= SEARCH_COUNT_WORK_BUDGET;
+}
+
 export interface SearchMatchCount {
   /** Start/end offsets of each counted match, in document order. */
   ranges: { from: number; to: number }[];
@@ -907,18 +942,9 @@ const searchCountPlugin = ViewPlugin.fromClass(
         if (!panel) return;
         const state = this.view.state;
         const query = getSearchQuery(state);
-        // Regexp queries are never auto-counted: a valid pattern with
-        // catastrophic backtracking (e.g. `(a+)+b` over a long run of `a`)
-        // can stall a single cursor step indefinitely, and neither the
-        // match cap nor the document limit bounds that. CodeMirror itself
-        // only runs such a pattern over the visible range until the user
-        // explicitly navigates; the counter must not widen that exposure.
-        this.count =
-          state.facet(partialBuffer) ||
-          state.doc.length > SEARCH_COUNT_MAX_DOC ||
-          query.regexp
-            ? null
-          : countSearchMatches(state, query);
+        this.count = canAutoCount(state, query)
+          ? countSearchMatches(state, query)
+          : null;
         this.render(panel);
       }, delay);
     }

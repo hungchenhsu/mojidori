@@ -5,9 +5,11 @@ import { EditorView } from "@codemirror/view";
 import { SearchQuery, setSearchQuery } from "@codemirror/search";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  canAutoCount,
   countSearchMatches,
   createEditor,
   SEARCH_COUNT_MAX_DOC,
+  SEARCH_COUNT_WORK_BUDGET,
   searchCountLabel,
 } from "./editor";
 import { cm6Phrases } from "./editor-phrases";
@@ -74,6 +76,56 @@ describe("countSearchMatches", () => {
     // Exactly `cap` matches is not capped.
     const exact = countSearchMatches(stateWith("xxxx"), new SearchQuery({ search: "x" }), 4)!;
     expect(exact.capped).toBe(false);
+  });
+});
+
+describe("canAutoCount", () => {
+  // A long query with a repeated prefix over a long run of that prefix:
+  // the literal cursor carries ~1,000 partial matches through every
+  // character and finds nothing, so the match cap never stops it. Measured
+  // ~2.5 s in Chromium at this size, below the document limit.
+  const slowDoc = "header\n".repeat(100) + "a".repeat(480_000);
+  const slowQuery = "a".repeat(1000) + "b";
+
+  it("refuses a query whose worst-case scan exceeds the work budget", () => {
+    expect(slowDoc.length).toBeLessThan(SEARCH_COUNT_MAX_DOC);
+    const state = stateWith(slowDoc);
+    expect(canAutoCount(state, new SearchQuery({ search: slowQuery }))).toBe(false);
+    expect(
+      canAutoCount(state, new SearchQuery({ search: slowQuery, caseSensitive: true })),
+    ).toBe(false);
+    // A short query over the same document is still within budget.
+    expect(canAutoCount(state, new SearchQuery({ search: "aab" }))).toBe(true);
+  });
+
+  it("finishes the worst case it does allow quickly", () => {
+    const queryLength = 20;
+    const doc = "a".repeat(Math.floor(SEARCH_COUNT_WORK_BUDGET / queryLength));
+    const state = stateWith(doc);
+    const query = new SearchQuery({ search: "a".repeat(queryLength - 1) + "b" });
+    expect(canAutoCount(state, query)).toBe(true);
+    const started = performance.now();
+    expect(countSearchMatches(state, query)!.ranges).toHaveLength(0);
+    // Generous for slow CI runners; the unbounded case above takes seconds.
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("measures the query after normalization", () => {
+    // U+FDFA NFKD-expands to 18 characters, and the cursor matches against
+    // the expanded form.
+    const ligatures = "\uFDFA\uFDFA";
+    expect(ligatures.normalize("NFKD")).toHaveLength(36);
+    const limit = Math.floor(SEARCH_COUNT_WORK_BUDGET / 36);
+    expect(limit).toBeLessThan(SEARCH_COUNT_MAX_DOC);
+    const query = new SearchQuery({ search: ligatures });
+    expect(canAutoCount(stateWith(" ".repeat(limit)), query)).toBe(true);
+    expect(canAutoCount(stateWith(" ".repeat(limit + 1)), query)).toBe(false);
+  });
+
+  it("never allows regexp queries", () => {
+    expect(canAutoCount(stateWith("abc"), new SearchQuery({ search: "a", regexp: true }))).toBe(
+      false,
+    );
   });
 });
 
@@ -256,6 +308,26 @@ describe("search panel counter", () => {
       view.dispatch({ changes: { from: 3, to: view.state.doc.length } });
       vi.runAllTimers();
       expect(label()!.textContent).toBe("1 match");
+    } finally {
+      view.destroy();
+      parent.remove();
+    }
+  });
+
+  it("stays hidden when the query's worst-case scan is over budget", () => {
+    const { view, label, parent } = setup("header\n".repeat(100) + "a".repeat(480_000));
+    try {
+      view.dispatch({
+        effects: setSearchQuery.of(new SearchQuery({ search: "a".repeat(1000) + "b" })),
+      });
+      const started = performance.now();
+      vi.runAllTimers();
+      expect(performance.now() - started).toBeLessThan(1000);
+      expect(label()!.hidden).toBe(true);
+      // A short query over the same document still counts.
+      view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: "header" })) });
+      vi.runAllTimers();
+      expect(label()!.textContent).toBe("100 matches");
     } finally {
       view.destroy();
       parent.remove();
