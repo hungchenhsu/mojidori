@@ -3724,7 +3724,9 @@ async function runNormalizeFlow(form: NormalizeForm): Promise<void> {
 // binding them here as well would double-fire. Only tab cycling stays in
 // the WebView because Ctrl+Tab is not reliable as a menu accelerator.
 window.addEventListener("keydown", (event) => {
-  if (event.ctrlKey && event.key === "Tab") {
+  // An open modal swallows Ctrl+Tab (src/modal.ts); the defaultPrevented
+  // check keeps any other handler that claimed it from switching tabs too.
+  if (event.ctrlKey && event.key === "Tab" && !event.defaultPrevented) {
     event.preventDefault();
     cycleTab(event.shiftKey ? -1 : 1);
   }

@@ -108,15 +108,44 @@ describe("installModal", () => {
     expect(document.activeElement?.id).toBe("b");
   });
 
-  it("ignores modified Tab (Ctrl+Tab switches editor tabs)", () => {
-    const { overlay, dialog } = buildModal(`<button id="a">a</button><button id="b">b</button>`);
-    installModal(overlay, dialog);
-    dialog.querySelector<HTMLElement>("#b")!.focus();
-    for (const mod of ["ctrlKey", "metaKey", "altKey"] as const) {
-      const event = new KeyboardEvent("keydown", { key: "Tab", [mod]: true, bubbles: true, cancelable: true });
-      document.activeElement!.dispatchEvent(event);
-      expect(event.defaultPrevented).toBe(false);
-      expect(document.activeElement?.id).toBe("b");
+  it("keeps Ctrl+Tab from reaching the editor-tab handler behind it", () => {
+    // Stand-in for main.ts's window-level Ctrl+Tab tab cycling, which
+    // would swap the document and focus the editor behind the dialog.
+    const cycled: KeyboardEvent[] = [];
+    const cycleTabs = (event: KeyboardEvent): void => {
+      if (event.ctrlKey && event.key === "Tab" && !event.defaultPrevented) cycled.push(event);
+    };
+    window.addEventListener("keydown", cycleTabs);
+    try {
+      const { overlay, dialog } = buildModal(`<button id="a">a</button><button id="b">b</button>`);
+      installModal(overlay, dialog);
+      dialog.querySelector<HTMLElement>("#b")!.focus();
+      for (const mod of ["ctrlKey", "metaKey"] as const) {
+        for (const shiftKey of [false, true]) {
+          const event = new KeyboardEvent("keydown", {
+            key: "Tab",
+            [mod]: true,
+            shiftKey,
+            bubbles: true,
+            cancelable: true,
+          });
+          document.activeElement!.dispatchEvent(event);
+          expect(event.defaultPrevented).toBe(true);
+          expect(document.activeElement?.id).toBe("b");
+        }
+      }
+      expect(cycled).toEqual([]);
+      // Alt+Tab is the OS's; the trap leaves it alone.
+      const alt = new KeyboardEvent("keydown", { key: "Tab", altKey: true, bubbles: true, cancelable: true });
+      document.activeElement!.dispatchEvent(alt);
+      expect(alt.defaultPrevented).toBe(false);
+      // With no modal open, Ctrl+Tab reaches the handler again.
+      overlay.remove();
+      const free = new KeyboardEvent("keydown", { key: "Tab", ctrlKey: true, bubbles: true, cancelable: true });
+      document.body.dispatchEvent(free);
+      expect(cycled).toEqual([free]);
+    } finally {
+      window.removeEventListener("keydown", cycleTabs);
     }
   });
 
