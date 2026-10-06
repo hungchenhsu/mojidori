@@ -4,7 +4,8 @@
 // adds what every modal needs and none had consistently:
 //   - dialog semantics: role, aria-modal, and an accessible name;
 //   - a focus trap: Tab / Shift+Tab cycle within the dialog instead of
-//     escaping into the editor behind the overlay;
+//     escaping into the editor behind the overlay, and Ctrl+Tab is held
+//     back from switching the editor tab behind it;
 //   - focus restoration: when the overlay leaves the DOM, focus returns to
 //     whatever was focused before it opened — unless the closing code
 //     already moved focus somewhere deliberately (e.g. Go to Line focusing
@@ -130,12 +131,19 @@ export function installModal(
 
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key !== "Tab" || event.defaultPrevented) return;
-    // Ctrl+Tab cycles editor tabs (main.ts) and other modified Tabs are
-    // not focus navigation.
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
     // Only the topmost modal traps Tab (a confirm can open over a panel).
     const modals = document.querySelectorAll('[aria-modal="true"]');
     if (modals[modals.length - 1] !== dialog) return;
+    // Ctrl+Tab cycles editor tabs (main.ts's window listener), which would
+    // swap the document and move focus into the editor behind the dialog.
+    // Swallow it here, in the capture phase, so it never gets that far.
+    // Alt+Tab belongs to the OS.
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.altKey) return;
     const items = tabbableIn(dialog);
     const active = document.activeElement;
     if (items.length === 0) {

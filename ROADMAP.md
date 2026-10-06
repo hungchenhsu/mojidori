@@ -323,7 +323,9 @@ WKWebView/WebView2 acceptance is collected for the user.
   Find in Files, conversion/repair/compare panels, hex view, Preferences,
   Document Info) shared accessibility via `src/modal.ts`: dialog or
   alertdialog role, `aria-modal`, an accessible name, a Tab/Shift+Tab
-  focus trap (topmost modal only), and focus restored to the prior element
+  focus trap (topmost modal only; it also holds back Ctrl+Tab so the
+  editor tab behind the dialog cannot switch and take focus), and focus
+  restored to the prior element
   when the overlay is removed unless the closing code moved focus itself.
   Native screen-reader acceptance pending.
 - [x] Status-bar popups return focus to what had it before they opened
