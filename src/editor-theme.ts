@@ -169,39 +169,142 @@ export const editorBaseThemeSpec = {
   ".cm-panels-bottom": {
     borderTop: "1px solid var(--border)",
   },
+  // Search panel. @codemirror/search builds the DOM (find field, three
+  // buttons, three checkbox labels, <br>, replace field, two buttons, close
+  // button); everything here is presentation only. The checkbox labels are
+  // restyled as toggle chips: the checkbox stays in the DOM (keyboard- and
+  // screen-reader-operable) but is visually hidden, and editor.ts's search
+  // counter plugin mirrors its state onto the label as `.is-checked`
+  // (rather than `label:has(:checked)`, which older WKWebView lacks).
   ".cm-panel.cm-search": {
     backgroundColor: "var(--bg-raised)",
+    position: "relative",
+    padding: "8px 40px 8px 10px",
+    fontSize: "var(--font-ui-sm)",
+    lineHeight: "26px",
+  },
+  ".cm-panel.cm-search > *": {
+    verticalAlign: "middle",
   },
   ".cm-panel.cm-search input.cm-textfield": {
     color: "var(--fg)",
-    backgroundColor: "transparent",
-    border: "1px solid var(--border)",
+    backgroundColor: "var(--bg-base)",
+    border: "1px solid var(--border-strong)",
     borderRadius: "var(--radius-md)",
-    padding: "3px 8px",
+    boxSizing: "border-box",
+    height: "26px",
+    width: "260px",
+    maxWidth: "40vw",
+    padding: "0 8px",
+    margin: "3px 6px 3px 0",
+    fontSize: "var(--font-ui)",
   },
   ".cm-panel.cm-search input.cm-textfield:focus-visible": {
     outline: "2px solid var(--accent)",
-    outlineOffset: "2px",
+    outlineOffset: "1px",
+  },
+  ".cm-panel.cm-search[data-match-state=none] input.cm-textfield[name=search]": {
+    borderColor: "var(--danger)",
+  },
+  ".cm-search-count": {
+    display: "inline-block",
+    minWidth: "76px",
+    marginRight: "6px",
+    color: "var(--fg-muted)",
+    fontSize: "var(--font-ui-xs)",
+    fontVariantNumeric: "tabular-nums",
+    whiteSpace: "nowrap",
+  },
+  // The counter uses the `hidden` attribute, which the display rule above
+  // would otherwise override (UA `[hidden]` styles lose to author rules).
+  ".cm-search-count[hidden]": {
+    display: "none",
+  },
+  ".cm-panel.cm-search[data-match-state=none] .cm-search-count": {
+    color: "var(--danger)",
   },
   ".cm-panel.cm-search button.cm-button": {
     color: "var(--fg)",
-    backgroundColor: "transparent",
+    backgroundColor: "var(--bg-surface)",
     backgroundImage: "none",
     border: "1px solid var(--border)",
     borderRadius: "var(--radius-md)",
-    padding: "3px 10px",
+    boxSizing: "border-box",
+    height: "26px",
+    padding: "0 10px",
+    margin: "3px 4px 3px 0",
+    fontSize: "var(--font-ui-sm)",
     cursor: "pointer",
   },
   ".cm-panel.cm-search button.cm-button:hover": {
     backgroundColor: "var(--accent-soft)",
     borderColor: "var(--accent)",
   },
+  ".cm-panel.cm-search button.cm-button:active": {
+    backgroundColor: "var(--bg-selection)",
+  },
   ".cm-panel.cm-search button.cm-button:focus-visible": {
     outline: "2px solid var(--accent)",
-    outlineOffset: "2px",
+    outlineOffset: "1px",
   },
   ".cm-panel.cm-search label": {
+    display: "inline-flex",
+    alignItems: "center",
+    boxSizing: "border-box",
+    height: "24px",
+    padding: "0 10px",
+    margin: "3px 0 3px 4px",
+    border: "1px solid var(--border)",
+    borderRadius: "999px",
     color: "var(--fg-muted)",
+    fontSize: "var(--font-ui-sm)",
+    cursor: "pointer",
+    userSelect: "none",
+    position: "relative",
+  },
+  ".cm-panel.cm-search label:hover": {
+    borderColor: "var(--accent)",
+    color: "var(--fg)",
+  },
+  ".cm-panel.cm-search label.is-checked": {
+    backgroundColor: "var(--accent-soft)",
+    borderColor: "var(--accent)",
+    color: "var(--fg)",
+  },
+  ".cm-panel.cm-search label:focus-within": {
+    outline: "2px solid var(--accent)",
+    outlineOffset: "1px",
+  },
+  ".cm-panel.cm-search label input[type=checkbox]": {
+    position: "absolute",
+    opacity: "0",
+    width: "1px",
+    height: "1px",
+    margin: "0",
+    pointerEvents: "none",
+  },
+  ".cm-panel.cm-search button[name=close]": {
+    position: "absolute",
+    top: "8px",
+    right: "8px",
+    width: "26px",
+    height: "26px",
+    padding: "0",
+    border: "none",
+    borderRadius: "var(--radius-md)",
+    backgroundColor: "transparent",
+    color: "var(--fg-muted)",
+    fontSize: "18px",
+    lineHeight: "26px",
+    cursor: "pointer",
+  },
+  ".cm-panel.cm-search button[name=close]:hover": {
+    backgroundColor: "var(--accent-soft)",
+    color: "var(--fg)",
+  },
+  ".cm-panel.cm-search button[name=close]:focus-visible": {
+    outline: "2px solid var(--accent)",
+    outlineOffset: "1px",
   },
   // Show-invisibles (editor.ts `highlightWhitespace()` + the custom EOL
   // widget). CM6's default theme hardcodes gray (#aaa / #888); these

@@ -18,6 +18,17 @@ describe("CodeMirror phrases", () => {
     },
   );
 
+  it("capitalizes English search-panel labels and keeps every other key upstream", () => {
+    const en = EditorState.create({ extensions: EditorState.phrases.of(cm6Phrases("en")) });
+    expect(en.phrase("next")).toBe("Next");
+    expect(en.phrase("replace all")).toBe("Replace all");
+    expect(en.phrase("Find")).toBe("Find");
+    expect(en.phrase("$1 of $2", 3, 12)).toBe("3 of 12");
+    for (const key of Object.keys(cm6Phrases("en"))) {
+      expect(Object.keys(cm6Phrases("zh-TW"))).toContain(key);
+    }
+  });
+
   it("uses translated search/fold strings and substitutes counts through the real phrase API", () => {
     const ja = EditorState.create({ extensions: EditorState.phrases.of(cm6Phrases("ja")) });
     expect(ja.phrase("Find")).toBe("検索");

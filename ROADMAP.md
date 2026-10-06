@@ -374,6 +374,16 @@ WKWebView/WebView2 acceptance is collected for the user.
   ARIA combobox/listbox with aria-activedescendant, the empty state as a
   polite status outside the listbox, and the arrow-key selection kept in
   view.
+- [x] Restyle the find/replace panel and add a match counter. Options
+  render as toggle chips (the checkboxes stay operable), English labels
+  are capitalized, and a debounced "3 of 12" / "No matches" counter sits
+  beside the find field (red border on no results). Counting stops at
+  1,000 matches ("1000+"), skips regexp queries (catastrophic
+  backtracking cannot be bounded), buffers over 500,000 characters,
+  queries whose worst-case literal scan (document length × normalized
+  query length) exceeds 10M steps, and truncated large-file windows, and
+  ignores replacement-only edits.
+  Native WKWebView/WebView2 acceptance pending.
 
 - [x] Reconcile the UI/UX pass and issue-queue pass for handoff: record
   the merged changes under CHANGELOG's Unreleased section and add the
