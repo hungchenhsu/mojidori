@@ -115,6 +115,12 @@ Item counts below are shipped `[x]` items per cycle.
   primitive (#328). D2's Windows signing decision and the updater's
   same-version-never-updates limitation remain open — see DIRECTION
   §3/D2.
+  Still waiting on the user's hands-on checks (no completion recorded as
+  of 2026-10-29): a Windows CSP smoke test for #316 (WebView2 behaves
+  differently from WKWebView; macOS passed on 2026-07-27), #315's manual
+  macOS checks (`open -n` focusing the running window, open-with-file,
+  two user accounts; steps in the PR body), and the Windows side of the
+  #307/#311 data-directory migration and upgrade path.
 
 127 items shipped across the v0.1–v0.7 checkbox cycles above, plus the
 v0.8 cycle (PRs #307–#312) and the 2026-07-26 issue sweep (PRs
@@ -299,6 +305,13 @@ the open issue queue.
   changes the updater signature's trusted comment), @codemirror/commands
   6.11 (moves macOS toggleBlockComment from Shift-Option-A to
   Shift-Ctrl-A), and major upgrades (vite 8, vitest 5, TypeScript 7).
+- [ ] Rust dependency refresh, one crate per PR (`Cargo.lock` has not moved
+  since #341): encoding_rs 0.8.35 → 0.8.40+ (0.8.40 fixes buffer-boundary
+  handling in the two-byte legacy decoders used by streaming decode;
+  MSRV 1.88) with a streaming round-trip test at every split point; and
+  tauri-plugin-updater 2.10.1 → 2.12+ only after re-checking the
+  `updater_errors.rs` pin test and `src/updaterErrors.ts` (2.14.0 changes
+  what `Updater::check` returns in some cases). See overlay §4.
 
 ## UI/UX pass (2026-10-05)
 
