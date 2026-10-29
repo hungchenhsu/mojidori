@@ -121,3 +121,4 @@ easy to spot in a diff and back out.
 | `link.exe not found` (Windows) | Install the VS Build Tools C++ workload, then restart the shell |
 | Blank window on `tauri dev` (Windows) | Install/repair the WebView2 Evergreen runtime |
 | Rust tests fail only on Windows with line-ending diffs | Check `core.autocrlf` (see Windows notes) |
+| `cargo` hangs while fetching the crates.io sparse index (seen on one macOS machine, 2026-09) | `export CARGO_HTTP_MULTIPLEXING=false` in that shell, then retry |
