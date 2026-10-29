@@ -29,7 +29,7 @@ Mojidori 是本機文字編輯器，「使用者檔案的資料完整性」等�
 
 - Green：`src/`、`src-tauri/` 範圍內 code＋tests（feature branch）；同 PR 勾 ROADMAP.md checkbox；本檔（judgment-overlay.md）的教訓寫回。
 - Yellow（先提案）：ARCHITECTURE.md（硬約束文件）；新增任何 runtime dependency（CLAUDE.md 明定需強理由）；DIRECTION.md 的方向性內容（決策關卡、階段計畫、情境對策、session 交接協定；把 §6 backlog 項目升級進 ROADMAP 需使用者簽核）。
-- Red：發佈 release／刪 tag；改變 repo visibility（**2026-07-15 起使用者裁示為 public**——CI 免費＋時機認可；再改回 private 或任何 visibility 變更都要使用者當次明示）；在任何對外文字提及 Notepad++（定位紅線——repo 已公開，全檔案皆對外，此線更嚴，不因改名解除）；在對外文字中以「Plume」自稱產品（產品名為 Mojidori，Plume 只是開發代號）。
+- Red：發佈 release／刪 tag；改變 repo visibility（**2026-07-15 起使用者裁示為 public**——CI 免費＋時機認可；再改回 private 或任何 visibility 變更都要使用者當次明示）；在任何對外文字提及使用者指定的那一款老牌 Windows 文字編輯器競品（定位紅線——repo 已公開，全檔案皆對外，此線更嚴，不因改名解除；名稱刻意不寫進公開 repo，Claude 的 auto-memory 有記，其他協作者先問 maintainer）；在對外文字中以「Plume」自稱產品（產品名為 Mojidori，Plume 只是開發代號）。
 
 ## 4. 教訓寫回目標
 
