@@ -243,6 +243,44 @@ describe("search panel counter", () => {
     }
   });
 
+  it("recounts whole words when an asynchronous language load changes word boundaries", async () => {
+    const { editor, view, label, panel, parent } = setup("$foo foo");
+    try {
+      const query = new SearchQuery({ search: "foo", wholeWord: true });
+      view.dispatch({ effects: setSearchQuery.of(query) });
+      vi.runAllTimers();
+      expect(label()!.textContent).toBe("2 matches");
+
+      await editor.setLanguage("example.js", () => true);
+      expect(countSearchMatches(view.state, query)!.ranges).toHaveLength(1);
+      expect(label()!.hidden).toBe(true);
+      expect(panel().dataset.matchState).toBeUndefined();
+      vi.runAllTimers();
+      expect(label()!.textContent).toBe("1 match");
+
+      await editor.setLanguage(null, () => true);
+      vi.runAllTimers();
+      expect(label()!.textContent).toBe("2 matches");
+    } finally {
+      view.destroy();
+      parent.remove();
+    }
+  });
+
+  it("keeps a literal count visible when language configuration changes", async () => {
+    const { editor, view, label, parent } = setup("$foo foo");
+    try {
+      view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: "foo" })) });
+      vi.runAllTimers();
+      await editor.setLanguage("example.js", () => true);
+      expect(label()!.hidden).toBe(false);
+      expect(label()!.textContent).toBe("2 matches");
+    } finally {
+      view.destroy();
+      parent.remove();
+    }
+  });
+
   it("clears its pending recount when the view is destroyed", () => {
     const { view, parent } = setup("one");
     vi.runAllTimers();
