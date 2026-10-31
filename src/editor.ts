@@ -913,9 +913,13 @@ const searchCountPlugin = ViewPlugin.fromClass(
         this.schedule(SEARCH_COUNT_QUERY_DELAY_MS);
       } else if (update.docChanged) {
         this.schedule(SEARCH_COUNT_EDIT_DELAY_MS);
+      } else if (query.wholeWord && update.transactions.some((tr) => tr.reconfigured)) {
+        // Whole-word boundaries depend on language data, which can arrive
+        // after the document or change when Save As changes its suffix.
+        this.schedule(SEARCH_COUNT_QUERY_DELAY_MS);
       }
-      // Selection and locale changes only need the label re-rendered from
-      // the cached count.
+      // Selection, locale, and other reconfiguration of a query that ignores
+      // word boundaries only need the label re-rendered from the cached count.
       this.render(panel);
     }
 

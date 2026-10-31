@@ -402,6 +402,14 @@ WKWebView/WebView2 acceptance is collected for the user.
   the merged changes under CHANGELOG's Unreleased section and add the
   pass to DIRECTION §2. Source version remains 0.9.0.
 
+## Search count follow-up (2026-10-31)
+
+- [x] Fix #393: recount whole-word search results when language
+  reconfiguration changes word boundaries. Hide stale counts during the
+  existing debounce; ordinary literal searches keep their cached counts.
+  Regression coverage uses the real asynchronous JavaScript language loader
+  on `$foo foo` and switches back to plain text.
+
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:
